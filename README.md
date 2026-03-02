@@ -69,20 +69,17 @@ Logic นี้สามารถนำไปต่อยอดเป็น
 
 ```
 Planning-logic/
-│
-├── planning_logic/
-│   ├── capacity.py
-│   ├── setup.py
-│   ├── calendar.py
-│
-├── models/
-│   ├── order.py
-│   ├── machine.py
-│
-├── services/
-│   └── planner.py
-│
-├── main.py
+├── Planning.py        # หลัก: สร้างแผนการผลิตรายสัปดาห์
+├── Order.py           # โหลดและเตรียมข้อมูล Orders
+├── AVA_MC.py          # คำนวณเครื่องจักรที่พร้อมใช้งาน
+├── Master_MC.py       # ข้อมูล Master ของเครื่องจักร
+├── ITEM_Cap.py        # ข้อมูล Capacity ต่อ Item
+├── Calendar.py        # ปฏิทินการทำงาน
+├── Yarn_Master.py     # ข้อมูล Yarn Master
+├── Logic.py           # Logic กลาง / utility functions
+├── Train.py           # Train โมเดล ML
+├── predict.py         # ทำนายผล (ML Prediction)
+├── model/             # โมเดลที่ train แล้ว (.joblib)
 └── README.md
 ```
 
@@ -99,5 +96,5 @@ git clone https://github.com/ssenxl/Planning-logic.git
 2. รันไฟล์หลัก
 
 ```bash
-python main.py
+python Planning.py
 ```
