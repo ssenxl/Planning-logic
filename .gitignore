@@ -8,3 +8,11 @@ __pycache__/
 *.h5
 .vscode/
 *.log
+*.xlsx
+*.xls
+*.XLS
+Booking/
+Order/
+Yarn_Master/
+data/
+data_plan/
