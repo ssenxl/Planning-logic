@@ -13,8 +13,17 @@ OUTPUT_DIR = BASE_DIR / "data_plan"
 OUTPUT_FILE = OUTPUT_DIR / "booking_final_ready25.xlsx"
 
 EXCLUDE_MC_GROUP = [
-    "CL-NP", "CL-OM", "COMKN", "F-CL", "CL", "FQCCL-NP",
-    "FQCCL-OM", "FQC-Omnoi", "FQC-Phet", "FQC","F-TSD"
+    "CL-NP",
+    "CL-OM",
+    "COMKN",
+    "F-CL",
+    "CL",
+    "FQCCL-NP",
+    "FQCCL-OM",
+    "FQC-Omnoi",
+    "FQC-Phet",
+    "FQC",
+    "F-TSD",
 ]
 
 KEEP_COLUMNS = [
@@ -28,8 +37,9 @@ KEEP_COLUMNS = [
     "WEEK",
     "TYPE",
     "YARN-USED",
-    "STRUCTURE"
+    "STRUCTURE",
 ]
+
 
 # =========================
 # LOAD CAPABILITY GROUP
@@ -56,60 +66,159 @@ def load_capability_groups(file_path: str) -> pd.DataFrame:
     master["GUAGE"] = master["GUAGE"].astype(str).str.strip()
     return master.drop_duplicates()
 
+
 # =========================
 # 20 / 24 RULE
 # =========================
 MULTIPLY_RULES = {
-    ("SKP","14"),("SKP","18"),("SKP","20"),("SKP","22"),("SKP","24"),("SKP","26"),("SKP","28"),
-    ("SKPTA","14"),("SKPTA","22"),("SKPTA","26"),("SKPTA","28"),("SKPTA","36"),
-    ("SKPLE","26"),("SKPLE","36"),
-    ("SBP","21"),("SBP","22"),("SBP","26"),("SBP","28"),
-    ("TSA","26"),("TSB","26"),("TSC","26"),("TSD","26"),
-    ("TSE","22"),("TSE","26"),
-    ("TSF","22"),("TSF","24"),("TSF","26"),
-    ("TSFLE","22"),("TSFLE","26"),("TSFLE","30"),
+    ("SKP", "14"),
+    ("SKP", "18"),
+    ("SKP", "20"),
+    ("SKP", "22"),
+    ("SKP", "24"),
+    ("SKP", "26"),
+    ("SKP", "28"),
+    ("SKPTA", "14"),
+    ("SKPTA", "22"),
+    ("SKPTA", "26"),
+    ("SKPTA", "28"),
+    ("SKPTA", "36"),
+    ("SKPLE", "26"),
+    ("SKPLE", "36"),
+    ("SBP", "21"),
+    ("SBP", "22"),
+    ("SBP", "26"),
+    ("SBP", "28"),
+    ("TSA", "26"),
+    ("TSB", "26"),
+    ("TSC", "26"),
+    ("TSD", "26"),
+    ("TSE", "22"),
+    ("TSE", "26"),
+    ("TSF", "22"),
+    ("TSF", "24"),
+    ("TSF", "26"),
+    ("TSFLE", "22"),
+    ("TSFLE", "26"),
+    ("TSFLE", "30"),
 }
 
 # =========================
 # WORKING DAY = 6
 # =========================
 WORKING_DAY_6 = set(MULTIPLY_RULES) | {
-    ("RAOO", "16"), ("IRMT", "28"), ("IRMT", "24"),
-    ("FA", "18"), ("FA", "20"), ("SJT", "28"),
+    ("RAOO", "16"),
+    ("IRMT", "28"),
+    ("IRMT", "24"),
+    ("FA", "18"),
+    ("FA", "20"),
+    ("SJT", "28"),
 }
 
 # =========================
 # TOTAL MC MASTER
 # =========================
 TOTAL_MC_MAP = {
-    ("RAO","16"):3, ("RAO","18"):1, ("RAO","19"):6,
-    ("RAP","19"):8,
-    ("IIP","20"):5, ("RL","18"):4,
-    ("IBLTA","22"):16, ("IBP","22"):18, ("RAO","22"):5,
-    ("RAP","22"):3, ("RAP60","22"):3, ("RAP98","22"):6, ("SYN","22"):6,
-    ("IIP","24"):2, ("II","24"):1,
-    ("IBLTA","28"):5, ("RAP","28"):1, ("RAP60","28"):4,
-    ("RAP98","28"):25, ("SYN","28"):10,
-    ("IRM","28"):11, ("IRMPL","28"):4, ("IRMLE","40"):4,
-    ("SKP","14"):1, ("SKP","18"):1, ("SKP","20"):20, ("SKP","22"):13,
-    ("SKP","24"):1, ("SKP","26"):7, ("SKP","28"):14,
-    ("SKPTA","14"):2, ("SKPTA","22"):3, ("SKPTA","26"):21,
-    ("SKPTA","28"):5, ("SKPTA","36"):12,
-    ("SKPLE","26"):13, ("SKPLE","36"):9,
-    ("SBP","21"):1, ("SBP","22"):1, ("SBP","26"):14, ("SBP","28"):7,
-    ("TSA","26"):1, ("TSB","26"):1, ("TSC","26"):3, ("TSD","26"):3,
-    ("TSE","22"):1, ("TSE","26"):8,
-    ("TSF","22"):8, ("TSF","24"):0, ("TSF","26"):0,
-    ("TSFLE","22"):1, ("TSFLE","26"):5, ("TSFLE","30"):2,
-    ("RAOO","16"):8, ("IRMT","28"):7, ("IRMT","24"):1,
-    ("FA","18"):1, ("FA","20"):47,
-    ("SJT","28"):4,
+    ("RAO", "16"): 3,
+    ("RAO", "18"): 1,
+    ("RAO", "19"): 8,
+    ("RAP", "19"): 6,
+    ("IIP", "20"): 5,
+    ("RL", "18"): 5,
+    ("IBLTA", "22"): 18,
+    ("IBP", "22"): 19,
+    ("RAO", "22"): 5,
+    ("RAP", "22"): 3,
+    ("RAP60", "22"): 4,
+    ("RAP98", "22"): 10,
+    ("SYN", "22"): 6,
+    ("IIP", "24"): 2,
+    ("II", "24"): 1,
+    ("IBLTA", "28"): 4,
+    ("RAP", "28"): 1,
+    ("RAP60", "28"): 4,
+    ("RAP98", "28"): 27,
+    ("SYN", "28"): 11,
+    ("IRM", "28"): 12,
+    ("IRMPL", "28"): 4,
+    ("IRMLE", "40"): 4,
+    ("SKP", "14"): 3,
+    ("SKP", "18"): 1,
+    ("SKP", "20"): 21,
+    ("SKP", "22"): 14,
+    ("SKP", "24"): 2,
+    ("SKP", "26"): 6,
+    ("SKP", "28"): 16,
+    ("SKPTA", "14"): 2,
+    ("SKPTA", "22"): 4,
+    ("SKPTA", "26"): 27,
+    ("SKPTA", "28"): 8,
+    ("SKPTA", "36"): 11,
+    ("SKPLE", "26"): 13,
+    ("SKPLE", "36"): 8,
+    ("SBP", "21"): 1,
+    ("SBP", "22"): 1,
+    ("SBP", "24"): 1,
+    ("SBP", "26"): 14,
+    ("SBP", "28"): 10,
+    ("TSA", "26"): 1,
+    ("TSB", "26"): 2,
+    ("TSC", "26"): 3,
+    ("TSD", "26"): 3,
+    ("TSE", "22"): 1,
+    ("TSE", "26"): 9,
+    ("TSF", "22"): 4,
+    ("TSF", "24"): 1,
+    ("TSF", "26"): 0,
+    ("TSFLE", "22"): 1,
+    ("TSFLE", "26"): 3,
+    ("TSFLE", "30"): 4,
+    ("RAOO", "16"): 8,
+    ("IRMT", "28"): 8,
+    ("IRMT", "24"): 2,
+    ("FA", "18"): 1,
+    ("FA", "20"): 49,
+    ("SJT", "28"): 5,
 }
 
 # =========================
-# LOAD
+# SHARED POOL
+# กลุ่ม MC ที่ใช้เครื่องร่วมกัน (pool) → TOTAL_MC_REMAIN จะถูกปรับให้สะท้อนเครื่องว่างรวม
+# key = pool name, value = (total_machines, [(MC_GROUP, GUAGE), ...])
+# =========================
+SHARED_POOL_MAP = {
+    "SKP_SKPTA_14_POOL": (5, [("SKP", "14"), ("SKPTA", "14")]),
+    "SKPLE_SKPTA_26_POOL": (40, [("SKPLE", "26"), ("SKPTA", "26")]),
+    "SKPLE_SKPTA_36_POOL": (19, [("SKPLE", "36"), ("SKPTA", "36")]),
+    "IIP_RL_POOL": (10, [("IIP", "20"), ("RL", "18")]),
+    "RAO_RAP_19_POOL": (14, [("RAO", "19"), ("RAP", "19")]),
+    "IIP_II_24_POOL": (3, [("IIP", "24"), ("II", "24")]),
+    "GAUGE28_POOL": (
+        47,
+        [
+            ("IBLTA", "28"),
+            ("RAP", "28"),
+            ("RAP60", "28"),
+            ("RAP98", "28"),
+            ("SYN", "28"),
+        ],
+    ),
+    "GAUGE22_POOL": (
+        65,
+        [
+            ("IBLTA", "22"),
+            ("IBP", "22"),
+            ("RAO", "22"),
+            ("RAP", "22"),
+            ("RAP60", "22"),
+            ("RAP98", "22"),
+            ("SYN", "22"),
+        ],
+    ),
+}
 # =========================
 import io
+
 
 def fix_thai(s):
     """แก้ double-encoding: latin-1 → cp874"""
@@ -118,10 +227,11 @@ def fix_thai(s):
     except Exception:
         return s
 
+
 def load_booking_file(file: Path) -> pd.DataFrame:
     raw_bytes = file.read_bytes()
-    is_zip = raw_bytes[:2] == b'PK'
-    is_biff = raw_bytes[:8] == b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
+    is_zip = raw_bytes[:2] == b"PK"
+    is_biff = raw_bytes[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
     _df = None
     if is_zip:
@@ -152,6 +262,7 @@ def load_booking_file(file: Path) -> pd.DataFrame:
     if _df is None:
         raise ValueError(f"❌ ไม่สามารถอ่านไฟล์: {file.name}")
     return _df
+
 
 all_files = [f for f in BOOKING_DIR.iterdir() if f.suffix.lower() in (".xlsx", ".xls")]
 if not all_files:
@@ -189,11 +300,8 @@ df["KP_WEIGHT"] = pd.to_numeric(df["KP_WEIGHT"], errors="coerce")
 # =========================
 # APPLY 20/24
 # =========================
-mask_2024 = df.apply(
-    lambda r: (r["MC_GROUP"], r["GUAGE"]) in MULTIPLY_RULES,
-    axis=1
-)
-df.loc[mask_2024, "CAP ทอ"] *= (20 / 24)
+mask_2024 = df.apply(lambda r: (r["MC_GROUP"], r["GUAGE"]) in MULTIPLY_RULES, axis=1)
+df.loc[mask_2024, "CAP ทอ"] *= 20 / 24
 
 # =========================
 # GROUP ITEM
@@ -209,9 +317,8 @@ for col in ["YARN-USED", "STRUCTURE"]:
     if col in df.columns:
         agg_dict[col] = "first"
 
-df = (
-    df.groupby(["MC_GROUP", "GUAGE", "ITEM_CODE", "WEEK"], as_index=False)
-      .agg(agg_dict)
+df = df.groupby(["MC_GROUP", "GUAGE", "ITEM_CODE", "WEEK"], as_index=False).agg(
+    agg_dict
 )
 
 # =========================
@@ -219,6 +326,7 @@ df = (
 # =========================
 _yarn_df = load_yarn_master()
 _fiber_lookup = dict(zip(_yarn_df["ITEM_CODE"], _yarn_df["FIBER_TYPE"]))
+
 
 def get_fiber_type(yarn_used: str) -> str:
     """แยก YARN-USED ด้วย '+' แล้วเช็ค FIBER_TYPE แต่ละตัว
@@ -231,6 +339,7 @@ def get_fiber_type(yarn_used: str) -> str:
             return "POLY"
     return "None POLY"
 
+
 if "YARN-USED" in df.columns:
     df["FIBER_TYPE"] = df["YARN-USED"].apply(get_fiber_type)
 
@@ -238,17 +347,14 @@ if "YARN-USED" in df.columns:
 # WORKING DAY
 # =========================
 df["WORKING_DAY"] = df.apply(
-    lambda r: 6 if (r["MC_GROUP"], r["GUAGE"]) in WORKING_DAY_6 else 7,
-    axis=1
+    lambda r: 6 if (r["MC_GROUP"], r["GUAGE"]) in WORKING_DAY_6 else 7, axis=1
 )
 
 # =========================
 # MC USE
 # =========================
 df["MC_USE"] = np.where(
-    df["CAP ทอ"] > 0,
-    df["KP_WEIGHT"] / (df["CAP ทอ"] * df["WORKING_DAY"]),
-    0
+    df["CAP ทอ"] > 0, df["KP_WEIGHT"] / (df["CAP ทอ"] * df["WORKING_DAY"]), 0
 )
 
 df["MC_USE_CEIL"] = np.ceil(df["MC_USE"]).astype(int)
@@ -257,17 +363,14 @@ df["MC_USE_CEIL"] = np.ceil(df["MC_USE"]).astype(int)
 # TOTAL MC
 # =========================
 df["TOTAL_MC"] = df.apply(
-    lambda r: TOTAL_MC_MAP.get((r["MC_GROUP"], r["GUAGE"]), 0),
-    axis=1
+    lambda r: TOTAL_MC_MAP.get((r["MC_GROUP"], r["GUAGE"]), 0), axis=1
 )
 
 # =========================
 # MC CUMULATIVE
 # =========================
 df = df.sort_values(["MC_GROUP", "GUAGE", "WEEK"])
-df["MC_USE_CUM"] = df.groupby(
-    ["MC_GROUP", "GUAGE", "WEEK"]
-)["MC_USE_CEIL"].cumsum()
+df["MC_USE_CUM"] = df.groupby(["MC_GROUP", "GUAGE", "WEEK"])["MC_USE_CEIL"].cumsum()
 
 df["TOTAL_MC_REMAIN"] = df["TOTAL_MC"] - df["MC_USE_CUM"]
 
@@ -276,7 +379,7 @@ df["TOTAL_MC_REMAIN"] = df["TOTAL_MC"] - df["MC_USE_CUM"]
 # =========================
 mc_master = pd.DataFrame(
     [(k[0], k[1], v) for k, v in TOTAL_MC_MAP.items()],
-    columns=["MC_GROUP", "GUAGE", "TOTAL_MC"]
+    columns=["MC_GROUP", "GUAGE", "TOTAL_MC"],
 )
 
 week_master = pd.DataFrame({"WEEK": sorted(df["WEEK"].unique())})
@@ -285,30 +388,37 @@ week_master["key"] = 1
 
 summary_base = mc_master.merge(week_master, on="key").drop(columns="key")
 
-mc_use_week = (
-    df.groupby(["MC_GROUP", "GUAGE", "WEEK"], as_index=False)
-      .agg({"MC_USE_CEIL": "sum"})
+mc_use_week = df.groupby(["MC_GROUP", "GUAGE", "WEEK"], as_index=False).agg(
+    {"MC_USE_CEIL": "sum"}
 )
 
-summary = summary_base.merge(
-    mc_use_week,
-    on=["MC_GROUP", "GUAGE", "WEEK"],
-    how="left"
-)
+summary = summary_base.merge(mc_use_week, on=["MC_GROUP", "GUAGE", "WEEK"], how="left")
 
 summary["MC_USE_CEIL"] = summary["MC_USE_CEIL"].fillna(0).astype(int)
 summary["TOTAL_MC_REMAIN"] = summary["TOTAL_MC"] - summary["MC_USE_CEIL"]
 
-capability_groups = load_capability_groups(MASTER_MC_FILE)
-summary = summary.merge(
-    capability_groups,
-    on=["MC_GROUP", "GUAGE"],
-    how="left"
-)
+# =========================
+# APPLY SHARED POOL: ปรับ TOTAL_MC_REMAIN ให้สะท้อนเครื่องว่างรวมของ pool
+# pool_remain = pool_total - sum(MC_USE_CEIL ของทุก member ใน week นั้น)
+# ทุก member ใน pool จะเห็น TOTAL_MC_REMAIN = pool_remain เท่ากัน
+# =========================
+for _pool_name, (_pool_total, _pool_members) in SHARED_POOL_MAP.items():
+    for _week in summary["WEEK"].unique():
+        _week_mask = summary["WEEK"] == _week
+        _member_mask = _week_mask & summary.apply(
+            lambda r: (r["MC_GROUP"], str(r["GUAGE"])) in _pool_members, axis=1
+        )
+        _total_used = summary.loc[_member_mask, "MC_USE_CEIL"].sum()
+        _pool_remain = max(0, _pool_total - _total_used)
+        summary.loc[_member_mask, "TOTAL_MC"] = _pool_total
+        summary.loc[_member_mask, "TOTAL_MC_REMAIN"] = _pool_remain
 
-summary["CAPABILITY_TOTAL_MC_REMAIN"] = summary.groupby(
-    ["Capability Group", "WEEK"]
-)["TOTAL_MC_REMAIN"].transform("sum")
+capability_groups = load_capability_groups(MASTER_MC_FILE)
+summary = summary.merge(capability_groups, on=["MC_GROUP", "GUAGE"], how="left")
+
+summary["CAPABILITY_TOTAL_MC_REMAIN"] = summary.groupby(["Capability Group", "WEEK"])[
+    "TOTAL_MC_REMAIN"
+].transform("sum")
 
 summary = summary[
     [
