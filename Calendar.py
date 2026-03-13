@@ -26,9 +26,13 @@ def load_calendar(file_path: Path, sheet_name: str = "Calendar") -> pd.DataFrame
     df = df.sort_values("DATE").reset_index(drop=True)
 
     # derive helpful calendar fields used by planner
-    iso = df["DATE"].dt.isocalendar()
-    df["YEAR"] = iso["year"]
-    df["WEEK"] = iso["week"]
+    # Week definition: Friday–Thursday (เริ่มวันศุกร์ จบวันพฤหัสบดี)
+    # เทคนิค: บวก 3 วัน → ศุกร์กลายเป็นจันทร์ → ใช้ ISO week ปกติได้เลย
+    # ตัวอย่าง: ศ. 2 ม.ค. +3 = จ. 5 ม.ค. → ISO W2  /  พฤ. 8 ม.ค. +3 = อา. 11 ม.ค. → ISO W2
+    _shifted = df["DATE"] + pd.Timedelta(days=3)
+    iso = _shifted.dt.isocalendar()
+    df["YEAR"] = iso["year"].astype(int)
+    df["WEEK"] = iso["week"].astype(int)
     df["MONTH"] = df["DATE"].dt.month
     # Year-Week key (e.g., 2026-02) for grouping
     df["YW"] = df["YEAR"].astype(str) + "-" + df["WEEK"].astype(str).str.zfill(2)

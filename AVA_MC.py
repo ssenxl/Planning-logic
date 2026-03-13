@@ -104,9 +104,9 @@ MULTIPLY_RULES = {
 }
 
 # =========================
-# WORKING DAY = 6
+# MC กลุ่มที่ห้าม *20/24 อย่างชัดเจน (PHET DOUBLE + รายการพิเศษ)
 # =========================
-WORKING_DAY_6 = set(MULTIPLY_RULES) | {
+NO_MULTIPLY_RULES = {
     ("RAOO", "16"),
     ("IRMT", "28"),
     ("IRMT", "24"),
@@ -114,6 +114,11 @@ WORKING_DAY_6 = set(MULTIPLY_RULES) | {
     ("FA", "20"),
     ("SJT", "28"),
 }
+
+# =========================
+# WORKING DAY = 6
+# =========================
+WORKING_DAY_6 = set(MULTIPLY_RULES) | NO_MULTIPLY_RULES
 
 # =========================
 # TOTAL MC MASTER
@@ -298,17 +303,23 @@ df["CAP ทอ"] = pd.to_numeric(df["CAP ทอ"], errors="coerce")
 df["KP_WEIGHT"] = pd.to_numeric(df["KP_WEIGHT"], errors="coerce")
 
 # =========================
-# APPLY 20/24
+# APPLY 20/24 (ใช้เฉพาะคำนวณ MC_USE — ไม่เขียนทับ CAP จาก booking)
 # =========================
-mask_2024 = df.apply(lambda r: (r["MC_GROUP"], r["GUAGE"]) in MULTIPLY_RULES, axis=1)
-df.loc[mask_2024, "CAP ทอ"] *= 20 / 24
+df["_CAP_ADJ"] = df["CAP ทอ"].copy()
+mask_2024 = df.apply(
+    lambda r: (r["MC_GROUP"], r["GUAGE"]) in MULTIPLY_RULES
+    and (r["MC_GROUP"], r["GUAGE"]) not in NO_MULTIPLY_RULES,
+    axis=1,
+)
+df.loc[mask_2024, "_CAP_ADJ"] *= 20 / 24
 
 # =========================
 # GROUP ITEM
 # =========================
 agg_dict = {
     "KP_WEIGHT": "sum",
-    "CAP ทอ": "first",
+    "CAP ทอ": "first",       # raw cap จาก booking (ไม่ปรับ 20/24)
+    "_CAP_ADJ": "first",     # adjusted cap สำหรับคำนวณ MC_USE
     "REVOLUTION/WEIGHT": "first",
 }
 if "SO_NO" in df.columns:
@@ -351,13 +362,16 @@ df["WORKING_DAY"] = df.apply(
 )
 
 # =========================
-# MC USE
+# MC USE (ใช้ _CAP_ADJ ที่ adjusted แล้ว)
 # =========================
 df["MC_USE"] = np.where(
-    df["CAP ทอ"] > 0, df["KP_WEIGHT"] / (df["CAP ทอ"] * df["WORKING_DAY"]), 0
+    df["_CAP_ADJ"] > 0, df["KP_WEIGHT"] / (df["_CAP_ADJ"] * df["WORKING_DAY"]), 0
 )
 
 df["MC_USE_CEIL"] = np.ceil(df["MC_USE"]).astype(int)
+
+# drop _CAP_ADJ ก่อน save (ไม่ส่งออก)
+df = df.drop(columns=["_CAP_ADJ"])
 
 # =========================
 # TOTAL MC
