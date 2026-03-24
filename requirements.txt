@@ -4,3 +4,6 @@ openpyxl
 xlrd==1.2.0
 scikit-learn
 joblib
+fastapi
+uvicorn[standard]
+oracledb
