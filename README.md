@@ -1,100 +1,190 @@
 # Planning Logic System
 
 ## ภาพรวมของโปรเจกต์
-Planning Logic System เป็นโปรเจกต์ภาษา Python
-ที่พัฒนาขึ้นเพื่อจำลองและคำนวณการวางแผนการผลิต
-ภายใต้เงื่อนไขที่เกิดขึ้นจริงในงานปฏิบัติการ
-เช่น ข้อจำกัดกำลังการผลิต (Capacity),
-เวลา Setup, ประเภทคำสั่งงาน และเงื่อนไขตามปฏิทิน
 
-โปรเจกต์นี้มีเป้าหมายเพื่อแปลงกฎการวางแผนที่เคยทำแบบ manual
-ให้กลายเป็น business logic ที่สามารถนำไปใช้งานซ้ำ
-ตรวจสอบ และทำงานอัตโนมัติได้
+Planning Logic System เป็นระบบวางแผนการผลิตรายสัปดาห์ (Weekly Production Planning) ที่พัฒนาด้วย Python
+ออกแบบมาเพื่อแทนที่การวางแผนด้วย Excel ให้กลายเป็น **automated business logic** ที่ทำงานได้เร็ว แม่นยำ และทำซ้ำได้
 
----
-
-## ปัญหาที่พบในงานจริง
-ในหลายองค์กร การวางแผนการผลิตหรือการวางแผนงาน
-ยังคงอาศัยการคำนวณด้วย Excel หรือการประเมินด้วยคนเป็นหลัก
-ซึ่งก่อให้เกิดปัญหา เช่น
-- ใช้เวลานานในการวางแผน
-- ปรับแก้ยากเมื่อเงื่อนไขเปลี่ยน
-- เกิดความผิดพลาดจากการคำนวณ
-- รองรับเงื่อนไขหลายข้อพร้อมกันได้ยาก
-
-โดยเฉพาะกรณีที่ต้องคำนึงถึง
-กำลังการผลิต, วัน Setup, ประเภทคำสั่งงาน
-และช่วงเวลาการผลิตพร้อมกัน
-
----
-
-## แนวทางแก้ไข (Solution)
-โปรเจกต์นี้นำกฎการวางแผนการผลิตมาสร้างเป็นระบบ logic ด้วยภาษา Python
-เพื่อให้สามารถคำนวณ ตรวจสอบ และประเมินแผนการผลิตได้อย่างเป็นระบบ
-
-โครงสร้างของโค้ดถูกออกแบบให้เป็นแบบ modular
-สามารถปรับเปลี่ยนหรือขยายกฎทางธุรกิจได้
-โดยไม่จำเป็นต้องเขียนโค้ดใหม่ทั้งหมด
+ระบบครอบคลุมตั้งแต่ การโหลดข้อมูล → คำนวณเครื่องจักร → วางแผนผลิตรายสัปดาห์ → Optimize กำลังการผลิต → Export ผลลัพธ์
+รวมถึงมี **ML Model** สำหรับทำนาย MC_GROUP ของ Item ใหม่ที่ยังไม่เคยเห็น
 
 ---
 
 ## ฟีเจอร์หลัก
-- คำนวณกำลังการผลิตตามข้อจำกัดของเครื่องจักร
-- จัดการวัน Setup ที่ไม่สามารถผลิตได้
-- คัดกรองคำสั่งงานตามประเภทและเงื่อนไข
-- รองรับการวางแผนตามปฏิทิน (รายสัปดาห์ / รายช่วงเวลา)
-- โครงสร้างโค้ดแบบแยกส่วน อ่านง่าย และต่อยอดได้
+
+- **Weekly Production Planning** — วางแผนผลิตอัตโนมัติรายสัปดาห์ โดยคำนวณจำนวนเครื่อง, วัน Setup, วันทำงานจริง และปริมาณผลิตต่อสัปดาห์
+- **Machine Capacity Management** — จัดการเครื่องจักรแบบ Shared Pool (เช่น SKPLE+SKPTA ใช้เครื่องร่วมกัน), หัก MC ที่ถูกจองแล้ว, รองรับ Capability Group
+- **Carryover Logic** — เครื่องที่วิ่งอยู่ (carry-over) ไม่ต้อง setup ใหม่ สามารถ carry across SC/SO ได้ (configurable)
+- **Capacity Optimization** — ตรวจจับเครื่องว่างที่ยังมี capacity เหลือ แล้วเติม order ของ item เดียวกันจาก SC อื่นเข้าไปอัตโนมัติ
+- **Job/Week Capacity Limit** — จำกัดจำนวน job ต่อสัปดาห์ตาม Factory Type (PHET DOUBLE=33, SINGLE=44, OM=13)
+- **Dynamic Setup Limit** — ปรับจำนวนเครื่อง setup ใหม่ตาม urgency ของ RDD (ยิ่งใกล้กำหนดส่ง ยิ่งเปิดเครื่องมาก)
+- **Factory-aware Working Days** — วันทำงานแตกต่างตาม Factory (PHET DOUBLE=7d, SINGLE/OM=6d) พร้อม override สำหรับ week พิเศษ
+- **Calendar Integration** — ใช้ปฏิทินแบบ Friday–Thursday week, กรองวันหยุดออก, รองรับข้ามปี
+- **Fiber Type Detection** — ระบุ POLY/None POLY จาก YARN-USED อัตโนมัติ
+- **OLD vs NEW Plan Comparison** — รวม booking เก่า (OLD) กับแผนใหม่ (NEW) ในไฟล์เดียว เปรียบเทียบ week-by-week
+- **Pivot Table Generation** — สร้าง Excel PivotTable อัตโนมัติผ่าน win32com (Windows)
+- **ML MC_GROUP Prediction** — ทำนาย MC_GROUP สำหรับ Item ใหม่ด้วย Linear SVM + TF-IDF (ถ้าเคยเห็น → lookup ตรง, ถ้าใหม่ → ML predict)
+- **API Integration Layer** — โครงสร้างสำหรับดึงข้อมูลจาก API (JSON/Excel/CSV) พร้อมใช้งาน
 
 ---
 
-## ตัวอย่างการใช้งาน
-เมื่อมีข้อมูลดังนี้
-- รายการคำสั่งงาน (Orders)
-- กลุ่มเครื่องจักรและกำลังการผลิต
-- เงื่อนไขวัน Setup
-- ช่วงเวลาการวางแผน (Calendar)
+## Data Flow
 
-ระบบจะคำนวณ
-- ความสามารถในการผลิตในแต่ละช่วงเวลา
-- ตรวจสอบว่าสามารถรับคำสั่งงานได้หรือไม่
-- แสดงกำลังการผลิตคงเหลือหลังการวางแผน
-
-Logic นี้สามารถนำไปต่อยอดเป็น
-ระบบวางแผนภายในองค์กร
-หรือระบบ automation สำหรับงานวิเคราะห์และรายงานผลได้
+```
+Order/*.xlsx ──→ Order.py ──→ data_plan/order_ready.xlsx ─┐
+                                                          │
+Booking/*.xlsx ─→ AVA_MC.py ─→ data_plan/booking_final_ready25.xlsx
+                                  ├── DETAIL sheet         ├──→ Planning.py
+                                  └── SUMMARY_MC_REMAIN    │
+                                                          │
+data/Cap/*.xlsx ──→ ITEM_Cap.py ──────────────────────────┤
+data/Yarn/*.xlsx ─→ Yarn_Master.py ───────────────────────┤
+data/MC/Master_MC_5.xlsx ─────────────────────────────────┤
+Calendar.xlsx ────→ Calendar.py ──────────────────────────┘
+                                                          │
+                                                          ▼
+                                              Planning.py (Main Engine)
+                                                          │
+                          ┌───────────────────────────────┼──────────────────────┐
+                          ▼                               ▼                      ▼
+          data_plan/weekly_production_plan.xlsx    PIVOT_PLAN sheet     weekly_production_plan_
+                ├── PLAN                          (Excel PivotTable)    combined_filtered.xlsx
+                └── REMAINING_JOBS                                      ├── PLAN (OLD+NEW)
+                                                                        └── NO_CAP
+```
 
 ---
 
-## โครงสร้างโปรเจกต์ (โดยสรุป)
+## โครงสร้างโปรเจกต์
 
 ```
 Planning-logic/
-├── Planning.py        # หลัก: สร้างแผนการผลิตรายสัปดาห์
-├── Order.py           # โหลดและเตรียมข้อมูล Orders
-├── AVA_MC.py          # คำนวณเครื่องจักรที่พร้อมใช้งาน
-├── Master_MC.py       # ข้อมูล Master ของเครื่องจักร
-├── ITEM_Cap.py        # ข้อมูล Capacity ต่อ Item
-├── Calendar.py        # ปฏิทินการทำงาน
-├── Yarn_Master.py     # ข้อมูล Yarn Master
-├── Logic.py           # Logic กลาง / utility functions
-├── Train.py           # Train โมเดล ML
-├── predict.py         # ทำนายผล (ML Prediction)
-├── model/             # โมเดลที่ train แล้ว (.joblib)
+├── Planning.py          # Core: วางแผนผลิตรายสัปดาห์ + Capacity Optimization + Export
+├── Order.py             # โหลด/กรอง Orders จาก Excel (ตัด CL-ORDERS, FQC, F-CL, COMKN)
+├── AVA_MC.py            # คำนวณเครื่องว่าง (Available MC) + Shared Pool + Booking summary
+├── Master_MC.py         # Lookup Capability Group จาก Master MC data
+├── ITEM_Cap.py          # โหลด Item Capacity (CAP ทอ, REVOLUTION/WEIGHT, GUAGE)
+├── Calendar.py          # ปฏิทินการทำงาน (Friday–Thursday week, วันหยุด)
+├── Yarn_Master.py       # โหลด Yarn Master + ระบุ FIBER_TYPE (POLY/None POLY)
+├── Logic.py             # (Reserved) Logic กลาง / utility functions
+├── Train.py             # Train ML model (Linear SVM) สำหรับทำนาย MC_GROUP
+├── predict.py           # Predict MC_GROUP ของ Item ใหม่ (CLI + function)
+├── Api.py               # HTTP client สำหรับดึงข้อมูลจาก API (JSON/Excel/CSV)
+├── model/               # โมเดล ML ที่ train แล้ว (.joblib)
+├── data/                # ข้อมูล Master
+│   ├── Cap/             #   Item Capacity (item_cap2025.xlsx)
+│   ├── MC/              #   Master MC (Master_MC_5.xlsx), DataITEM_Master.xlsx
+│   └── Yarn/            #   Yarn Master
+├── data_plan/           # ข้อมูลที่เตรียมแล้ว + Output
+│   ├── order_ready.xlsx
+│   ├── booking_final_ready25.xlsx
+│   ├── weekly_production_plan.xlsx
+│   └── weekly_production_plan_combined_filtered.xlsx
+├── Booking/             # ข้อมูล Booking ดิบ (ประวัติการผลิตจริง)
+├── Order/               # ข้อมูล Order ดิบ
+├── Calendar.xlsx        # ไฟล์ปฏิทินหลัก
+├── requirements.txt     # Dependencies
 └── README.md
 ```
 
 ---
 
+## Configuration (Planning.py)
+
+| Parameter | ค่า Default | คำอธิบาย |
+|---|---|---|
+| `SETUP_DAYS` | 3 | จำนวนวัน setup ต่อเครื่อง (cold start) |
+| `SETUP_GAP_WEEK` | 2 | ถ้าผลิต item เดิมภายใน 2 week → ไม่ต้อง setup ใหม่ |
+| `SKIP_WEEKS` | {16} | สัปดาห์ที่ข้าม (หยุด/ปิดโรงงาน) |
+| `ALLOW_CARRYOVER_ACROSS_SO` | True | อนุญาต carryover ข้าม SC/SO NO |
+| `USE_PROGRESSIVE_REDUCTION` | False | โหมดลดเครื่องแบบค่อยเป็นค่อยไป |
+
+### Shared Machine Pool
+
+เครื่องจักรบางกลุ่มใช้ร่วมกัน เช่น
+
+| Pool | Total MC | Members |
+|---|---|---|
+| SKP_SKPTA_14 | 5 | SKP-14, SKPTA-14 |
+| SKPLE_SKPTA_26 | 40 | SKPLE-26, SKPTA-26 |
+| SKPLE_SKPTA_36 | 19 | SKPLE-36, SKPTA-36 |
+| GAUGE22 | 65 | IBLTA-22, IBP-22, RAO-22, RAP-22, RAP60-22, RAP98-22, SYN-22 |
+| GAUGE28 | 47 | IBLTA-28, RAP-28, RAP60-28, RAP98-28, SYN-28 |
+
+---
+
 ## วิธีการรันโปรเจกต์
 
-1. Clone repository
+### 1. Clone & Setup
 
 ```bash
 git clone https://github.com/ssenxl/Planning-logic.git
+cd Planning-logic
+pip install -r requirements.txt
 ```
 
-2. รันไฟล์หลัก
+### 2. เตรียมข้อมูล
+
+```bash
+# เตรียม Orders (กรอง Order Type + MC GROUP)
+python Order.py
+
+# คำนวณเครื่องว่าง + Booking summary
+python AVA_MC.py
+```
+
+### 3. รันแผนการผลิต
 
 ```bash
 python Planning.py
 ```
+
+**Output:**
+- `data_plan/weekly_production_plan.xlsx` — แผนใหม่ (PLAN + REMAINING_JOBS + PIVOT_PLAN)
+- `data_plan/weekly_production_plan_combined_filtered.xlsx` — รวม OLD+NEW เปรียบเทียบ
+
+### 4. ML Prediction (ทำนาย MC_GROUP)
+
+```bash
+# Train model
+python Train.py
+
+# Predict (CLI)
+python predict.py
+```
+
+---
+
+## Output Columns (PLAN sheet)
+
+| Column | คำอธิบาย |
+|---|---|
+| `ITEM_CODE` | รหัสสินค้า |
+| `SC_SO_NO` | เลข SC/SO |
+| `MC_GROUP` | กลุ่มเครื่องจักร |
+| `MC_GUAGE` | Gauge ของเครื่อง |
+| `PLAN_WEEK` | สัปดาห์ที่วางแผนผลิต |
+| `PRODUCE_QTY` | ปริมาณผลิต (units) |
+| `REQUIRED_MC` | จำนวนเครื่องที่ต้องใช้ |
+| `CARRYOVER_MC` | เครื่อง carry-over จาก week ก่อน |
+| `NEW_MC` | เครื่อง setup ใหม่ |
+| `SETUP_DAYS` | วัน setup จริง |
+| `DAILY_CAPACITY` | กำลังผลิตต่อวันต่อเครื่อง (CAP ทอ) |
+| `TARGET_KNIT` | สัปดาห์เป้าหมายทอเสร็จ (FG Week - 3) |
+| `TARGET_STATUS` | ทัน / ไม่ทัน ตาม TARGET_KNIT |
+| `PLAN_SOURCE` | NEW = แผนใหม่, OLD = booking เก่า |
+
+---
+
+## Dependencies
+
+```
+pandas
+numpy
+openpyxl
+xlrd==1.2.0
+scikit-learn
+joblib
+```
+
+Optional: `pywin32` (สำหรับสร้าง Excel PivotTable บน Windows)
