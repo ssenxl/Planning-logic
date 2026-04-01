@@ -106,14 +106,8 @@ MULTIPLY_RULES = {
 # =========================
 # MC กลุ่มที่ห้าม *20/24 อย่างชัดเจน (PHET DOUBLE + รายการพิเศษ)
 # =========================
-NO_MULTIPLY_RULES = {
-    ("RAOO", "16"),
-    ("IRMT", "28"),
-    ("IRMT", "24"),
-    ("FA", "18"),
-    ("FA", "20"),
-    ("SJT", "28"),
-}
+# ทุก MC group ต้องคูณ 20/24 หมดแล้ว
+NO_MULTIPLY_RULES = set()  # ไม่มีข้อยกเว้น
 
 # =========================
 # WORKING DAY = 6
@@ -303,15 +297,11 @@ df["CAP ทอ"] = pd.to_numeric(df["CAP ทอ"], errors="coerce")
 df["KP_WEIGHT"] = pd.to_numeric(df["KP_WEIGHT"], errors="coerce")
 
 # =========================
-# APPLY 20/24 (ใช้เฉพาะคำนวณ MC_USE — ไม่เขียนทับ CAP จาก booking)
+# APPLY 20/24 (ทุก MC group ต้องคูณ 20/24 หมดแล้ว)
 # =========================
 df["_CAP_ADJ"] = df["CAP ทอ"].copy()
-mask_2024 = df.apply(
-    lambda r: (r["MC_GROUP"], r["GUAGE"]) in MULTIPLY_RULES
-    and (r["MC_GROUP"], r["GUAGE"]) not in NO_MULTIPLY_RULES,
-    axis=1,
-)
-df.loc[mask_2024, "_CAP_ADJ"] *= 20 / 24
+# ทุก MC group ต้องคูณ 20/24 ไม่มีข้อยกเว้น
+df["_CAP_ADJ"] *= 20 / 24
 
 # =========================
 # GROUP ITEM
@@ -357,9 +347,7 @@ if "YARN-USED" in df.columns:
 # =========================
 # WORKING DAY
 # =========================
-df["WORKING_DAY"] = df.apply(
-    lambda r: 6 if (r["MC_GROUP"], r["GUAGE"]) in WORKING_DAY_6 else 7, axis=1
-)
+df["WORKING_DAY"] = df["WEEK"].apply(lambda w: 8 if int(w) == 17 else 6)  # week 17 = 8 วัน, อื่นๆ = 6 วัน
 
 # =========================
 # MC USE (ใช้ _CAP_ADJ ที่ adjusted แล้ว)
