@@ -7,3 +7,4 @@ joblib
 fastapi
 uvicorn[standard]
 oracledb
+Office365-REST-Python-Client
