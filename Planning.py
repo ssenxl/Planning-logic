@@ -1,5 +1,6 @@
-import pandas as pd
+﻿import pandas as pd
 import io
+import math
 import re
 import sys
 from datetime import date
@@ -27,13 +28,13 @@ ORDER_FILE = DATA_PLAN_DIR / "order_ready.xlsx"
 MC_REMAIN_FILE = DATA_PLAN_DIR / "booking_final_ready25.xlsx"
 ITEM_CAP_FILE = CAP_DIR / "item_cap2025.xlsx"
 ITEMCORE_FILE = ITEMCORE_DIR / "Itemcore.xlsx"
-CALENDAR_FILE = BASE_DIR / "Calendar.xlsx"
+CALENDAR_FILE = "https://nanyangtextilegroup.sharepoint.com/:x:/s/SCM_Cloud/IQCXP4jH73zhQozDNvw1XF8OAY5m4p-UFv35Tcpza6v8mJo?e=43ffCc"
 BOOKING_DIR = BASE_DIR / "Booking"
 OUTPUT_FILE = DATA_PLAN_DIR / "weekly_production_plan2.xlsx"
 SETUP_DAYS = 3
-SETUP_GAP_WEEK = 2
+SETUP_GAP_WEEK = 3
 # Week ที่ไม่ต้องการวางแผน (เช่น สัปดาห์หยุด/ปิดโรงงาน)
-SKIP_WEEKS = {16}
+SKIP_WEEKS = {}
 # Allow carryover even when SC/SO changes (user option)
 ALLOW_CARRYOVER_ACROSS_SO = False
 # อนุญาต carry เฉพาะ FG ถัดไปของ item เดียวกันภายในสัปดาห์เดียวกัน
@@ -49,6 +50,10 @@ USE_PROGRESSIVE_REDUCTION = False
 # MAX_SETUP_MC แบบ static ถูกยกเลิก → ใช้ _dynamic_setup_limit() แทน (dynamic ตาม urgency RDD)
 # จำนวนเครื่อง *ใหม่* (new setup) สูงสุดต่อ item/week — carry-over ไม่นับ
 MAX_NEW_SETUP_MC = 2
+# Objective: ใช้เครื่องให้มากที่สุด โดยยังจบตรง TARGET_KNIT
+PREFER_FULL_MACHINE_TO_TARGET = True
+# fallback: ถ้าจบตรง TARGET ไม่ได้ อนุญาต TARGET-1
+ALLOW_TARGET_MINUS_ONE = False
 # Load Balancing Configuration
 USE_LOAD_BALANCING = True  # เปิดใช้งาน Load Balancing สำหรับการกระจายงาน
 LOAD_BALANCING_WEIGHT = 0.1  # น้ำหนักสำหรับการพิจารณาเครื่องว่างใน load balancing score
@@ -108,11 +113,19 @@ column_mapping = {
     'PENDING_PLAN': 'Pending Plan',
     'FGWEEK': 'FG Week',
     'CUSTOMER_NAME': 'Customer',
-    'ORDER_TYPE': 'Orders Type'
+    'ORDER_TYPE': 'Orders Type',
+    'NAY_COLOR': 'NAY_COLOR',
+    'COLOR_DESC': 'COLOR_DESC'
 }
 orders = orders.rename(columns=column_mapping)
 summary_mc = pd.read_excel(MC_REMAIN_FILE, sheet_name="SUMMARY_MC_REMAIN")
 detail_mc = pd.read_excel(MC_REMAIN_FILE, sheet_name="DETAIL")  # โหลด DETAIL
+fd6_check = detail_mc[detail_mc["ITEM_CODE"].astype(str).str.upper().str.strip() == "FD6GNTLG27/58A0"]
+if not fd6_check.empty:
+    print(f"[DEBUG] FD6GNTLG27/58A0 found in detail_mc: {len(fd6_check)} rows")
+    print(fd6_check[["ITEM_CODE", "WEEK", "MC_GROUP", "GUAGE", "MC_USE_CEIL"]])
+else:
+    print(f"[DEBUG] FD6GNTLG27/58A0 NOT found in detail_mc")
 item_cap_data = pd.DataFrame(columns=["ITEM_CODE", "MC_GROUP", "CAP ทอ", "REVOLUTION/WEIGHT", "GUAGE"])
 master_mc = pd.read_excel(BASE_DIR / "data" / "MC" / "Master_MC_5.xlsx")
 # โหลด Itemcore สำหรับเช็ค RTS items
@@ -137,6 +150,28 @@ if not itemcore_df.empty:
         customer = str(row.get('Customer', '')).strip()
         if item:
             itemcore_lookup[item] = customer
+
+# Stock Data for Core Item trigger week calculation
+_FILTERED_STOCK_FILE = DATA_PLAN_DIR / "filtered_stock_data.xlsx"
+stock_inventory_lookup = {}
+try:
+    _fstock_df = pd.read_excel(_FILTERED_STOCK_FILE)
+    _fstock_df.columns = _fstock_df.columns.str.strip()
+    for _, _frow in _fstock_df.iterrows():
+        _fitem = str(_frow.get('ITEM_CODE', '')).strip().upper()
+        _finv = float(_frow.get('Inventory', 0) or 0)
+        _fsm = float(_frow.get('STOCK_MIN', 0) or 0)
+        _fs5 = float(_frow.get('Stock 5 Week', 0) or 0)
+        _fteam = str(_frow.get('TEAM_NAME', '')).strip().upper()
+        if _fitem and _fsm > 0:
+            if _fitem in stock_inventory_lookup:
+                _existing_team = stock_inventory_lookup[_fitem].get('_team', '')
+                if _existing_team != 'RTS' and _fteam == 'RTS':
+                    continue
+            stock_inventory_lookup[_fitem] = {'Inventory': _finv, 'STOCK_MIN': _fsm, 'Stock_5_Week': _fs5, '_team': _fteam}
+    print(f"Stock Data: {len(stock_inventory_lookup)} items")
+except Exception as _e_stock:
+    print(f"Cannot load Stock Data: {_e_stock}")
 # Gauge lookup: (ITEM_CODE, MC_GROUP) → GUAGE string
 # ใช้เป็น fallback เมื่อ gauge ไม่ได้มาจาก data source โดยตรง
 _item_mc_to_gauge = {}
@@ -176,6 +211,41 @@ for _, _r in item_cap_data.iterrows():
     _gs = _normalize_gauge(_gg)
     if _ic and _mc and _gs and _gs.lower() != "nan":
         _item_mc_to_gauge[(_ic, _mc)] = _gs
+
+# =========================
+# ITEM SPECIAL: per-(Item, MC, Guage) override for Working day and Working hour
+# Source: C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\Item Special.xlsx
+# =========================
+_ITEM_SPECIAL_FILE = Path(r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\Item Special.xlsx")
+ITEM_SPECIAL_LOOKUP: dict = {}  # key=(item_upper, mc_upper, gauge_str), value=(working_day, working_hour)
+try:
+    _is_df = pd.read_excel(_ITEM_SPECIAL_FILE)
+    _is_df.columns = _is_df.columns.str.strip()
+    for _, _is_row in _is_df.iterrows():
+        _is_mc = str(_is_row.get("MC", "")).strip().upper()
+        _is_guage = _normalize_gauge(_is_row.get("Guage", ""))
+        _is_item = str(_is_row.get("Item", "")).strip().upper()
+        _is_wd = int(_is_row.get("Working day", 6) or 6)
+        _is_wh = int(_is_row.get("Working hour", 20) or 20)
+        if _is_item and _is_mc:
+            ITEM_SPECIAL_LOOKUP[(_is_item, _is_mc, _is_guage)] = (_is_wd, _is_wh)
+    print(f"Item Special: {len(ITEM_SPECIAL_LOOKUP)} entries loaded from {_ITEM_SPECIAL_FILE.name}")
+except Exception as _e_is:
+    print(f"Cannot load Item Special ({_e_is}) -- using MasterMC defaults")
+    ITEM_SPECIAL_LOOKUP = {}
+
+
+def get_item_special(item_code, mc_group, gauge=None):
+    """Return (working_day, working_hour) from Item Special for (item, MC, gauge), or None if not found."""
+    if not item_code or not mc_group:
+        return None
+    item_u = str(item_code).strip().upper()
+    mc_u = str(mc_group).strip().upper()
+    g_u = _normalize_gauge(gauge)
+    result = ITEM_SPECIAL_LOOKUP.get((item_u, mc_u, g_u))
+    if result is None and g_u:
+        result = ITEM_SPECIAL_LOOKUP.get((item_u, mc_u, ""))
+    return result
 
 
 def _ck(item, mc_group, gauge=None):
@@ -371,40 +441,12 @@ def get_yarn_lt_earliest_week(item_code: str, date_in=None):
 
 def get_yarn_lt_min_start_idx(item_code: str, date_in=None) -> int:
     """
-    คำนวณ minimum start index (row index ใน calendar_week) โดยพิจารณา Yarn LT
-    สูตร: DATE_IN + POIN_LT days → ใช้ Thu-Wed boundary หา week ที่ yarn มาถึง
-             → วางแผนได้ Thu-Wed week ถัดไป (เริ่มวันศุกร์แรกหลังพฤหัสที่ yarn มาถึง)
-    ถ้าไม่มี DATE_IN จะใช้ TODAY แทน
-    แต่ต้องไม่เร็วกว่า TODAY_IDX + 2 weeks เสมอ
+    คำนวณ minimum start index (row index ใน calendar_week) 
+    🔧 DISABLED: ไม่พิจารณา Yarn LT แล้ว - ใช้ TODAY+2 weeks เสมอ
     """
     min_two_weeks_idx = TODAY_IDX + 2
-    lt_days = get_yarn_lt_days(item_code)
-    if lt_days <= 0:
-        return min_two_weeks_idx
-    base_date = pd.to_datetime(date_in, errors="coerce") if date_in is not None else pd.NaT
-    if pd.isna(base_date):
-        base_date = TODAY
-    earliest_date = base_date + pd.Timedelta(days=lt_days)
-    # --- Thu-Wed week boundary (calendar plan ใช้ Fri-Thu) ---
-    # Thu-Wed week: Thu=0, Fri=1, Sat=2, Sun=3, Mon=4, Tue=5, Wed=6
-    # day_in_thu_wed=0 คือวันพฤหัส = เริ่ม week ใหม่ → ต้องวางแผนอีก 7 วัน
-    # days_to_next_thu = จำนวนวันถึงพฤหัสถัดไป (เริ่ม Thu-Wed week ถัดไป)
-    # +1 อีกวัน = ศุกร์ที่เริ่มต้น Fri-Thu week ใน calendar
-    wd = earliest_date.weekday()             # 0=Mon … 3=Thu … 6=Sun
-    day_in_thu_wed = (wd - 3) % 7           # Thu=0, Fri=1, …, Wed=6
-    days_to_next_thu = 7 - day_in_thu_wed  # วันพฤหัสที่เริ่ม Thu-Wed week ถัดไป
-    plan_start_date = earliest_date + pd.Timedelta(days=days_to_next_thu + 1)  # Thu+1 = Fri
-    lt_plan_week = get_week_from_date(plan_start_date)
-    if lt_plan_week is None:
-        return min_two_weeks_idx
-    lt_week_idx = week_index(lt_plan_week)
-    if lt_week_idx is None:
-        return min_two_weeks_idx
-    result_idx = max(int(lt_week_idx), min_two_weeks_idx)
-    print(f"[YARN LT] {item_code}: base={base_date.date()} POIN LT={lt_days} วัน"
-          f" → yarn arrival={earliest_date.date()} (day_in_thu_wed={day_in_thu_wed})"
-          f" → plan starts {plan_start_date.date()} (week {lt_plan_week} idx {result_idx}) → min_start_idx={result_idx}")
-    return result_idx
+    print(f"[YARN LT] {item_code}: DISABLED - using TODAY+2 weeks (idx {min_two_weeks_idx})")
+    return min_two_weeks_idx
 
 
 def get_setup_days_for_item(item_code: str, material_content: str = None) -> int:
@@ -704,6 +746,46 @@ def get_load_balanced_machine(
         next_week_idx = current_week_num + 1
         next_week_str = f"W{next_week_idx:02d}"
         next_week_machines_planned = 0
+        next_week_actual_remain = 0
+        order_will_continue = False
+        next_week_continuity_limit = 0
+        try:
+            next_week_actual_remain = get_actual_mc_remain(mc_group, next_week_idx, gauge=item_gauge)
+        except Exception:
+            next_week_actual_remain = 0
+        print(f"   - {next_week_str} machine remain จริง = {next_week_actual_remain}")
+
+        _next_week_prog_key = None
+        if progressive_plan and next_week_str in progressive_plan:
+            _next_week_prog_key = next_week_str
+        elif progressive_plan and str(next_week_idx) in progressive_plan:
+            _next_week_prog_key = str(next_week_idx)
+        if _next_week_prog_key is not None:
+            order_will_continue = True
+            next_week_machines_planned = progressive_plan[_next_week_prog_key]
+            try:
+                next_week_continuity_limit = int(next_week_machines_planned)
+            except (ValueError, TypeError):
+                next_week_continuity_limit = 0
+            print(f"   - {next_week_str} order นี้จะใช้ต่อ {next_week_machines_planned} เครื่อง (จาก progressive_plan:{_next_week_prog_key})")
+        else:
+            next_week_machines_planned = 0
+            for plan_entry in plans:
+                plan_week_value = plan_entry.get('PLAN_WEEK', '')
+                plan_mc_group = plan_entry.get('MC_GROUP', '')
+
+                try:
+                    plan_week_str = str(plan_week_value)
+                    if plan_week_str.startswith('W'):
+                        plan_week_num = int(plan_week_str[1:])
+                    else:
+                        plan_week_num = int(plan_week_value)
+
+                    if plan_mc_group == mc_group and plan_week_num == next_week_idx:
+                        next_week_machines_planned += plan_entry.get('ACTUAL_MC', 0)
+                except (ValueError, TypeError):
+                    continue
+            print(f"   - {next_week_str} จะใช้ {next_week_machines_planned} เครื่อง (จาก plans)")
         
         if week_gap > 1:
             print(f"   ⚠️ Previous week {previous_week_str} ห่างจาก current week {week_gap} สัปดาห์ → ถือว่าเป็น first time use ใหม่")
@@ -716,34 +798,6 @@ def get_load_balanced_machine(
         else:
             # week_gap == 1: item ใช้งานต่อเนื่อง → เพิ่มได้สูงสุด +2 จาก item's own previous
             print(f"   - Previous week {previous_week_str}: item ใช้ {previous_machines} เครื่อง → max +2 = {previous_machines + 2}")
-            
-            # วิธีที่ 1: ดูจาก progressive_plan (ถ้ามี) - รู้ว่า order นี้จะใช้เครื่องต่อใน next week หรือไม่
-            order_will_continue = False
-            if progressive_plan and next_week_str in progressive_plan:
-                order_will_continue = True
-                next_week_machines_planned = progressive_plan[next_week_str]
-                print(f"   - {next_week_str} order นี้จะใช้ต่อ {next_week_machines_planned} เครื่อง (จาก progressive_plan)")
-            else:
-                # วิธีที่ 2: ดูจาก plans ที่ถูก append แล้ว (สำหรับ orders อื่นใน MC_GROUP เดียวกัน)
-                next_week_machines_planned = 0
-                for plan_entry in plans:
-                    plan_week_value = plan_entry.get('PLAN_WEEK', '')
-                    plan_mc_group = plan_entry.get('MC_GROUP', '')
-                    
-                    try:
-                        plan_week_str = str(plan_week_value)
-                        if plan_week_str.startswith('W'):
-                            plan_week_num = int(plan_week_str[1:])
-                        else:
-                            plan_week_num = int(plan_week_value)
-                        
-                        if plan_mc_group == mc_group and plan_week_num == next_week_idx:
-                            # รวม ACTUAL_MC ของทุก items (ไม่ใช่ max) เพราะแต่ละ item ใช้เครื่องแยกกัน
-                            next_week_machines_planned += plan_entry.get('ACTUAL_MC', 0)
-                    except (ValueError, TypeError):
-                        continue
-                
-                print(f"   - {next_week_str} จะใช้ {next_week_machines_planned} เครื่อง (จาก plans)")
             
             # ลองเพิ่มทีละ 1 เครื่อง: ตรวจสอบว่าควรเพิ่ม +1 หรือ +2
             max_allowed_machines = previous_machines  # เริ่มต้นที่จำนวนเดิม
@@ -760,6 +814,15 @@ def get_load_balanced_machine(
                 for increment in [1, 2]:
                     test_machines = max_allowed_machines + increment
                     if test_machines <= available_machines:
+                        if next_week_actual_remain < test_machines:
+                            print(f"   ❌ Hard gate (W+1): {next_week_str} machine remain {next_week_actual_remain} < {test_machines} เครื่อง → ไม่อนุมัติเพิ่มใน W{current_week_num}")
+                            break
+                        if order_will_continue and next_week_machines_planned < test_machines:
+                            print(f"   ❌ Hard gate (W+1): {next_week_str} ต่อเนื่องได้แค่ {next_week_machines_planned} < {test_machines} เครื่อง → ไม่อนุมัติเพิ่มใน W{current_week_num}")
+                            break
+                        if next_week_continuity_limit > 0 and next_week_continuity_limit < test_machines:
+                            print(f"   ❌ Hard gate (W+1): {next_week_str} continuity limit {next_week_continuity_limit} < {test_machines} เครื่อง → ไม่อนุมัติเพิ่มใน W{current_week_num}")
+                            break
                         weeks_needed = qty_left / (test_machines * daily_capacity * 5) if test_machines > 0 else 999
                         if weeks_needed >= 2:  
                             print(f"   ✅ อนุมัติ (carryover): Order เหลือ {qty_left:.0f} units (~{weeks_needed:.1f} weeks ที่ {test_machines} เครื่อง) → เพิ่มเป็น {test_machines} เครื่อง")
@@ -774,6 +837,15 @@ def get_load_balanced_machine(
             test_machines = max_allowed_machines + increment
             if test_machines > available_machines:
                 break  # เกินเครื่องที่มี
+            if next_week_actual_remain < test_machines:
+                print(f"   ❌ Hard gate (W+1): {next_week_str} machine remain {next_week_actual_remain} < {test_machines} เครื่อง → ไม่อนุมัติเพิ่มใน W{current_week_num}")
+                break
+            if order_will_continue and next_week_machines_planned < test_machines:
+                print(f"   ❌ Hard gate (W+1): {next_week_str} ต่อเนื่องได้แค่ {next_week_machines_planned} < {test_machines} เครื่อง → ไม่อนุมัติเพิ่มใน W{current_week_num}")
+                break
+            if next_week_continuity_limit > 0 and next_week_continuity_limit < test_machines:
+                print(f"   ❌ Hard gate (W+1): {next_week_str} continuity limit {next_week_continuity_limit} < {test_machines} เครื่อง → ไม่อนุมัติเพิ่มใน W{current_week_num}")
+                break
             
             print(f"   🔍 ลองเพิ่มเป็น {test_machines} เครื่อง (+{increment}): {next_week_str} ใช้ {next_week_machines_planned} เครื่อง")
             
@@ -841,6 +913,14 @@ def get_load_balanced_machine(
     else:
         baseline = carryover_base_machines
         first_time_cap = min(baseline + 2, available_machines)
+        next_week_idx = current_week_num + 1
+        try:
+            next_week_actual_remain = get_actual_mc_remain(mc_group, next_week_idx, gauge=item_gauge)
+        except Exception:
+            next_week_actual_remain = 0
+        if first_time_cap > next_week_actual_remain:
+            print(f"   ❌ Hard gate (W+1): W{next_week_idx:02d} machine remain {next_week_actual_remain} < {first_time_cap} เครื่อง → จำกัดเครื่องสัปดาห์นี้")
+            first_time_cap = next_week_actual_remain
         print(f"📝 First time using {mc_group} - baseline {baseline} + setup <= 2 → max {first_time_cap} machines")
         # สัปดาห์แรกของ item นี้: อนุญาต setup เพิ่มได้สูงสุด +2 จากเครื่องที่วิ่งจริง
         max_allowed_machines = first_time_cap
@@ -1456,17 +1536,39 @@ def get_revolution_weight(item_code, mc_group, plan_week):
     return None
 
 
-def get_working_days_by_factory(mc_group, available_machines_count, week=None):
+def get_working_days_by_factory(mc_group, available_machines_count, week=None, item_code=None, gauge=None):
     """คืนค่าจำนวนวันทำงานของโรงงานตาม MC_GROUP
+    ถ้า item อยู่ใน Item Special → ใช้ Working day จาก Item Special แทน MasterMC
     เงื่อนไขพิเศษ Week 17: ทุก group → 8 วัน
     """
-    # เงื่อนไขพิเศษ Week 17 - ทุก group ทำงาน 8 วัน
+    # เงื่อนไขพิเศษ Week 17 - ทุก group ทำงาน 8 วัน (override ทุกอย่าง)
     if week == 17:
         return 8
 
-    # หาวันทำงานจาก FACTORY_WORKING_DAYS_MAP
-    working_days = FACTORY_WORKING_DAYS_MAP.get(mc_group, 6)  # default = 6 วัน (วันศุกร์หยุดเสมอ)
+    # Item Special override: ถ้า item+MC+Guage อยู่ใน Item Special → ใช้ Working day จากนั้น
+    if item_code:
+        _is = get_item_special(item_code, mc_group, gauge)
+        if _is is not None:
+            return _is[0]  # (working_day, working_hour) → คืน working_day
+
+    # หาวันทำงานจาก FACTORY_WORKING_DAYS_MAP (MasterMC)
+    working_days = FACTORY_WORKING_DAYS_MAP.get(mc_group, 6)  # default = 6 วัน
     return working_days
+
+
+def adjust_daily_cap_for_item_special(daily_cap, item_code, mc_group, gauge=None, base_working_hour=20):
+    """ปรับ daily_cap ตาม Working hour จาก Item Special
+    ถ้า item อยู่ใน Item Special และ Working hour ต่างจาก base_working_hour (ปกติ 20)
+    → scale daily_cap = daily_cap * (item_special_wh / base_working_hour)
+    """
+    if not item_code or not daily_cap:
+        return daily_cap
+    _is = get_item_special(item_code, mc_group, gauge)
+    if _is is not None:
+        _wh = _is[1]  # working_hour
+        if _wh != base_working_hour and base_working_hour > 0:
+            return daily_cap * (_wh / base_working_hour)
+    return daily_cap
 
 
 def _dynamic_setup_limit(
@@ -1565,9 +1667,8 @@ WEEK_DAYS_OVERRIDE = {
 
 def get_working_days_in_week(week):
     """Get working days for a specific week from calendar (กรองวันหยุดออก)
-    วันศุกร์เป็นวันหยุดประจำสัปดาห์เสมอ → กรองออกทุกกรณี
-    ถ้ามีวันหยุดในปฏิทินตรงกับวันศุกร์ก็ไม่ต้องหักเพิ่ม (หักแล้ว)
-    แต่ถ้าหยุดวันอื่น จะหักออกตามปกติ
+    นับวันทำงานตามปฏิทินจริง (is_working_day == 1) ทุกวัน รวมวันศุกร์ด้วย
+    ถ้า calendar บอก status=1 (ทำงาน) จะนับเป็นวันทำงานไม่ว่าจะเป็นวันใด
     """
     # ตรวจสอบ override ก่อน
     if week in WEEK_DAYS_OVERRIDE:
@@ -1580,7 +1681,6 @@ def get_working_days_in_week(week):
                 (calendar["DATE"] >= week_start)
                 & (calendar["DATE"] <= week_end)
                 & (calendar["is_working_day"] == 1)
-                & (calendar["DATE"].dt.dayofweek != 4)  # 4 = Friday (วันศุกร์หยุดเสมอ)
             )
             base_days = calendar.loc[mask, "DATE"].tolist()
         else:
@@ -1597,12 +1697,10 @@ def get_working_days_in_week(week):
     week_start = week_data.iloc[0]["WEEK_START"]
     week_end = week_data.iloc[0]["WEEK_END"]
     # กรองเฉพาะวันที่ is_working_day == 1 จาก daily calendar
-    # และกรองวันศุกร์ออกเสมอ (วันศุกร์หยุดประจำสัปดาห์)
     mask = (
         (calendar["DATE"] >= week_start)
         & (calendar["DATE"] <= week_end)
         & (calendar["is_working_day"] == 1)
-        & (calendar["DATE"].dt.dayofweek != 4)  # 4 = Friday (วันศุกร์หยุดเสมอ)
     )
     working_days = calendar.loc[mask, "DATE"].tolist()
     return working_days
@@ -1627,10 +1725,19 @@ def get_actual_mc_remain(mc_group, week, gauge):
         & (summary_mc["GUAGE"].apply(_normalize_gauge) == gauge_str)
     ]
     if mc_rows.empty:
-        return 0
+        # Fallback: ถ้า summary_mc ไม่มีข้อมูลใน week นี้ (ไม่มี booking)
+        # → ใช้ Total MC จาก master_mc เป็น base_remain (เครื่องว่างทั้งหมด)
+        _mm_rows = master_mc[
+            (master_mc["MC"].astype(str).str.strip().str.upper() == mc_group)
+            & (master_mc["Guage"].apply(_normalize_gauge) == gauge_str)
+        ]
+        if _mm_rows.empty:
+            return 0
+        base_remain = int(_mm_rows.iloc[0]["Total MC"])
+    else:
+        # TOTAL_MC_REMAIN = TOTAL_MC - MC_USE_CEIL (หักการจองเก่าออกแล้ว)
+        base_remain = mc_rows[mc_rows["TOTAL_MC_REMAIN"] > 0]["TOTAL_MC_REMAIN"].sum()
 
-    # TOTAL_MC_REMAIN = TOTAL_MC - MC_USE_CEIL (หักการจองเก่าออกแล้ว)
-    base_remain = mc_rows[mc_rows["TOTAL_MC_REMAIN"] > 0]["TOTAL_MC_REMAIN"].sum()
     # key = (mc_group, gauge_str) เพื่อแยก GUAGE ไม่ให้หักข้าม gauge
     _gk = (mc_group, gauge_str)
     # ถ้า mc_group อยู่ใน shared pool ให้หัก usage ของทุก member ในกลุ่มด้วย
@@ -1642,6 +1749,53 @@ def get_actual_mc_remain(mc_group, week, gauge):
     else:
         already_used = weekly_new_plan_usage.get(week, {}).get(_gk, 0)
     return max(0, base_remain - already_used)
+
+
+def _carry_blocked_by_gap(item_code, mc_key, mc_group, item_gauge, prev_week_idx, current_week_idx):
+    """
+    ตรวจสอบว่า carryover ถูกบล็อคโดย intermediate week ที่ remaining = 0 จาก item อื่น
+    Rule:
+      - ถ้า intermediate week (ระหว่าง prev_week_idx+1 ถึง current_week_idx-1) มี remaining = 0
+        AND item นี้เองไม่ได้ผลิตใน week นั้น → ตัด carry (return True)
+      - ถ้า item นี้เองผลิตอยู่ (remaining = 0 เพราะ item ใช้เครื่องหมด) → ไม่บล็อค
+    Returns True ถ้า carry ไม่ได้ (blocked by other item)
+    """
+    if prev_week_idx is None or current_week_idx is None:
+        return False
+    if current_week_idx - prev_week_idx <= 1:
+        return False  # ติดกัน หรือ same week → ไม่มี intermediate weeks
+
+    for w_idx in range(prev_week_idx + 1, current_week_idx):
+        if w_idx >= len(calendar_week):
+            break
+        w_num = int(calendar_week.iloc[w_idx]["WEEK"])
+        remaining = get_actual_mc_remain(mc_group, w_num, item_gauge)
+        if remaining > 0:
+            continue  # ยังมีเครื่องว่าง → ไม่บล็อค week นี้
+
+        # remaining = 0 → ตรวจว่า item นี้เองกำลังผลิตอยู่ใน week นี้ไหม
+        item_was_producing = False
+        # เช็คจาก booking data
+        if booking_mc_by_week.get(mc_key, {}).get(w_idx, 0) > 0:
+            item_was_producing = True
+        if not item_was_producing and mc_key in booking_active_week_set:
+            if w_idx in booking_active_week_set[mc_key]:
+                item_was_producing = True
+        # เช็คจาก new plans ที่วางไปแล้ว
+        if not item_was_producing:
+            for pe in plans:
+                if pe.get("ITEM_CODE") == item_code and pe.get("MC_GROUP") == mc_group:
+                    pe_w_idx = week_index(pe.get("PLAN_WEEK"))
+                    if pe_w_idx == w_idx:
+                        item_was_producing = True
+                        break
+
+        if not item_was_producing:
+            prev_w_num = int(calendar_week.iloc[prev_week_idx]["WEEK"]) if prev_week_idx < len(calendar_week) else "?"
+            print(f"[CARRY BLOCKED GAP] {item_code} W{w_num}: remaining=0 จาก item อื่น → ตัด carry จาก W{prev_w_num} (machines ถูก item อื่นยึดครบ)")
+            return True
+
+    return False
 
 
 def get_next_fg_orders_for_item(item_code, current_sc_so, current_fg_week, orders_df):
@@ -1769,7 +1923,7 @@ def calculate_progressive_reduction(
     for week in weeks_until_target:
         actual_remain = get_actual_mc_remain(mc_group, week, gauge=item_gauge)
         cal_wd = len(get_working_days_in_week(week))
-        fac_wd = get_working_days_by_factory(mc_group, 1, week=week)
+        fac_wd = get_working_days_by_factory(mc_group, 1, week=week, item_code=item_code, gauge=item_gauge)
         actual_wd = min(cal_wd, fac_wd)
         week_info.append({
             'week': week,
@@ -1800,14 +1954,16 @@ def calculate_progressive_reduction(
     if min_machines is None:
         return None  # ไม่ทันแม้ใช้เครื่องเต็มที่
 
-    # Step 2: กระจายเครื่องให้เสร็จพอดี target week (ไม่เร็วเกินไป)
-    # ใช้ min_machines แต่กระจายให้ครบทุก week จนถึง target
+    # Step 2: Carryover-first strategy - ใช้เครื่องเต็มจำนวนจนกว่า qty จะเหลือน้อย
+    # ลดเครื่องเฉพาะเมื่อ qty ที่เหลือน้อยกว่า capacity ของ 1 สัปดาห์
     result = []
     qty_left = order_qty
     num_weeks = len(week_info)
+    prev_week_mc = min_machines  # เริ่มต้นด้วย min_machines
+    
     for i, w in enumerate(week_info):
         if qty_left <= 0:
-            # เสร็จแล้ว แต่ยังมี week เหลือ → ไม่ผลิต (เพื่อให้เสร็จพอดี target)
+            # เสร็จแล้ว แต่ยังมี week เหลือ → ไม่ผลิต
             result.append((w['week'], 0))
             continue
 
@@ -1816,24 +1972,36 @@ def calculate_progressive_reduction(
             result.append((w['week'], 0))
             continue
 
-        # คำนวณเครื่องที่ต้องการให้ผลิตกระจายไปจนถึง target week
+        # Strategy: ใช้เครื่องเต็มจำนวน (min_machines) จนกว่า qty จะเหลือน้อย
+        # ลดเครื่องเฉพาะเมื่อ qty ที่เหลือผลิตไม่เต็ม capacity ของเครื่องทั้งหมด
         weeks_remaining = num_weeks - i
-        if weeks_remaining == 1:
-            # Week สุดท้าย: ผลิตให้หมดพอดี
+        
+        # คำนวณ capacity ต่อสัปดาห์ของเครื่องทั้งหมด
+        full_week_capacity = min_machines * prod_days * daily_cap
+        if rev_weight and rev_weight > 0:
+            full_week_capacity = (full_week_capacity // rev_weight) * rev_weight
+        
+        if qty_left >= full_week_capacity:
+            # qty เหลือมาก → ใช้เครื่องเต็มจำนวน
+            use_mc = min(min_machines, w['avail'])
+        else:
+            # qty เหลือน้อย → คำนวณเครื่องที่ต้องการจริงๆ
             needed_mc = max(1, int(qty_left / (prod_days * daily_cap)) + 1)
             use_mc = min(needed_mc, w['avail'], min_machines)
-        else:
-            # Week ก่อนหน้า: ผลิตให้พอดีกับสัดส่วน (กระจายเท่าๆ กัน)
-            avg_qty_per_week = qty_left / weeks_remaining
-            needed_mc = max(1, int(avg_qty_per_week / (prod_days * daily_cap)))
-            # ไม่เกิน min_machines และไม่เกิน availability
-            use_mc = min(needed_mc, w['avail'], min_machines)
+            
+            # Gradual Reduction: ลดได้สูงสุด 2 เครื่องต่อสัปดาห์
+            if i > 0 and use_mc < prev_week_mc:
+                max_reduction = max(1, prev_week_mc - 2)
+                if use_mc < max_reduction:
+                    use_mc = max_reduction
+        
         # คำนวณ production จริง
         prod = use_mc * prod_days * daily_cap
         if rev_weight and rev_weight > 0:
             prod = (prod // rev_weight) * rev_weight
         result.append((w['week'], use_mc))
         qty_left -= prod
+        prev_week_mc = use_mc  # บันทึกเครื่องของ week นี้
     # ถ้ายังเหลือ qty หลังจาก loop ครบ → ไม่ทัน (แต่ไม่น่าเกิดเพราะ min_machines ทันแล้ว)
     if qty_left > 0:
         return None
@@ -1902,6 +2070,7 @@ def calculate_required_machines(
         # ใช้ความจุตาม logic ใหม่สำหรับ MC_GROUP นี้
         item_gauge = machine_row["GUAGE"] if "GUAGE" in machine_row else None
         daily_cap = _get_capacity_for_mc_group(item_code, mc_group, item_gauge)
+        daily_cap = adjust_daily_cap_for_item_special(daily_cap, item_code, mc_group, item_gauge)
         if daily_cap <= 0:
             continue  # ข้ามถ้าไม่มีความจุ
         # เก็บจำนวนเครื่องว่างจริงของแต่ละ week
@@ -1934,7 +2103,7 @@ def calculate_required_machines(
             _prev_sc = last_sub_color.get(key, "")
             if _prev_sc and _prev_sc != sub_color:
                 _yd_color_setup_days = 1
-        factory_wd = get_working_days_by_factory(mc_group, 1, week=start_week)
+        factory_wd = get_working_days_by_factory(mc_group, 1, week=start_week, item_code=item_code, gauge=item_gauge)
         # หาจำนวนเครื่องสูงสุดที่สามารถลองได้ (จาก week ที่มีเครื่องมากที่สุด)
         max_possible = max(avail_per_week)
         # จำกัดตาม job/week capacity (รวม type ทั้งหมด ไม่ใช่แค่ MC_GROUP เดียว)
@@ -1950,9 +2119,9 @@ def calculate_required_machines(
         if carryover_start > 0 and max_try < carryover_start:
             max_try = carryover_start
 
-        # tolerance: ถ้า qty_remaining ≤ 1 batch (rev_weight) ให้ถือว่าผลิตครบด้วย MC จำนวนนั้น
-        # ป้องกันการเพิ่ม MC แค่เพราะ overflow 1 batch (เศษที่เกินจาก rounding)
-        _rw_tol = float(get_revolution_weight(item_code, mc_group, start_week) or 0)
+        # ไม่ใช้ tolerance แบบ 1 batch
+        # ต้องผลิตให้ครบจริง ถ้าไม่พอต้องเพิ่มเครื่อง
+        _rw_tol = 0.0
 
         # ---- เปรียบเทียบทุก option ด้วย per-week simulation ----
         best_option = None  # (n_machines, weeks_needed, setup_waste, efficiency)
@@ -2032,7 +2201,8 @@ def calculate_required_machines(
                     carryover * prod_days_carry + new_added * prod_days_new
                 ) * daily_cap
                 qty_remaining -= week_production
-            finished = qty_remaining <= _rw_tol  # ≤ 1 batch = ถือว่าครบ ไม่เพิ่ม MC
+            finished = qty_remaining <= _rw_tol
+
             setup_waste = total_setup_mc_days  # mc-days ที่เสียไปกับ setup
             # คำนวณ efficiency (ใช้ actual working days ของแต่ละ week)
             total_machine_days = sum(
@@ -2055,8 +2225,9 @@ def calculate_required_machines(
                 if last_week_index == target_week_index or last_week_index == target_week_index - 1:
                     # จบตรง TARGET_KNIT หรือ TARGET_KNIT-1 → ยอมรับ option นี้
                     print(f"[DEBUG TARGET] ✅ Acceptable match: {item_code} finishes at {last_week_index} (target {target_week_index}, tolerance -1)")
-                    best_option = (n_mc, weeks_needed, total_setup_mc_days, efficiency)
-                    break
+                    if best_option is None or n_mc > best_option[0]:
+                        best_option = (n_mc, weeks_needed, total_setup_mc_days, efficiency)
+                    continue
                 elif last_week_index < target_week_index - 1:
                     # จบก่อน TARGET_KNIT-1 → ต้องใช้เครื่องน้อยลงเพื่อกระจายไปจนถึง TARGET_KNIT
                     print(f"[DEBUG TARGET] ❌ Too early: {item_code} finishes at {last_week_index}, target {target_week_index}")
@@ -2128,7 +2299,7 @@ def calculate_required_machines(
                     qty_remaining -= week_production
                     weeks_needed += 1
                 
-                if qty_remaining <= _rw_tol:  # ≤ 1 batch = ถือว่าครบ
+                if qty_remaining <= _rw_tol:
                     last_week_index = week_index(weeks_until_target[min(w_idx, len(weeks_until_target)-1)])
                     distance = abs(last_week_index - target_week_index)
                     
@@ -2163,7 +2334,6 @@ def get_best_machine_for_item(
     past_rdd=False,
     force_max_mc=False,
 ):
-    """เลือกเครื่องที่เหมาะสมที่สุดสำหรับ item นี้ (ใช้ get_actual_mc_remain หักเครื่องที่จองไปแล้ว)"""
     print(f"[DEBUG BEST MC] Processing {item_code} for week {plan_week}")
     print(f"[DEBUG BEST MC] Total items processed: {len([x for x in globals().get('_processed_items', [])])}")
     if '_processed_items' not in globals():
@@ -2306,6 +2476,7 @@ def get_best_machine_for_item(
         # ใช้ความจุตาม logic ใหม่สำหรับ MC_GROUP นี้
         item_gauge = machine_row["GUAGE"] if "GUAGE" in machine_row else None
         daily_cap = _get_capacity_for_mc_group(item_code, mc_group, item_gauge)
+        daily_cap = adjust_daily_cap_for_item_special(daily_cap, item_code, mc_group, item_gauge)
         if daily_cap <= 0:
             continue  # ข้ามถ้าไม่มีความจุ
         # ดูเครื่องว่างจริง (หักที่จองไปแล้ว)
@@ -2343,6 +2514,7 @@ def get_best_machine_for_item(
                 prev_mc_row.iloc[0]["GUAGE"] if "GUAGE" in prev_mc_row.iloc[0] else None
             )
             daily_cap = _get_capacity_for_mc_group(item_code, mc_group, item_gauge)
+            daily_cap = adjust_daily_cap_for_item_special(daily_cap, item_code, mc_group, item_gauge)
             if daily_cap <= 0:
                 continue  # ข้ามถ้าไม่มีความจุ
             actual_remain = get_actual_mc_remain(mc_group, plan_week, gauge=item_gauge)
@@ -2580,7 +2752,12 @@ def detect_and_fill_unused_capacity(plans_list, orders_df, summary_mc):
                     'DATE_IN': order.get('DATE_IN'),
                     'EARLIEST_PLAN_WEEK': order.get('DYE_END_DATE') if str(order.get('Orders Type', '')).strip() == 'YD-ORDERS' else get_yarn_lt_earliest_week(item, date_in=order.get('DATE_IN')),
                     'SUB_COLOR': str(order.get('SUB_COLOR', '')).strip(),
+                    'PO_NO': str(order.get('PO_NO', '')).strip(),
+                    'RDD_WEEK': order.get('FG Week'),
+                    'SC_LINE_ID': str(order.get('SC/SO NO', '')).strip(),
                 }
+                additional_plan['NAY_COLOR'] = str(order.get('NAY_COLOR', '')).strip()
+                additional_plan['COLOR_DESC'] = str(order.get('COLOR_DESC', '')).strip()
                 additional_plans.append(additional_plan)
                 unused_qty -= produce_qty
                 print(f"  📈 Added {produce_qty:.2f} units of {item} (SC: {sc_so_no}) to week {week}")
@@ -2725,6 +2902,8 @@ else:
 # =========================
 last_production = {}
 machines_in_use = {}  # {(item, mc_group): จำนวนเครื่องที่ใช้จริงใน week ล่าสุด}
+last_sc_machines = {}  # {(item, mc_group, gauge, sc_so_no): จำนวนเครื่องล่าสุดต่อ SC — ป้องกัน SC อื่นทับข้อมูล}
+last_sc_week = {}  # {(item, mc_group, gauge, sc_so_no): week_index ล่าสุดต่อ SC — ใช้แทน last_sc_so_no ที่ถูก SC อื่นทับ
 weekly_mc_usage = {}  # {(week, mc_group): total machines} สำหรับ gradual increase
 last_sc_so_no = (
     {}
@@ -2732,6 +2911,8 @@ last_sc_so_no = (
 last_sub_color = {}  # {carry_key: SUB_COLOR} — สำหรับ YD-ORDERS: ถ้า SUB_COLOR เปลี่ยน ต้อง setup เพิ่ม 1 วัน
 _yd_week_color_setups = {}  # {(carry_key, plan_week): cumulative color setup days} — สะสมวัน setup สีใน week เดียวกัน
 booking_production_keys = set()  # keys ที่มาจาก detail_mc (booking จริง) — ใช้อนุญาต carryover จาก booking แม้ยังไม่มีใน new plan
+booking_active_week_set = {}  # {(item, mc, gauge): set of w_idx ที่ booking active} — ใช้เช็ค carryover เมื่อ booking ครอบหลาย week
+booking_mc_by_week = {}  # {(item, mc, gauge): {w_idx: mc_used}} — จำนวนเครื่องจาก booking รายสัปดาห์
 # Pre-populate last_production จาก detail_mc (DETAIL sheet ของ booking_final_ready25)
 # ใช้ข้อมูลจริงจาก booking เพื่อรู้ว่า item นี้ถูก book ถึง week ไหน
 for _, row in detail_mc.iterrows():
@@ -2755,12 +2936,23 @@ for _, row in detail_mc.iterrows():
     _det_gauge = str(row.get("GUAGE", "")).strip()
     key = _ck(item_code, mc_group, _det_gauge)
     booking_production_keys.add(key)  # track ว่า key นี้มาจาก booking จริง
+    # 🔧 NEW: เก็บทุก week ที่ booking active เพื่อให้ carryover ตรวจได้ครอบคลุม
+    # (last_production เก็บเฉพาะ week ล่าสุด ไม่พอถ้า plan_week อยู่ก่อน last booking week)
+    booking_active_week_set.setdefault(key, set()).add(w_idx)
+    _week_mc_map = booking_mc_by_week.setdefault(key, {})
+    try:
+        _mc_used_int = int(mc_used)
+    except (ValueError, TypeError):
+        _mc_used_int = 0
+    # 🔧 FIX: ไม่ปรับ machines_in_use ตาม working days
+    # MC_USE คือจำนวนเครื่องจริงที่ใช้ ไม่ใช่ capacity calculation
+    # ถ้า booking บันทึก MC_USE=1 แปลว่าใช้เครื่อง 1 เครื่องจริงๆ ไม่ว่า working days จะเท่าไหร่
+    if _mc_used_int > _week_mc_map.get(w_idx, 0):
+        _week_mc_map[w_idx] = _mc_used_int
+
     if key not in last_production or w_idx > last_production[key]:
         last_production[key] = w_idx
-        try:
-            machines_in_use[key] = int(mc_used)
-        except (ValueError, TypeError):
-            machines_in_use[key] = 0
+        machines_in_use[key] = _mc_used_int
 print(
     f"📋 โหลด last_production จาก detail_mc (booking_final_ready25): {len(last_production)} รายการ"
 )
@@ -2900,6 +3092,8 @@ if (
             )
             _new_jobs = 0
             for _item, _mc in _curr_items.items():
+                if _item == "FD6GNTLG27/58A0":
+                    print(f"[DEBUG] FD6GNTLG27/58A0 W{_wk}: curr_mc={_mc}, prev_mc={_prev_items.get(_item, 0)}, new_jobs={_mc if _prev_items.get(_item, 0) == 0 else (_mc - _prev_items.get(_item, 0) if _mc > _prev_items.get(_item, 0) else 0)}")
                 _prev_mc = _prev_items.get(_item, 0)
                 if _prev_mc == 0:
                     # ไม่มีใน week ก่อนหน้า → new setup → นับเครื่องทั้งหมด
@@ -2925,13 +3119,57 @@ weekly_job_usage_old = {wk: dict(mc_dict) for wk, mc_dict in weekly_job_usage.it
 # weekly_new_plan_usage: เฉพาะงานที่วางแผนใหม่ในรอบนี้ (ใช้กับ get_actual_mc_remain)
 # แยกจาก weekly_job_usage ที่รวม booking เก่าด้วย (TOTAL_MC_REMAIN หักเก่าไปแล้ว)
 weekly_new_plan_usage = {}  # {week: {mc_group: new_plan_machines}}
+# Pre-populate weekly_new_plan_usage จาก old plan (NEW plans รอบก่อน)
+# เพื่อให้ get_actual_mc_remain หัก capacity ที่ old plan ใช้ไปแล้ว
+if not old_plan_df.empty:
+    _old_plan_preloaded = 0
+    for _, _row in old_plan_df.iterrows():
+        # Skip OLD plan rows if PLAN_SOURCE exists (safety check)
+        if "PLAN_SOURCE" in old_plan_df.columns:
+            if str(_row.get("PLAN_SOURCE", "")).strip().upper() != "NEW":
+                continue
+        _op_week = _row.get("PLAN_WEEK") or _row.get("PLAN WEEK")
+        _op_mc = _row.get("MC_GROUP") or _row.get("MC GROUP") or _row.get("MC")
+        _op_machines = (
+            _row.get("ACTUAL_MC")
+            or _row.get("AVAILABLE_MACHINES")
+            or _row.get("REQUIRED_MC")
+            or _row.get("AVAILABLE_MACHINES")
+        )
+        _op_gauge = (
+            _row.get("MC_GUAGE")
+            or _row.get("MC GUAGE")
+            or _row.get("GUAGE")
+            or ""
+        )
+        if pd.isna(_op_week) or pd.isna(_op_mc) or pd.isna(_op_machines):
+            continue
+        try:
+            _op_week = int(_op_week)
+            _op_mc = str(_op_mc).strip().upper()
+            _op_machines = int(float(_op_machines))
+            _op_gauge = str(_op_gauge).strip() if _op_gauge and not pd.isna(_op_gauge) else ""
+        except Exception:
+            continue
+        # Apply same redirect logic as main loop for pool deduction
+        _redirected_mc, _redirected_gauge = _apply_mc_redirect(_op_mc, _op_gauge)
+        _wpu_key = (_redirected_mc, _redirected_gauge)
+        if _op_week not in weekly_new_plan_usage:
+            weekly_new_plan_usage[_op_week] = {}
+        weekly_new_plan_usage[_op_week][_wpu_key] = (
+            weekly_new_plan_usage[_op_week].get(_wpu_key, 0) + _op_machines
+        )
+        _old_plan_preloaded += _op_machines
+    print(
+        f"📋 Pre-loaded weekly_new_plan_usage จาก old plan (NEW): "
+        f"{_old_plan_preloaded} machines across {len(weekly_new_plan_usage)} weeks"
+    )
 # cap ที่เหลือในสัปดาห์เมื่อ order จบก่อนใช้สุด — ใช้ผลิต FG ถัดไป (item+machine เดียวกัน)
 remaining_week_cap = {}  # {(week, item_code, mc_group): remaining_capacity_units}
 remaining_week_cap_owner = {}  # {(week, item_code, mc_group): owner marker (item-level carry)}
 
 # =========================
 # MERGE SAME SC + SAME ITEM (+ FG Week เดียวกัน)
-
 # =========================
 # ถ้า SC/SO NO เหมือนกัน + SO_NO เหมือนกัน + Item Code เหมือนกัน + FG Week เดียวกัน → รวมเป็น 1 row ผลิตทีเดียว
 # ต้องใช้ SO_NO ด้วยเพราะ SC เดียวกันอาจมีหลาย SO (คนละ order จริง) → ห้ามรวม qty
@@ -2959,7 +3197,6 @@ print(
 
 # =========================
 # MAIN PLANNING
-
 # =========================
 plans = []
 _skip_no_cap = []  # เก็บ item ที่ไม่มี cap เพื่อแสดงรวมท้ายสุด
@@ -3014,11 +3251,17 @@ def _order_rdd_idx(row):
         return 99999
 
 orders["_sort_rdd_idx"] = orders.apply(_order_rdd_idx, axis=1)
+# Priority: orders with NAY_COLOR or COLOR_DESC data should be planned first
+def _has_color_data(row):
+    nay_color = str(row.get("NAY_COLOR", "")).strip()
+    color_desc = str(row.get("COLOR_DESC", "")).strip()
+    return 0 if (nay_color and nay_color != "nan") or (color_desc and color_desc != "nan") else 1
+orders["_sort_color_priority"] = orders.apply(_has_color_data, axis=1)
 # tiebreaker 1: FG Week raw (น้อยกว่า = ก่อน) → หาก rdd_idx เท่ากัน ให้ FG เร็วกว่าก่อน
 # tiebreaker 2: PENDING_PLAN (น้อยกว่า = ก่อน) → ของน้อยจบไว ปล่อยเครื่องให้ item เดียวกัน carry ต่อ
 _fg_week_col = "FG Week" if "FG Week" in orders.columns else None
 _pending_col = "Pending Plan" if "Pending Plan" in orders.columns else None
-_sort_cols = ["_sort_rdd_idx"]
+_sort_cols = ["_sort_color_priority", "_sort_rdd_idx"]
 if _fg_week_col:
     orders["_sort_fg_week"] = pd.to_numeric(orders[_fg_week_col], errors="coerce").fillna(99999999)
     _sort_cols.append("_sort_fg_week")
@@ -3026,7 +3269,7 @@ if _pending_col:
     orders["_sort_pending"] = pd.to_numeric(orders[_pending_col], errors="coerce").fillna(0)
     _sort_cols.append("_sort_pending")
 orders_sorted = orders.sort_values(_sort_cols, na_position="last")
-_drop_cols = [c for c in ["_sort_rdd_idx", "_sort_fg_week", "_sort_pending"] if c in orders_sorted.columns]
+_drop_cols = [c for c in ["_sort_color_priority", "_sort_rdd_idx", "_sort_fg_week", "_sort_pending"] if c in orders_sorted.columns]
 orders_sorted = orders_sorted.drop(columns=_drop_cols)
 orders = orders.drop(columns=[c for c in _drop_cols if c in orders.columns])
 print(f"[DEBUG ORDERS] Total orders: {len(orders)}")
@@ -3176,6 +3419,9 @@ for _, order in orders_sorted.iterrows():
                                 _mc_use_ceil = float(_last_bk_row.iloc[0].get("MC_USE_CEIL", 0) or 0)
                                 _bk_kp_weight = float(_last_bk_row.iloc[0].get("KP_WEIGHT", 0) or 0)
                                 _bk_wd = int(_last_bk_row.iloc[0].get("WORKING_DAY", 5) or 5)
+                                _bk_cal_wd = len(get_working_days_in_week(int(w)))
+                                if _bk_cal_wd > 0:
+                                    _bk_wd = min(_bk_wd, _bk_cal_wd)
                                 _bk_gauge = str(_last_bk_row.iloc[0].get("GUAGE", "")).strip()
                                 _bk_plan_cap = _get_capacity_for_mc_group(
                                     item, str(mc).strip().upper(), _bk_gauge
@@ -3183,7 +3429,31 @@ for _, order in orders_sorted.iterrows():
                                 # remaining = total machine capacity − qty ที่ old item ผลิตจริง (KP_WEIGHT)
                                 # สูตร: (MC_USE_CEIL × wd × daily_cap) − KP_WEIGHT
                                 # เช่น FD4DRTPC88A0 w17: (2×8×103.06)−1143 = 1648−1143 = 505 units
-                                _total_cap = _mc_use_ceil * _bk_wd * _bk_plan_cap
+                                # 🔧 FIX: ตรวจสอบว่า booking week นี้มีการ setup เพิ่มเครื่องหรือไม่
+                                # โดยเปรียบเทียบ MC_USE_CEIL กับ week ก่อนหน้าใน grp
+                                _sorted_bk_weeks = sorted(grp["WEEK"].dropna().astype(int).tolist())
+                                _w_pos_bk = _sorted_bk_weeks.index(w) if w in _sorted_bk_weeks else -1
+                                _prev_bk_mc = 0
+                                _prev_w_bk_val = None
+                                if _w_pos_bk > 0:
+                                    _prev_w_bk = _sorted_bk_weeks[_w_pos_bk - 1]
+                                    _prev_w_bk_val = _prev_w_bk
+                                    _prev_bk_row = grp[grp["WEEK"] == _prev_w_bk]
+                                    if not _prev_bk_row.empty:
+                                        _prev_bk_mc = float(_prev_bk_row.iloc[0].get("MC_USE_CEIL", 0) or 0)
+                                # 🔧 FIX v2: ถ้ามี gap > 1 week ระหว่าง prev booking week และ current week
+                                # → เครื่องทุกตัวต้อง setup ใหม่ (แม้ MC count จะเท่ากัน)
+                                _bk_week_gap = (int(w) - int(_prev_w_bk_val)) if _prev_w_bk_val is not None else 999
+                                if _bk_week_gap > 1:
+                                    _bk_new_mc = float(_mc_use_ceil)  # all machines are new setup
+                                    _bk_carry_mc = 0.0
+                                else:
+                                    _bk_new_mc = max(0.0, _mc_use_ceil - _prev_bk_mc)
+                                    _bk_carry_mc = _mc_use_ceil - _bk_new_mc
+                                # คำนวณ total_cap โดยหัก setup days สำหรับเครื่องใหม่
+                                _total_cap = (_bk_carry_mc * _bk_wd + _bk_new_mc * max(0, _bk_wd - SETUP_DAYS)) * _bk_plan_cap
+                                if _bk_new_mc > 0:
+                                    print(f"[BOOKING SETUP DETECT] {item} W{w} MC={mc}: new_mc={_bk_new_mc:.0f} carry_mc={_bk_carry_mc:.0f} → adjusted total_cap={_total_cap:.2f} (naive={_mc_use_ceil*_bk_wd*_bk_plan_cap:.2f})")
                                 if _bk_plan_cap > 0 and _mc_use_ceil > 0:
                                     _bk_rem = max(0.0, _total_cap - _bk_kp_weight)
                                     if _bk_rem > 0:
@@ -3201,7 +3471,6 @@ for _, order in orders_sorted.iterrows():
 
     # ----------------------
     # RDD Check and Urgent Planning
-
     # ----------------------
     # rdd_idx = row index ใน calendar_week ของ RDD จริง (ใช้แทน week number
     # เพื่อรองรับการเปรียบเทียบข้ามปีได้ถูกต้อง เช่น order FG ปี 2027)
@@ -3209,10 +3478,10 @@ for _, order in orders_sorted.iterrows():
     fg_week_int = None  # week number (1-53) สำหรับ output/display เท่านั้น
     if pd.notna(fg_week):
         fg_week_str = str(int(fg_week))
-        if len(fg_week_str) == 6:  # รูปแบบ YYYYWW (เช่น 202613)
+        if len(fg_week_str) >= 6:
             fg_year = int(fg_week_str[:4])
             fg_week_num = int(fg_week_str[4:])
-        elif len(fg_week_str) == 5:  # รูปแบบ YYYYW (เช่น 20265)
+        elif len(fg_week_str) == 5:
             fg_year = int(fg_week_str[:4])
             fg_week_num = int(fg_week_str[4:])
         elif len(fg_week_str) <= 2:  # รูปแบบ WW (เช่น 13) → ใช้ปีปัจจุบัน
@@ -3232,11 +3501,11 @@ for _, order in orders_sorted.iterrows():
             if fob_type in ["PILOT_RUN", "Salesman", "Salesman-PO", "Sample"]:
                 offset_weeks = 1  # N-1
             elif fob_type in ["Replacement SO", "Make to Order","RESERVOIR-GF"]:
-                offset_weeks = 3  # N-3
+                offset_weeks = 4  # N-4
             else:
-                offset_weeks = 3  # Default to N-3 for other types
+                offset_weeks = 4  # Default to N-4 for other types
             
-            # หัก offset สัปดาห์ (RDD = FG Week - offset) ด้วย index arithmetic
+            # หัก offset สัปดาห์ (RDD = FG Week - offset ตาม FOB_TYPE) ด้วย index arithmetic
             rdd_idx = max(0, _fg_raw_idx - offset_weeks)
             fg_week_int = int(calendar_week.iloc[rdd_idx]["WEEK"])  # สำหรับ display
     # LAB-DIP: deadline = TODAY + 2 weeks (ต้องเสร็จภายใน week ที่เริ่มผลิต)
@@ -3264,30 +3533,29 @@ for _, order in orders_sorted.iterrows():
             continue
 
     elif order_type == "SC-ORDERS":
-        # SC-ORDERS: คำนวณ start week ให้ทอจบก่อน TARGET_KNIT เสมอ
-        # ถ้า TARGET_KNIT = 20, ต้องจบทอภายใน week 19 (คือสัปดาห์ก่อน TARGET_KNIT)
+        # SC-ORDERS: JIT — คำนวณ start week ย้อนหลังจาก TARGET_KNIT
+        # เป้าหมาย: เริ่มผลิตช้าที่สุดที่ยังทอเสร็จทัน TARGET_KNIT
         if rdd_idx is not None and rdd_idx >= 0:
-            # ใช้ rdd_idx (คือ FG Week - offset ตาม FOB_TYPE) เป็นพื้นฐาน แล้ว +1 สัปดาห์เพื่อให้แน่ใจว่าจบก่อน TARGET_KNIT-1
-            # สูตร: start_week = (FG Week - offset) + 1
-            # ถ้า FG Week = 20, offset = 3, start_week = 18 (ทอ week 18-19, จบก่อน week 19)
-            target_start_idx = rdd_idx + 1
-
-            # ต้องรอ POIN พร้อมก่อนเสมอ แม้จะเลย deadline
-            # สูตร: max(target, POIN_week, TODAY+2)
-            min_start_idx = get_yarn_lt_min_start_idx(item, date_in=order.get("DATE_IN"))
-            start_idx = max(target_start_idx, min_start_idx)
-
-            if start_idx < len(calendar_week):
-                order_week = calendar_week.iloc[start_idx]["WEEK"]
+            # ประมาณ weeks ที่ต้องการโดยใช้ max cap (เครื่องที่ดีที่สุด)
+            _item_caps_jit = item_cap_data[item_cap_data["ITEM_CODE"] == item]
+            if not _item_caps_jit.empty:
+                # JIT: ใช้ max cap เพื่อประมาณ minimum weeks ที่ต้องการ
+                # → target_start_idx จะช้าที่สุด (เริ่มผลิตใกล้ TARGET_KNIT มากที่สุด)
+                _daily_cap_jit = max(float(_item_caps_jit["CAP ทอ"].max()), 1.0)
+                _weeks_needed_jit = max(1, math.ceil(qty_left / (_daily_cap_jit * 5)))
+            else:
+                _weeks_needed_jit = 4  # fallback
+            # JIT start: rdd_idx - weeks_needed (เริ่มช้าที่สุดที่ทันกำหนด)
+            # floor ที่ TODAY_IDX + 2 — เริ่มเร็วสุด today+2 weeks, ไม่ดู Yarn LT
+            target_start_idx = max(TODAY_IDX + 2, rdd_idx - _weeks_needed_jit)
+            if target_start_idx < len(calendar_week):
+                order_week = calendar_week.iloc[target_start_idx]["WEEK"]
             else:
                 continue
         else:
-            # fallback: ใช้ Yarn LT หรือ TODAY + 2 ถ้าไม่มี rdd_idx
-            min_start_idx = get_yarn_lt_min_start_idx(item, date_in=order.get("DATE_IN"))
-            if min_start_idx < len(calendar_week):
-                order_week = calendar_week.iloc[min_start_idx]["WEEK"]
-            else:
-                continue
+            # fallback: ไม่มี rdd_idx → เริ่มจาก TODAY + 2
+            _fb_idx = min(TODAY_IDX + 2, len(calendar_week) - 1)
+            order_week = calendar_week.iloc[_fb_idx]["WEEK"]
 
     elif order_type == "YD-ORDERS":
         yd_week = get_week_from_date(order["DYE_END_DATE"])
@@ -3360,6 +3628,29 @@ for _, order in orders_sorted.iterrows():
                             break
 
                 # ถ้าขยับแล้วไม่ทัน RDD → ใช้ start_idx เดิม (ผลิตซ้อน booking ได้)
+        elif _bk_last_idx is not None:
+            # _bk_last_idx < start_idx: booking จบก่อน plan_week
+            # ถ้าเครื่องยังอุ่น (gap ≤ SETUP_GAP_WEEK) และกำลังวิ่งอยู่ → pull plan_week กลับมา carry ต่อ
+            _bk_warm_key = _ck(item, _bk_mc_grp)
+            _bk_mc_running = machines_in_use.get(_bk_warm_key, 0)
+            _bk_pull_plan_idx = week_index(plan_week)
+            if _bk_pull_plan_idx is not None:
+                _bk_warm_gap = _bk_pull_plan_idx - _bk_last_idx
+                if (
+                    1 < _bk_warm_gap <= SETUP_GAP_WEEK
+                    and _bk_mc_running > 0
+                ):
+                    _bk_pull_idx = _bk_last_idx + 1
+                    if _bk_pull_idx < len(calendar_week):
+                        _bk_pull_week = int(calendar_week.iloc[_bk_pull_idx]["WEEK"])
+                        if _bk_pull_week >= TODAY_WEEK:
+                            print(
+                                f"[WARM GAP FILL] {item}: machine last active W{int(calendar_week.iloc[_bk_last_idx]['WEEK'])} "
+                                f"→ pull plan_week W{plan_week}→W{_bk_pull_week} "
+                                f"(gap={_bk_warm_gap}, mc_running={_bk_mc_running}, no setup needed)"
+                            )
+                            start_idx = _bk_pull_idx
+                            plan_week = _bk_pull_week
     # ❗ ถ้า SC/SO+Item เดิมเคยวาง FG_WEEK ก่อนหน้าแล้ว → ให้เริ่มจาก week ที่ FG แรกเสร็จ
     # เพื่อให้ FG ที่ 2 สามารถ carry over ใช้ capacity ที่เหลือจาก FG แรกได้
     # ยกเว้น: ถ้า item เดียวกัน มี cap เหลือจาก week นั้น → เริ่มใน week เดิมได้
@@ -3435,7 +3726,6 @@ for _, order in orders_sorted.iterrows():
 
     # ----------------------
     # weekly allocation with best machine selection
-
     # ----------------------
     # คำนวณจำนวนเครื่องที่ต้องการตั้งแต่แรก (ถ้าทัน RDD)
     required_machines_info = None
@@ -3451,6 +3741,8 @@ for _, order in orders_sorted.iterrows():
 
     # คำนวณ machine allocation ล่วงหน้า
     progressive_plan = None  # {week: machines} สำหรับแต่ละ week
+    # Initialize core production schedule variable before use
+    _core_production_schedule = []
     # 🔧 FIX: รวม Pending Plan ของทุก FG สำหรับ item เดียวกัน (ทุก SC/SO)
     # เพื่อให้คำนวณจำนวนเครื่องจาก total demand ไม่ใช่แค่ FG ปัจจุบัน
     # ป้องกันการลดเครื่องเมื่อ FG หนึ่งจบ ทั้งที่ยังมี FG ถัดไปรอผลิต
@@ -3462,13 +3754,16 @@ for _, order in orders_sorted.iterrows():
     _qty_for_current_sc = max(qty_left, _total_qty_same_sc)
     if _total_qty_all_fg > qty_left:
         print(f"[TOTAL FG QTY] {item} SC {sc_so_no}: qty_left={qty_left:.0f}, total_all_fg={_total_qty_all_fg:.0f}, same_sc={_total_qty_same_sc:.0f} → ใช้ {_qty_for_machine_calc:.0f} สำหรับคำนวณเครื่อง")
-    if rdd_idx is not None and rdd_idx >= week_index(plan_week):
+    if (rdd_idx is not None and rdd_idx >= week_index(plan_week)) or _core_production_schedule:
         _locked_mc = locked_mc_group_for.get((sc_so_no, item))
         print(f"[DEBUG START] Processing order: {sc_so_no}, item: {item}, qty: {order_qty}, FG week: {fg_week}")
         
         # คำนวณจำนวนเครื่องที่ต้องการสำหรับ item นี้ (เพื่อจบก่อน TARGET_KNIT/RDD)
         # ใช้ rdd_idx เป็น target เพราะต้องทอเสร็จก่อน RDD (FG Week - offset ตาม FOB_TYPE)
         target_knit_idx = rdd_idx
+        # CORE ITEM: ไม่สน RDD — ใช้ plan_week+5 เป็น target
+        if _core_production_schedule:
+            target_knit_idx = week_index(plan_week) + 5
         mc_group_calc, daily_cap_calc, required_machines, feasible_calc, _gauge_calc = (
             calculate_required_machines(
                 item,
@@ -3513,37 +3808,109 @@ for _, order in orders_sorted.iterrows():
     _earliest_backshift_done = False  # ป้องกันการย้อนกลับ EARLIEST_PLAN_WEEK ซ้ำใน order เดียวกัน
     # คำนวณ EARLIEST_PLAN_WEEK สำหรับ order นี้ (ใช้ตรวจสอบ carry-over และ cross-SC fill ด้วย)
     # เส้นด้ายต้องเข้าก่อนถึงจะ carry/produce ได้ ไม่ว่าจะเป็น new setup หรือ carryover
-    _yarn_min_start_idx = get_yarn_lt_min_start_idx(item, date_in=order.get("DATE_IN"))
+    # 🔧 NEW: ถ้ามี LT_YARN ใน order ให้ใช้มันก่อน ถ้าไม่มีค่อยคำนวณจาก yarn lookup
+    _order_lt_yarn = order.get("LT_YARN")
+    if _order_lt_yarn is not None and str(_order_lt_yarn).strip() not in ("", "nan", "NaN"):
+        try:
+            _lt_days = float(_order_lt_yarn)
+            _date_in = order.get("DATE_IN")
+            if _date_in and pd.notna(_date_in):
+                _target_date = pd.to_datetime(_date_in) + pd.Timedelta(days=_lt_days)
+                _yarn_min_start_idx = None
+                for _idx, _row in calendar_week.iterrows():
+                    if pd.to_datetime(_row["DATE"]) >= _target_date:
+                        _yarn_min_start_idx = _idx
+                        break
+                if _yarn_min_start_idx is None:
+                    _yarn_min_start_idx = len(calendar_week) - 1
+            else:
+                _yarn_min_start_idx = get_yarn_lt_min_start_idx(item, date_in=order.get("DATE_IN"))
+        except (ValueError, TypeError):
+            _yarn_min_start_idx = get_yarn_lt_min_start_idx(item, date_in=order.get("DATE_IN"))
+    else:
+        _yarn_min_start_idx = get_yarn_lt_min_start_idx(item, date_in=order.get("DATE_IN"))
+    
     _yarn_earliest_plan_week = (
         int(calendar_week.iloc[_yarn_min_start_idx]["WEEK"])
         if _yarn_min_start_idx < len(calendar_week)
         else None
     )
+    # 🔧 NEW: คำนวณ "week ที่ yarn มาถึงจริง" ตาม calendar (ไม่ใช่ Thu-Wed shift)
+    # ใช้เพื่ออนุญาต carryover ในสัปดาห์ที่เส้นด้ายมาถึงกลางสัปดาห์
+    # (ถ้าเครื่องกำลังวิ่งอยู่แล้ว ให้ carry ต่อ ไม่ต้อง setup ใหม่ในสัปดาห์ถัดไป)
+    _actual_yarn_arrival_week = None
+    try:
+        _date_in_raw = order.get("DATE_IN")
+        if _date_in_raw is not None and pd.notna(_date_in_raw):
+            _lt_for_arrival = get_yarn_lt_days(item)
+            _order_lt_val = order.get("LT_YARN")
+            if _order_lt_val is not None and str(_order_lt_val).strip() not in ("", "nan", "NaN"):
+                try:
+                    _lt_for_arrival = float(_order_lt_val)
+                except (ValueError, TypeError):
+                    pass
+            if _lt_for_arrival and _lt_for_arrival > 0:
+                _arrival_date = pd.to_datetime(_date_in_raw) + pd.Timedelta(days=int(_lt_for_arrival))
+                _actual_yarn_arrival_week = get_week_from_date(_arrival_date)
+    except Exception:
+        _actual_yarn_arrival_week = None
     # YD-ORDERS: earliest plan week ต้องไม่เร็วกว่า DYE_END_DATE +1 week
     # เพราะ yarn ต้องย้อมเสร็จก่อนถึงจะทอได้ (order_week = next_week หลัง DYE_END_DATE)
     if order_type == "YD-ORDERS" and _yarn_earliest_plan_week is not None and order_week is not None:
         if _yarn_earliest_plan_week < order_week:
             print(f"[YD GUARD] {item}: _yarn_earliest_plan_week W{_yarn_earliest_plan_week} < DYE+1 W{order_week} → clamp to W{order_week}")
             _yarn_earliest_plan_week = order_week
-    # บังคับเริ่มวางแผนจาก EARLIEST_PLAN_WEEK ถ้า plan_week ถูกดันไปช้ากว่า
-    # เพื่อให้ใช้ capacity ต้นช่วงได้ก่อน (เช่น ต้องเริ่มที่ W19)
-    # 🔧 FIX: ถ้ามี _prev_fg_idx (FG ถัดไปของ SC เดิม) → ไม่ force กลับ earliest
-    # เพราะ FG ถัดไปควร carry ต่อจาก week ที่ FG ก่อนหน้าเหลือ cap (waterfall flow)
-    if (
-        _yarn_earliest_plan_week is not None
-        and plan_week is not None
-        and plan_week > _yarn_earliest_plan_week
-        and _yarn_earliest_plan_week >= TODAY_WEEK
-        and _prev_fg_idx is None
-    ):
-        print(
-            f"[FORCE START EARLIEST] {item}: plan_week W{plan_week} -> W{_yarn_earliest_plan_week}"
-        )
-        plan_week = _yarn_earliest_plan_week
+    # [FORCE START EARLIEST] ถูกลบออก → วางแผนตาม TARGET_KNIT (JIT) แทน
+    # EARLIEST_PLAN_WEEK ยังทำหน้าที่เป็น floor (ห้าม carry ก่อนเส้นด้ายมาถึง)
     # Seed remaining_week_cap จาก booking สำหรับ carry-over ในสัปดาห์สุดท้ายของ old booking
     # ให้ new SO สามารถใช้ capacity ที่เหลืออยู่บน machine ของ old item ในสัปดาห์นั้นได้
     # สูตร: (MC_USE_CEIL - MC_USE) × working_days × daily_cap
     # = เครื่องที่ idle × วันทำงาน × cap ต่อวัน → qty ที่ new item สามารถผลิตได้ใน week เดียวกัน
+    # --- Core Item trigger week simulation & batch schedule ---
+    _core_trigger_week = None
+    _core_production_schedule = []
+    if is_core_item and item_upper in stock_inventory_lookup:
+        _csd = stock_inventory_lookup[item_upper]
+        _csm = _csd.get('STOCK_MIN', 0)
+        _cs5 = _csd.get('Stock_5_Week', 0)
+        if _csm > 0 and _cs5 > 0:
+            _core_so_set = set()
+            for _, _co in orders_sorted.iterrows():
+                if str(_co.get("Item Code","")).strip().upper() == item_upper:
+                    if str(_co.get("Customer","")).strip() in CORE_CUSTOMERS:
+                        _core_so_set.add("S" + str(_co.get("SC/SO NO","")).strip().lstrip("S"))
+                        _core_so_set.add(str(_co.get("SC/SO NO","")).strip().lstrip("S"))
+            _cinv = _csd.get('Inventory', 0)
+            _ccw = int(TODAY_WEEK)
+            _remaining_order = qty_left
+            for _sim_i in range(104):
+                _ckp_rows = detail_mc[
+                    (detail_mc["ITEM_CODE"].astype(str).str.upper().str.strip() == item_upper)
+                    & (detail_mc["WEEK"].astype(int) == int(_ccw))
+                ]
+                for _, _kr in _ckp_rows.iterrows():
+                    _so_str = str(_kr.get("SO_NO", ""))
+                    _so_list = [s.strip() for s in _so_str.split(",") if s.strip()]
+                    _total_so = max(len(_so_list), 1)
+                    _match_so = sum(1 for s in _so_list if s in _core_so_set)
+                    if _match_so > 0:
+                        _cinv += float(_kr.get("KP_WEIGHT", 0)) * _match_so / _total_so
+                if int(_ccw) != int(TODAY_WEEK):
+                    _cinv -= _csm
+                _cover = _cinv / _csm if _csm > 0 else 999
+                if _cover < 2 and _remaining_order > 0:
+                    if _core_trigger_week is None:
+                        _core_trigger_week = _ccw
+                    _batch = min(_remaining_order, _cs5)
+                    _core_production_schedule.append((_ccw, _batch))
+                    _remaining_order -= _batch
+                    _cinv += _batch
+                    print(f"[CORE BATCH] {item}: W{_ccw} inv={_cinv-_batch:.0f} produce={_batch:.0f} remain_order={_remaining_order:.0f}")
+                    if _remaining_order <= 0:
+                        break
+                _ccw = next_week(_ccw)
+                if _ccw is None:
+                    break
     if rts_local_force:
         _bkr_data = rts_local_force.get("booking_remain_by_mc", {})
         _last_old = rts_local_force.get("last_old_by_mc", {})
@@ -3552,6 +3919,10 @@ for _, order in orders_sorted.iterrows():
             if _bkr_w is not None and _bkr_cap > 0:
                 # ห้าม seed week เก่ากว่า TODAY_WEEK − carry/setup ไม่ได้ย้อนหลัง
                 if _bkr_w < TODAY_WEEK:
+                    continue
+                # CORE ITEM: skip seed if booking week < trigger week
+                if _core_trigger_week is not None and _bkr_w < _core_trigger_week:
+                    print(f"[CORE SKIP SEED] {item}: W{_bkr_w} < trigger W{_core_trigger_week}")
                     continue
                 # ห้าม seed ถ้า gap ระหว่าง booking week กับ plan_week เกิน SETUP_GAP_WEEK
                 if plan_week is not None:
@@ -3581,38 +3952,93 @@ for _, order in orders_sorted.iterrows():
                     ]
                     if _dm_active.empty:
                         continue
-                    _dm_last_w = int(_dm_active["WEEK"].dropna().astype(int).max())
-                    _dm_last_row = _dm_active[_dm_active["WEEK"] == _dm_last_w].iloc[-1]
-                    _dm_mc_ceil = float(_dm_last_row.get("MC_USE_CEIL", 0) or 0)
-                    _dm_kp_weight = float(_dm_last_row.get("KP_WEIGHT", 0) or 0)
-                    _dm_wd = int(_dm_last_row.get("WORKING_DAY", 5) or 5)
-                    _dm_gauge = str(_dm_last_row.get("GUAGE", "")).strip()
-                    _dm_cap = _get_capacity_for_mc_group(item, _dm_mc_str, _dm_gauge)
-                    # remaining = (MC_USE_CEIL × wd × cap) − KP_WEIGHT
-                    _dm_total_cap = _dm_mc_ceil * _dm_wd * _dm_cap
-                    if _dm_cap > 0 and _dm_mc_ceil > 0:
-                        _dm_rem = max(0.0, _dm_total_cap - _dm_kp_weight)
-                        if _dm_rem > 0 and (item, _dm_last_w, _dm_mc_str) not in _existing_item_week_mc:
-                            # ห้าม seed week เก่ากว่า TODAY_WEEK − carry/setup ไม่ได้ย้อนหลัง
-                            if _dm_last_w < TODAY_WEEK:
-                                continue
-                            # ห้าม seed ถ้า gap ระหว่าง booking week กับ plan_week เกิน SETUP_GAP_WEEK
-                            if plan_week is not None:
-                                _dm_plan_idx = week_index(plan_week)
-                                _dm_seed_idx = week_index(_dm_last_w)
-                                if _dm_plan_idx is not None and _dm_seed_idx is not None and (_dm_plan_idx - _dm_seed_idx) > SETUP_GAP_WEEK:
-                                    print(f"[BOOKING CARRY SKIP] {item} booking W{_dm_last_w} → plan W{plan_week}: gap {_dm_plan_idx - _dm_seed_idx} > {SETUP_GAP_WEEK} weeks → ไม่ seed")
+                    # สร้าง sorted week list สำหรับตรวจสอบ setup (เปรียบเทียบกับ week ก่อนหน้า)
+                    _dm_sorted_weeks = sorted(_dm_grp["WEEK"].dropna().astype(int).tolist())
+                    for _, _dm_last_row in _dm_active.iterrows():
+                        _dm_last_w = int(_dm_last_row.get("WEEK", 0) or 0)
+                        if _dm_last_w <= 0:
+                            continue
+                        _dm_mc_ceil = float(_dm_last_row.get("MC_USE_CEIL", 0) or 0)
+                        _dm_kp_weight = float(_dm_last_row.get("KP_WEIGHT", 0) or 0)
+                        _dm_wd = int(_dm_last_row.get("WORKING_DAY", 5) or 5)
+                        _dm_cal_wd = len(get_working_days_in_week(int(_dm_last_w)))
+                        if _dm_cal_wd > 0:
+                            _dm_wd = min(_dm_wd, _dm_cal_wd)
+                        _dm_gauge = str(_dm_last_row.get("GUAGE", "")).strip()
+                        _dm_cap = _get_capacity_for_mc_group(item, _dm_mc_str, _dm_gauge)
+                        # 🔧 FIX: ตรวจสอบว่า booking week นี้มีการ setup เพิ่มเครื่องหรือไม่
+                        # โดยเปรียบเทียบ MC_USE_CEIL กับ week ก่อนหน้าใน _dm_grp
+                        _dm_w_pos = _dm_sorted_weeks.index(_dm_last_w) if _dm_last_w in _dm_sorted_weeks else -1
+                        _dm_prev_mc = 0
+                        _dm_prev_w_val = None
+                        if _dm_w_pos > 0:
+                            _dm_prev_w = _dm_sorted_weeks[_dm_w_pos - 1]
+                            _dm_prev_w_val = _dm_prev_w
+                            _dm_prev_row = _dm_grp[_dm_grp["WEEK"] == _dm_prev_w]
+                            if not _dm_prev_row.empty:
+                                _dm_prev_mc = float(_dm_prev_row.iloc[0].get("MC_USE_CEIL", 0) or 0)
+                        # 🔧 FIX v2: ถ้ามี gap > 1 week ระหว่าง prev booking week และ current week
+                        # → เครื่องทุกตัวต้อง setup ใหม่ (แม้ MC count จะเท่ากัน)
+                        _dm_week_gap = (int(_dm_last_w) - int(_dm_prev_w_val)) if _dm_prev_w_val is not None else 999
+                        if _dm_week_gap > 1:
+                            _dm_new_mc = float(_dm_mc_ceil)  # all machines are new setup
+                            _dm_carry_mc = 0.0
+                        else:
+                            _dm_new_mc = max(0.0, _dm_mc_ceil - _dm_prev_mc)
+                            _dm_carry_mc = _dm_mc_ceil - _dm_new_mc
+                        _dm_setup = order_setup_days  # setup days สำหรับ item นี้
+                        # remaining = (MC_USE_CEIL - MC_USE) × working_days × daily_cap
+                        # = เครื่องที่ idle × วันทำงาน × cap ต่อวัน → qty ที่ new item สามารถผลิตได้ใน week เดียวกัน
+                        _dm_total_cap = (_dm_carry_mc * _dm_wd + _dm_new_mc * max(0, _dm_wd - _dm_setup)) * _dm_cap
+                        if _dm_new_mc > 0 and _dm_cap > 0:
+                            print(f"[BOOKING SETUP DETECT] {item} W{_dm_last_w} MC={_dm_mc_str}: new_mc={_dm_new_mc:.0f} carry_mc={_dm_carry_mc:.0f} → adjusted total_cap={_dm_total_cap:.2f} (naive={_dm_mc_ceil*_dm_wd*_dm_cap:.2f})")
+                        if _dm_cap > 0 and _dm_mc_ceil > 0:
+                            _dm_rem = max(0.0, _dm_total_cap - _dm_kp_weight)
+                            if _dm_rem > 0 and (item, _dm_last_w, _dm_mc_str) not in _existing_item_week_mc:
+                                if _dm_last_w < TODAY_WEEK:
                                     continue
-                            _dm_key = (_dm_last_w, item, _dm_mc_str)
-                            if _dm_key not in remaining_week_cap:
-                                remaining_week_cap[_dm_key] = _dm_rem
-                                remaining_week_cap_owner[_dm_key] = None
-                                print(f"[BOOKING CARRY] Seeded remaining_week_cap[({_dm_last_w}, {item}, {_dm_mc_str})] = {_dm_rem:.2f} from booking (non-CORE)")
+                                if plan_week is not None:
+                                    _dm_plan_idx = week_index(plan_week)
+                                    _dm_seed_idx = week_index(_dm_last_w)
+                                    if _dm_plan_idx is not None and _dm_seed_idx is not None and abs(_dm_plan_idx - _dm_seed_idx) > SETUP_GAP_WEEK:
+                                        continue
+                                _dm_key = (_dm_last_w, item, _dm_mc_str)
+                                if _dm_key not in remaining_week_cap:
+                                    remaining_week_cap[_dm_key] = _dm_rem
+                                    remaining_week_cap_owner[_dm_key] = None
+                                    print(f"[BOOKING CARRY] Seeded remaining_week_cap[({_dm_last_w}, {item}, {_dm_mc_str})] = {_dm_rem:.2f} from booking (non-CORE)")
 
-    while qty_left > 0 and plan_week is not None:
-        # 🔧 FIX: กัน floating-point residual qty ที่น้อยเกินไปจาก booking deduction
+    # CORE ITEM: batch production — cap qty_left to first batch size
+    _core_real_qty = qty_left
+    _core_batch_idx = 0
+    if _core_production_schedule:
+        _bw0, _bq0 = _core_production_schedule[0]
+        qty_left = min(qty_left, _bq0)
+        if plan_week is not None:
+            _tw_idx = week_index(_bw0)
+            _pw_idx = week_index(plan_week)
+            if _tw_idx is not None and _pw_idx is not None and _tw_idx > _pw_idx:
+                plan_week = int(_bw0)
+        print(f"[CORE BATCH INIT] {item}: {len(_core_production_schedule)} batches, B1 W{_bw0} qty={qty_left:.0f} (total={_core_real_qty:.0f}), plan_week=W{plan_week}")
+
+    while (qty_left > 0 or (_core_batch_idx + 1 < len(_core_production_schedule))) and plan_week is not None:
+        # FIX: กัน floating-point residual qty ที่น้อยเกินไปจาก booking deduction
         # qty ที่น้อยกว่า 1.0 ไม่สามารถผลิตได้จริง และจะทำลาย booking carryover seed ของ order อื่น
         if qty_left < 1.0:
+            # CORE ITEM: batch continuation — check for next batch
+            if _core_production_schedule:
+                _produced_this_batch = _core_production_schedule[_core_batch_idx][1] - max(0, qty_left)
+                _core_real_qty -= _produced_this_batch
+                _core_batch_idx += 1
+                if _core_batch_idx < len(_core_production_schedule) and _core_real_qty > 1.0:
+                    _nbw, _nbq = _core_production_schedule[_core_batch_idx]
+                    plan_week = int(_nbw)
+                    qty_left = min(_core_real_qty, _nbq)
+                    required_machines_info = None
+                    print(f"[CORE NEXT BATCH] {item}: W{_nbw} batch={qty_left:.0f} total_remaining={_core_real_qty:.0f}")
+                    continue
+                else:
+                    qty_left = _core_real_qty
             break
 
         # ถ้า FG ใหม่ (SC/SO ใหม่) เริ่มใน week เดิมและมี cap เหลือ ให้ผลิตใน week เดิมจน cap หมดก่อนข้ามไป week ถัดไป
@@ -3636,6 +4062,9 @@ for _, order in orders_sorted.iterrows():
                     # ข้าม week ที่เส้นด้ายยังไม่เข้า (< EARLIEST_PLAN_WEEK ของ order นี้)
                     # ไม่ pop เพราะ order อื่น (SC/SO อื่น) อาจมี EARLIEST_PLAN_WEEK ต่างกัน
                     if _yarn_earliest_plan_week and _rk[0] < _yarn_earliest_plan_week:
+                        continue
+                    # CORE ITEM: skip fill if week < trigger week
+                    if _core_trigger_week is not None and _rk[0] < _core_trigger_week:
                         continue
                     _found_rem_week = _rk[0]
                     _found_rem_mc = _rk[2]
@@ -3672,6 +4101,7 @@ for _, order in orders_sorted.iterrows():
             if _fill_daily_cap <= 0:
                 # Fallback: use original capacity if new logic returns 0 (normalize 24→20hr)
                 _fill_daily_cap = _normalize_capacity(item, _fill_mc_group, float(_cap_row.iloc[0]["CAP ทอ"]))
+            _fill_daily_cap = adjust_daily_cap_for_item_special(_fill_daily_cap, item, _fill_mc_group, _fill_gauge)
             _fill_rev_weight = get_revolution_weight_from_orders(item, _fill_mc_group)
             _fill_ck = _ck(item, _fill_mc_group, _fill_gauge)
             _fill_avail_mc = machines_in_use.get(_fill_ck, 1)
@@ -3711,11 +4141,9 @@ for _, order in orders_sorted.iterrows():
                 if _fill_rev_weight and _fill_rev_weight > 0:
                     _rem_batches = int(_rem_cap // _fill_rev_weight)
                     produce = min(qty_left, _rem_batches * _fill_rev_weight)
-                    # ✅ ถ้า qty ที่เหลือหลัง rounding ≤ 1 พับ → ดูดเข้าสัปดาห์นี้เลย
-                    if produce < qty_left and (qty_left - produce) <= _fill_rev_weight:
-                        produce = qty_left
                 else:
                     produce = min(qty_left, _rem_cap)
+
                 if produce > 0:
                     plans.append({
                         "ITEM_CODE": item,
@@ -3752,7 +4180,12 @@ for _, order in orders_sorted.iterrows():
                         "DATE_IN": order.get("DATE_IN"),
                         "EARLIEST_PLAN_WEEK": order.get("DYE_END_DATE") if order_type == "YD-ORDERS" else get_yarn_lt_earliest_week(item, date_in=order.get("DATE_IN")),
                         "SUB_COLOR": sub_color,
+                        "PO_NO": str(order.get("PO_NO", "")).strip(),
+                        "RDD_WEEK": fg_week,
+                        "SC_LINE_ID": str(order.get("SC/SO NO", "")).strip(),
                     })
+                    plans[-1]["NAY_COLOR"] = str(order.get("NAY_COLOR", "")).strip()
+                    plans[-1]["COLOR_DESC"] = str(order.get("COLOR_DESC", "")).strip()
                     qty_left -= produce
                     _rem_cap -= produce
                     # อัปเดต remaining cap หลังใช้งาน
@@ -3827,6 +4260,9 @@ for _, order in orders_sorted.iterrows():
         past_rdd = bool(
             rdd_idx is not None and _plan_idx is not None and _plan_idx >= rdd_idx
         )
+        # CORE ITEM: ไม่สน RDD
+        if _core_production_schedule:
+            past_rdd = False
         if rdd_idx is not None and _plan_idx is not None and _plan_idx > rdd_idx:
             # urgent_mode = True  # DISABLED
             urgent_mode = False
@@ -3837,16 +4273,17 @@ for _, order in orders_sorted.iterrows():
         if rdd_idx is not None and _plan_idx is not None:
             print(f"[DEBUG CALC CHECK] _plan_idx <= rdd_idx: {_plan_idx <= rdd_idx}")
         if (
-            required_machines_info is None
-            and rdd_idx is not None
+            (rdd_idx is not None or _core_production_schedule)
             and _plan_idx is not None
         ):
             _locked_mc2 = locked_mc_group_for.get((sc_so_no, item))
-            # ใช้ rdd_idx เป็น target เพราะต้องทอเสร็จก่อน RDD (TARGET_KNIT)
-            target_knit_idx2 = rdd_idx
+            # CORE ITEM: ไม่สน RDD — ใช้ plan_week+5
+            target_knit_idx2 = rdd_idx if not _core_production_schedule else (_plan_idx + 5)
+            _already_planned_item_qty = _item_cumulative_planned.get(item, 0)
+            _dynamic_qty_for_calc = max(qty_left, _qty_for_machine_calc - _already_planned_item_qty)
             _mc_r, _cap_r, _req_r, _feas_r, _gauge_r = calculate_required_machines(
                 item,
-                max(qty_left, _qty_for_machine_calc),
+                _dynamic_qty_for_calc,
                 plan_week,
                 target_knit_idx2,  # TARGET_KNIT
                 setup_days=order_setup_days,
@@ -3879,7 +4316,22 @@ for _, order in orders_sorted.iterrows():
                 if _rts_machines > 0:
                     mc_group = _rts_mc
                     available_machines = _rts_machines
-                    setup_needed = False
+                    # 🔧 FIX: RTS ต้องเช็ค gap ก่อน set setup_needed=False
+                    # ถ้าห่างจาก last_production > SETUP_GAP_WEEK → ต้อง setup ใหม่
+                    _rts_ck = _ck(item, _rts_mc, _item_mc_to_gauge.get(
+                        (str(item).strip().upper(), str(_rts_mc).strip().upper()), None
+                    ))
+                    _rts_last_widx = last_production.get(_rts_ck)
+                    _rts_cur_widx = week_index(plan_week)
+                    _rts_gap = (
+                        (_rts_cur_widx - _rts_last_widx)
+                        if _rts_last_widx is not None and _rts_cur_widx is not None
+                        else None
+                    )
+                    if _rts_gap is not None and _rts_gap <= SETUP_GAP_WEEK:
+                        setup_needed = False  # gap เล็ก → carry ได้
+                    else:
+                        setup_needed = True  # gap ใหญ่หรือไม่มี last_production → ต้อง setup
                     _sel_gauge = _item_mc_to_gauge.get(
                         (str(item).strip().upper(), str(_rts_mc).strip().upper()), None
                     )
@@ -3902,6 +4354,26 @@ for _, order in orders_sorted.iterrows():
                                     item, _rts_mc,
                                     float(_rts_cap_row.iloc[0].get("CAP ทอ", 0) or 0)
                                 )
+                    daily_capacity = adjust_daily_cap_for_item_special(daily_capacity, item, _rts_mc, _sel_gauge)
+                    #  FIX: Recalculate required_machines_info for current week in RTS logic
+                    #  This prevents using cached values from previous weeks (e.g., week 26 values in week 27)
+                    _locked_mc2 = locked_mc_group_for.get((sc_so_no, item))
+                    target_knit_idx2 = rdd_idx if not _core_production_schedule else (week_index(plan_week) + 5)
+                    _already_planned_item_qty = _item_cumulative_planned.get(item, 0)
+                    _dynamic_qty_for_calc = max(qty_left, _qty_for_machine_calc - _already_planned_item_qty)
+                    _mc_r, _cap_r, _req_r, _feas_r, _gauge_r = calculate_required_machines(
+                        item,
+                        _dynamic_qty_for_calc,
+                        plan_week,
+                        target_knit_idx2,
+                        setup_days=order_setup_days,
+                        only_mc_group=_locked_mc2,
+                        order_type=order_type,
+                        sub_color=sub_color,
+                    )
+                    if _req_r:
+                        required_machines_info = (_mc_r, _cap_r, _req_r, _feas_r, _gauge_r)
+                        print(f"[DEBUG RTS RECALC] Week {plan_week}: updated required_machines_info=({_mc_r}, {_cap_r}, {_req_r}, {_feas_r}, {_gauge_r})")
         # คำนวณ _req_feasible ก่อนเพื่อส่งเข้า get_best_machine_for_item
         _req_feasible = (
             required_machines_info[3]
@@ -3951,17 +4423,28 @@ for _, order in orders_sorted.iterrows():
                     _prev_mc_key = _key
                     _prev_mc_group = _key[1]
                     break
+                # 🔧 NEW: ถ้า last_production เป็นสัปดาห์อนาคต (gap < 0) แต่ booking active
+                # ครอบคลุม plan_week ด้วย (booking หลาย week ต่อเนื่อง) → อนุญาต carry
+                # เพราะเครื่องกำลังวิ่งอยู่ใน plan_week แล้วจาก booking เดิม
+                if (
+                    current_week_idx is not None
+                    and _gap_week is not None
+                    and _gap_week < 0
+                    and _key in booking_active_week_set
+                    and current_week_idx in booking_active_week_set[_key]
+                ):
+                    _prev_mc_key = _key
+                    _prev_mc_group = _key[1]
+                    print(f"[CARRY BOOKING SPAN] {item} week {plan_week}: booking active ครอบ plan_week (last_production=W{int(calendar_week.iloc[_week_idx]['WEEK'])}, booking weeks={sorted(booking_active_week_set[_key])}) → อนุญาต carry")
+                    break
         
         _is_carryover = _prev_mc_key is not None and _prev_mc_group is not None
+        # CORE ITEM: always fresh setup — no carry history
+        if _core_production_schedule:
+            _is_carryover = False
         
-        if item == "FD6PRTPG99A0" or item == "FD1BASFZ15/1A0" or item == "FD4DRTIT49/08A0":
-            print(f"[DEBUG CARRY CHECK] Week {plan_week}: _is_carryover={_is_carryover}, _prev_mc_group={_prev_mc_group}, mc_group={mc_group}")
-            print(f"[DEBUG CARRY CHECK] Week {plan_week}: qty_left={qty_left}, pending_plan={order.get('PENDING_PLAN', 0)}")
-        
-        # 🔧 แก้ไข: แยกกรณี carryover ปกติ vs carryover ที่ต้องการเพิ่มเครื่อง
         # ถ้าเป็น carryover แต่มีเครื่องว่างมากและ order ยังเหลือเยอะ → ให้ Load Balancing ทำงาน
         # ถ้าเป็น carryover ปกติ → ใช้เครื่องเดิมต่อไป
-        
         # ตรวจสอบว่ามีเครื่องว่างพอที่จะเพิ่มหรือไม่
         _has_capacity_for_increase = False
         if _is_carryover and _prev_mc_group:
@@ -3969,12 +4452,13 @@ for _, order in orders_sorted.iterrows():
             _carry_gauge = _prev_mc_key[2] if len(_prev_mc_key) > 2 else None
             _actual_remain = get_actual_mc_remain(_prev_mc_group, plan_week, gauge=_carry_gauge)
             _current_machines = machines_in_use.get(_prev_mc_key, 1)
-            _has_capacity_for_increase = _actual_remain > _current_machines
-            if item == "FD6PRTPG99A0" or item == "FD4DRTIT49/08A0":
+            _has_capacity_for_increase = _actual_remain > 0
+            if item == "FD6PRTPG99A0" or item == "FD4DRTIT49/08A0" or item == "FD3GNTPE54/14A0":
                 print(f"[DEBUG CAPACITY] {_prev_mc_group} week {plan_week}: gauge={_carry_gauge}, actual_remain={_actual_remain}, current_machines={_current_machines}, can_increase={_has_capacity_for_increase}")
-        
         # ตรวจสอบว่า order เหลือเยอะพอที่จะเพิ่มเครื่องหรือไม่
         _needs_increase = False
+        _total_item_demand = max(qty_left, _qty_for_machine_calc - (order_qty - qty_left))
+
         if _is_carryover and qty_left > 0:
             # ประมาณว่าถ้าเหลือมากกว่า 2 สัปดาห์ อาจต้องการเพิ่มเครื่อง
             _cap_row = item_cap_data[
@@ -3991,13 +4475,17 @@ for _, order in orders_sorted.iterrows():
                     # รวมทั้ง SC อื่นของ item เดียวกันที่วางแผนเสร็จแล้ว (_item_cumulative_planned)
                     # เพื่อไม่ให้นับ demand ซ้ำจาก SC ที่ planned ไปแล้ว
                     _already_produced_this_sc = order_qty - qty_left
-                    _already_produced_other_sc = _item_cumulative_planned.get(item, 0)
-                    _already_produced = _already_produced_this_sc + _already_produced_other_sc
-                    _adjusted_machine_calc = max(0, _qty_for_machine_calc - _already_produced)
+                    _adjusted_machine_calc = max(0, _qty_for_machine_calc - _already_produced_this_sc)
                     _total_item_demand = max(qty_left, _adjusted_machine_calc)
-                    _weeks_remaining = _total_item_demand / (_current_machines * _daily_cap * 5)
-                    _needs_increase = _weeks_remaining > 2.0  # เหลือมากกว่า 2 สัปดาห์
-        
+
+                    # ใช้ effective machines = min(เครื่องเดิม, cap ที่เหลือ) ในการคำนวณว่าทันไหม
+                    _effective_machines = min(_current_machines, _actual_remain) if _actual_remain > 0 else 0
+                    if _effective_machines > 0:
+                        _weeks_remaining = _total_item_demand / (_effective_machines * _daily_cap * 5)
+                        _needs_increase = _weeks_remaining > 2.0  # เหลือมากกว่า 2 สัปดาห์
+                    else:
+                        _needs_increase = True  # ไม่มี cap เหลือ → ยังไม่ทันแน่นอน
+
         # 🔧 แก้ไข: แยก 3 กรณี
         # 1. Carryover ที่มีเครื่องว่างและต้องการเพิ่ม → ส่งไป Load Balancing
         # 2. Carryover ที่ไม่มีเครื่องว่างหรือไม่ต้องการเพิ่ม → ใช้เครื่องเดิมต่อไป
@@ -4005,9 +4493,7 @@ for _, order in orders_sorted.iterrows():
         
         should_check_increase = _is_carryover and _has_capacity_for_increase and _needs_increase
         
-        if item == "FD6PRTPG99A0" or item == "FD1BASFZ15/1A0" or item == "FD4DRTIT49/08A0":
-            print(f"[DEBUG CARRY CHECK] Week {plan_week}: _is_carryover={_is_carryover}, _has_capacity_for_increase={_has_capacity_for_increase}, _needs_increase={_needs_increase}")
-            print(f"[DEBUG CARRY CHECK] Week {plan_week}: should_check_increase={should_check_increase}, qty_left={qty_left}")
+
         
         _plan_week_idx = week_index(plan_week)
         _earliest_week_idx = (
@@ -4018,96 +4504,52 @@ for _, order in orders_sorted.iterrows():
 
         # ❗ ตรวจสอบ EARLIEST_PLAN_WEEK ก่อน carryover: ถ้าเส้นด้ายยังไม่เข้าให้ยกเลิก carryover
         # เพราะแม้เครื่องพร้อม แต่ถ้า yarn ยังไม่มาก็ผลิตไม่ได้อยู่ดี
+        # 🔧 FIX: ถ้า yarn มาถึงจริง (ตาม calendar) ภายใน plan_week และเครื่องกำลัง carry อยู่
+        # → อนุญาตให้ carry ต่อ ไม่ต้อง setup ใหม่ (yarn มาทันในสัปดาห์)
+        # ใช้ _actual_yarn_arrival_week เทียบกับ plan_week (ไม่ใช่ _yarn_earliest_plan_week ที่ shift Thu-Wed)
         if (
             _is_carryover
             and _plan_week_idx is not None
             and _earliest_week_idx is not None
             and _plan_week_idx < _earliest_week_idx
         ):
-            print(f"⚠️ [CARRY SKIP] {item} week {plan_week} < EARLIEST_PLAN_WEEK {_yarn_earliest_plan_week} → ยกเลิก carryover (yarn ยังไม่เข้า)")
-            _is_carryover = False
-            should_check_increase = False
-
-        # ❗ Priority rule: ถ้า carry ได้ แต่มี EARLIEST_PLAN_WEEK ที่เร็วกว่าปัจจุบันและไม่ย้อนหลัง
-        # ให้ setup ที่ earliest ก่อนเสมอ แทนการลาก carry ต่อใน week หลัง
-        if (
-            _is_carryover
-            and not _earliest_backshift_done
-            and _plan_week_idx is not None
-            and _earliest_week_idx is not None
-            and _plan_week_idx > _earliest_week_idx
-            and _earliest_week_idx >= TODAY_IDX
-            and _prev_mc_group
-        ):
-            _early_plan_key = (item, _yarn_earliest_plan_week, _prev_mc_group)
-            if _early_plan_key in _existing_item_week_mc:
-                print(
-                    f"⚠️ [SETUP EARLY PRIORITY] {item}: earliest week {_yarn_earliest_plan_week} ถูกวางแผนแล้ว "
-                    f"({item}+{_yarn_earliest_plan_week}+{_prev_mc_group}) → คง carry week {plan_week}"
-                )
+            _allow_carry_same_week = False
+            if _actual_yarn_arrival_week is not None:
+                _arrival_idx = week_index(_actual_yarn_arrival_week)
+                if _arrival_idx is not None and _arrival_idx <= _plan_week_idx:
+                    _allow_carry_same_week = True
+            if _allow_carry_same_week:
+                print(f"✅ [CARRY KEEP YARN SAME WEEK] {item} week {plan_week}: yarn มาถึง W{_actual_yarn_arrival_week} ภายในสัปดาห์นี้ + เครื่องกำลัง carry → คง carry ต่อ (ไม่ setup ใหม่)")
             else:
-                print(
-                    f"⚠️ [SETUP EARLY PRIORITY] {item}: carry week {plan_week} > EARLIEST_PLAN_WEEK "
-                    f"{_yarn_earliest_plan_week} → ย้ายไป setup ที่ earliest ก่อน"
-                )
-                plan_week = _yarn_earliest_plan_week
-                start_idx = _earliest_week_idx
+                print(f"⚠️ [CARRY SKIP] {item} week {plan_week} < EARLIEST_PLAN_WEEK {_yarn_earliest_plan_week} (yarn arrival W{_actual_yarn_arrival_week}) → ยกเลิก carryover (yarn ยังไม่เข้า)")
                 _is_carryover = False
                 should_check_increase = False
-            _earliest_backshift_done = True
 
-        # ❗ ถ้า plan_week > EARLIEST_PLAN_WEEK และเวลาจาก carry week ไม่พอทัน RDD
-        # → setup ที่ EARLIEST_PLAN_WEEK แทนเพื่อให้ได้สัปดาห์ผลิตเพิ่มขึ้น
-        if (
-            _is_carryover
-            and not _earliest_backshift_done
-            and _plan_week_idx is not None
-            and _earliest_week_idx is not None
-            and _plan_week_idx > _earliest_week_idx
-            and rdd_idx is not None
-            and _prev_mc_group
-        ):
-            _plan_idx_est = _plan_week_idx
-            _earliest_idx_est = _earliest_week_idx
-            if _plan_idx_est is not None and _earliest_idx_est is not None and _plan_idx_est > _earliest_idx_est:
-                _cap_row_est = item_cap_data[
-                    (item_cap_data["ITEM_CODE"] == item)
-                    & (item_cap_data["MC_GROUP"] == _prev_mc_group)
-                ]
-                if not _cap_row_est.empty:
-                    _g_est = str(_cap_row_est.iloc[0].get("GUAGE", "")).strip()
-                    _dc_est = _get_capacity_for_mc_group(item, _prev_mc_group, _g_est)
-                    if _dc_est <= 0:
-                        _dc_est = _normalize_capacity(item, _prev_mc_group, float(_cap_row_est.iloc[0]["CAP ทอ"]))
-                    _mc_est = machines_in_use.get(_prev_mc_key, 1)
-                    if _dc_est > 0 and _mc_est > 0:
-                        _weeks_needed_est = qty_left / (_mc_est * _dc_est * 5)
-                        _weeks_from_carry = rdd_idx - _plan_idx_est
-                        _weeks_from_earliest = rdd_idx - _earliest_idx_est
-                        # ถ้า carry week ไม่ทัน RDD แต่ EARLIEST_PLAN_WEEK ทัน → setup ก่อน
-                        if _weeks_from_carry < _weeks_needed_est and _weeks_from_earliest >= _weeks_needed_est:
-                            _early_plan_key = (item, _yarn_earliest_plan_week, _prev_mc_group)
-                            if _early_plan_key in _existing_item_week_mc:
-                                print(
-                                    f"⚠️ [SETUP EARLY] {item}: earliest week {_yarn_earliest_plan_week} ถูกวางแผนแล้ว "
-                                    f"({item}+{_yarn_earliest_plan_week}+{_prev_mc_group}) → ไม่ย้อนสัปดาห์เพื่อกัน loop"
-                                )
-                            else:
-                                print(f"⚠️ [SETUP EARLY] {item}: carry week {plan_week} ไม่ทัน RDD "
-                                      f"(ต้อง {_weeks_needed_est:.1f}w, carry มี {_weeks_from_carry:.1f}w, earliest มี {_weeks_from_earliest:.1f}w) "
-                                      f"→ setup ที่ EARLIEST_PLAN_WEEK {_yarn_earliest_plan_week} แทน")
-                                plan_week = _yarn_earliest_plan_week
-                                start_idx = _earliest_idx_est
-                                _is_carryover = False
-                                should_check_increase = False
-                                _earliest_backshift_done = True
+        # [SETUP EARLY PRIORITY] และ [SETUP EARLY] ถูกลบออก → วางแผนตาม TARGET_KNIT (JIT) แทน
+        # [CARRY SKIP] (ข้างบน) ยังคงไว้เป็น floor — ห้าม carry ก่อนเส้นด้ายมาถึง
 
         # 🔧 สำคัญ: ถ้าเป็น carryover ให้จัดการก่อน mc_group check
         # กรณีที่ 1 & 2: Carryover ทุกกรณีที่ไม่ต้องการเพิ่มเครื่อง (ไม่มีเครื่องว่างหรือไม่จำเป็น)
         if _is_carryover and not should_check_increase:
-            # Carryover แบบไม่ต้องเพิ่มเครื่อง: ใช้เครื่องเดิมโดยไม่ต้องเช็ค available_machines
+            # Carryover แบบไม่ต้องเพิ่มเครื่อง: ใช้เครื่องเดิม แต่ต้องเช็ค actual_remain
+            # ถ้า old plan จองเครื่องไปหมดแล้ว (คนละ SC) → ไม่ควร carry เพิ่ม
             mc_group = _prev_mc_group
-            available_machines = machines_in_use.get(_prev_mc_key, 1)
+            _requested_machines = machines_in_use.get(_prev_mc_key, 1)
+            _carry_gauge = _prev_mc_key[2] if len(_prev_mc_key) > 2 else None
+            _actual_remain = get_actual_mc_remain(_prev_mc_group, plan_week, gauge=_carry_gauge)
+            # Same SC ใช้เครื่องเดิมได้เต็มจำนวน (เครื่องเป็นของ SC นั้น) แต่ต้องเช็ค actual_remain ด้วย
+            # เพราะ actual_remain คือ cap จริงที่เหลือหลังหัก old booking + new plan อื่นๆ
+            _carry_key_for_sc = _resolve_carry_key(item, _prev_mc_group, _carry_gauge)
+            _last_sc = last_sc_so_no.get(_carry_key_for_sc)
+            _same_sc_carry = (_last_sc == sc_so_no)
+            if _requested_machines > _actual_remain:
+                print(
+                    f"[CARRY CLAMP] {item} SC {sc_so_no} W{plan_week}: "
+                    f"requested {_requested_machines} > actual_remain {_actual_remain} "
+                    f"(same_sc={_same_sc_carry}, last SC {_last_sc}) → clamp to {max(0, _actual_remain)}"
+                )
+                _requested_machines = max(0, int(_actual_remain))
+            available_machines = _requested_machines
             setup_needed = False
             # ใช้ daily_capacity เดิม
             _cap_row = item_cap_data[
@@ -4132,9 +4574,10 @@ for _, order in orders_sorted.iterrows():
                     print(f"[WARNING] No capacity found for {item} in {mc_group}, skipping to next week")
                     plan_week = next_week(plan_week)
                     continue
+            daily_capacity = adjust_daily_cap_for_item_special(daily_capacity, item, mc_group, _sel_gauge)
             
-            if item == "FD1BASFZ15/1A0":
-                print(f"[DEBUG CARRY] Week {plan_week}: Using carryover - mc_group={mc_group}, machines={available_machines}, daily_cap={daily_capacity}")
+            if item == "FD1BASFZ15/1A0" or item == "FD3GNTPE54/14A0":
+                print(f"[DEBUG CARRY] Week {plan_week}: Using carryover - mc_group={mc_group}, machines={available_machines}, daily_cap={daily_capacity}, actual_remain={_actual_remain}, same_sc={_same_sc_carry}")
         elif USE_LOAD_BALANCING or should_check_increase:
             print(f"[DEBUG LB] Using Load Balancing for {item} in week {plan_week}")
             # ดึง daily_capacity จาก required_machines_info ถ้ามี
@@ -4177,6 +4620,7 @@ for _, order in orders_sorted.iterrows():
                     _input_daily_cap = _get_capacity_for_mc_group(item, _prev_mc_group, _carry_gauge)
                     if _input_daily_cap <= 0:
                         _input_daily_cap = _normalize_capacity(item, _prev_mc_group, float(_carry_cap_row.iloc[0]["CAP ทอ"]))
+                _input_daily_cap = adjust_daily_cap_for_item_special(_input_daily_cap, item, _prev_mc_group, _carry_gauge)
                 print(f"[DEBUG CARRY] Using daily_capacity from carryover: {_input_daily_cap}")
             
             # 🔧 สำคัญ: สำหรับ carryover ที่ต้องการเพิ่มเครื่อง ต้องรักษา mc_group เดิม
@@ -4186,6 +4630,11 @@ for _, order in orders_sorted.iterrows():
                 # ส่ง mc_group เดิมไปให้ Load Balancing และบอกว่าเป็น carryover
                 # 🔧 FIX: ใช้ _total_item_demand แทน qty_left เพื่อรวม demand จาก FG ถัดไปของ item เดียวกัน
                 # ป้องกันกรณีที่ FG ปัจจุบันเหลือน้อย แต่ยังมี FG อื่นรอผลิต → ควรเพิ่มเครื่องได้
+                _already_produced_this_sc = order_qty - qty_left
+                _already_produced_other_sc = _item_cumulative_planned.get(item, 0)
+                _already_produced = _already_produced_this_sc + _already_produced_other_sc
+                _adjusted_machine_calc = max(0, _qty_for_machine_calc - _already_produced)
+                _total_item_demand = max(qty_left, _adjusted_machine_calc)
                 mc_group_result, daily_capacity, setup_needed, available_machines, _sel_gauge = (
                     get_load_balanced_machine(
                         item,
@@ -4219,7 +4668,7 @@ for _, order in orders_sorted.iterrows():
                         urgent_mode,
                         past_rdd,
                         force_max_mc=(not _req_feasible and not past_rdd and not is_first_time_use),
-                        qty_left=qty_left,
+                        qty_left=_total_item_demand,
                         daily_capacity=_input_daily_cap,
                         progressive_plan=progressive_plan,
                         current_machines=_current_machines,
@@ -4238,7 +4687,7 @@ for _, order in orders_sorted.iterrows():
                     urgent_mode,
                     past_rdd,
                     force_max_mc=(not _req_feasible and not past_rdd and not is_first_time_use),
-                    qty_left=qty_left,
+                    qty_left=_total_item_demand,
                     daily_capacity=_input_daily_cap,
                     progressive_plan=progressive_plan,
                     current_machines=_current_machines,
@@ -4276,16 +4725,25 @@ for _, order in orders_sorted.iterrows():
                     print(f"[WARNING] No capacity found for {item} in {mc_group}, skipping to next week")
                     plan_week = next_week(plan_week)
                     continue
+            daily_capacity = adjust_daily_cap_for_item_special(daily_capacity, item, mc_group, _sel_gauge)
 
         # ถ้ามี progressive_plan → ใช้จำนวนเครื่องที่คำนวณไว้ล่วงหน้า
         if progressive_plan and plan_week in progressive_plan:
             available_machines = progressive_plan[plan_week]
-        elif required_machines_info and not past_rdd and _req_feasible:
+        elif required_machines_info and not past_rdd and _req_feasible and not rts_local_force:
             # Cap available_machines ตาม required_mc เมื่อ feasible=True
             # (คำนวณมาแล้วว่า N เครื่องพอตั้งแต่ต้น ไม่ต้องเพิ่มบนกลางคัน)
             req_mc = required_machines_info[2]
-            if available_machines > req_mc:
-                available_machines = req_mc
+            # 🔧 FIX: ถ้า SC เดียวกันมีเครื่องวิ่งอยู่แล้ว (last_sc_machines) อย่าลดต่ำกว่านั้น
+            # ป้องกันกรณี FG ถัดไปของ SC เดียวกันใน week เดียวกัน ถูก cap ลงทั้งที่เครื่องยังวิ่งอยู่
+            _sc_key_cap = (item, mc_group, _sel_gauge, sc_so_no)
+            _sc_existing_mc = last_sc_machines.get(_sc_key_cap, 0)
+            if _sc_existing_mc > 0 and req_mc < _sc_existing_mc:
+                print(f"[SC CAP PREVENT] {item} SC {sc_so_no} W{plan_week}: req_mc={req_mc} < existing={_sc_existing_mc} → keep {_sc_existing_mc}")
+                req_mc = _sc_existing_mc
+# ?? REMOVED:             if available_machines > req_mc:
+# ?? REMOVED:                 available_machines = req_mc
+
         # ถ้า plan_week เกิน target แล้ว → ยังสามารถเพิ่มเครื่องได้ (ไม่ cap ที่ required_mc)
         
         # 🔧 แก้ไข: บังคับกฎ "สัปดาห์แรกไม่เกิน 2 เครื่อง" เสมอ
@@ -4343,7 +4801,8 @@ for _, order in orders_sorted.iterrows():
         factory_working_days = get_working_days_by_factory(mc_group, available_machines, week=plan_week)
         # แยกเครื่อง carry-over (ไม่ต้อง setup) vs เครื่องใหม่ (ต้อง setup)
         mc_key = _resolve_carry_key(item, mc_group, _sel_gauge)
-        prev_machines = machines_in_use.get(mc_key, 0)
+        _sc_key_init = (item, mc_group, _sel_gauge, sc_so_no)
+        prev_machines = last_sc_machines.get(_sc_key_init, machines_in_use.get(mc_key, 0))
         # If RTS+LOCAL rule applies and the selected mc_group matches, force carryover-only
         if rts_local_force:
             last_old_by_mc = rts_local_force.get("last_old_by_mc", {})
@@ -4370,6 +4829,16 @@ for _, order in orders_sorted.iterrows():
                 prev_machines = int(forced_m or 0)
         current_week_idx = week_index(plan_week)
         prev_week_idx = last_production.get(mc_key)
+        _booking_week_mc = (
+            booking_mc_by_week.get(mc_key, {}).get(current_week_idx, 0)
+            if current_week_idx is not None
+            else 0
+        )
+        if _booking_week_mc > 0:
+            prev_machines = max(prev_machines, _booking_week_mc)
+            if _is_carryover and available_machines < _booking_week_mc:
+                available_machines = _booking_week_mc
+                print(f"[CARRY BOOKING MC] {item} W{plan_week}: use booking machines={_booking_week_mc}")
         # is_continuing = week ติดกัน AND เป็น SC/SO NO เดียวกัน (ต่างสี = เริ่มใหม่)
         # For RTS_LOCAL rule we must continue from old regardless of SC/SO, so
         # treat same_order as True when rts_local_force applies for this mc_group.
@@ -4381,6 +4850,14 @@ for _, order in orders_sorted.iterrows():
         else:
             # เปรียบเทียบ SC/SO
             same_order = last_sc_so_no.get(mc_key) == sc_so_no
+            # 🔧 FIX: ใช้ last_sc_week (per-SC) แทน last_sc_so_no (global) เพื่อป้องกัน SC อื่นทับ
+            # ถ้า SC นี้เคยผลิตเอง (last_sc_week มีข้อมูล) และ gap ไม่เกิน → same_order = True
+            _sc_key_same = (item, mc_group, _sel_gauge, sc_so_no)
+            _same_sc_last_week_idx = last_sc_week.get(_sc_key_same)
+            if not same_order and _same_sc_last_week_idx is not None and current_week_idx is not None:
+                if (current_week_idx - _same_sc_last_week_idx) <= SETUP_GAP_WEEK:
+                    print(f"[SAME SC CARRY] {item} SC {sc_so_no}: last SC week idx {_same_sc_last_week_idx} → current {current_week_idx} (gap {current_week_idx - _same_sc_last_week_idx} ≤ {SETUP_GAP_WEEK}) → same_order=True")
+                    same_order = True
             # ถ้าอนุญาต carryover ข้าม SO ให้ตรวจเงื่อนไขเพิ่มเติม
             if not same_order and ALLOW_CARRYOVER_ACROSS_SO:
                 prev_m = machines_in_use.get(mc_key, 0)
@@ -4407,7 +4884,7 @@ for _, order in orders_sorted.iterrows():
                     and (current_week_idx - _item_prev_widx) <= SETUP_GAP_WEEK
                 ):
                     same_order = True  # item-level carry: inherit machines จาก FG ก่อนหน้า
-        _is_same_sc = last_sc_so_no.get(mc_key) == sc_so_no
+        _is_same_sc = (last_sc_so_no.get(mc_key) == sc_so_no) or (_same_sc_last_week_idx is not None)
         # Item carry: ถ้า item+mc กำลังวิ่งอยู่ใน future week (prev_week_idx > current_week_idx)
         # หมายความว่า SC อื่นของ item เดียวกันยังผลิตอยู่ → ดัน plan_week ไปต่อท้าย แล้ว carry
         if (
@@ -4429,7 +4906,8 @@ for _, order in orders_sorted.iterrows():
                 # available_machines was set by LB for the ORIGINAL plan_week (possibly first-time use)
                 # but after ITEM CARRY WAIT it should respect existing carry machines.
                 # ป้องกัน LB สั่งเพิ่มเครื่องทั้งที่ carry เดิมเพียงพอผลิตได้ใน 1-2 weeks ถัดไป
-                _carry_mc_after_wait = machines_in_use.get(mc_key, 0)
+                _sc_key_wait = (item, mc_group, _sel_gauge, sc_so_no)
+                _carry_mc_after_wait = last_sc_machines.get(_sc_key_wait, machines_in_use.get(mc_key, 0))
                 if _carry_mc_after_wait > 0 and available_machines > _carry_mc_after_wait:
                     print(f"[ITEM CARRY WAIT] Capping available_machines {available_machines} → {_carry_mc_after_wait} (existing carry machines)")
                     available_machines = _carry_mc_after_wait
@@ -4451,25 +4929,55 @@ for _, order in orders_sorted.iterrows():
                 or (current_week_idx - prev_week_idx <= SETUP_GAP_WEEK)
             )
         )  # ต้องไม่ห่างเกิน gap
+        # 🔧 NEW: ถ้า booking active ครอบ plan_week (แต่ last_production เป็นสัปดาห์อนาคต)
+        # → ถือว่า is_continuing เพราะเครื่องกำลังวิ่งอยู่ใน plan_week จาก booking เดิม
+        if (
+            not is_continuing
+            and current_week_idx is not None
+            and mc_key in booking_active_week_set
+            and current_week_idx in booking_active_week_set[mc_key]
+        ):
+            is_continuing = True
+            print(f"[IS_CONTINUING BOOKING SPAN] {item} W{plan_week}: booking active ครอบ plan_week → is_continuing=True")
         # ❗ ถ้า item+mc นี้ยังไม่เคยผลิตใน new plan → บังคับ setup (ไม่อ้าง old plan)
         # ยกเว้น: ถ้ามีข้อมูลจาก booking จริง (detail_mc) → อนุญาต carryover จาก booking ได้
         if not _has_item_mc_key(new_plan_started_items, mc_key) and not _has_item_mc_key(booking_production_keys, mc_key):
             is_continuing = False
+
+        # 🔧 NEW: ตรวจ intermediate weeks — ถ้ามี week ที่เครื่องว่าง=0 จาก item อื่น → ตัด carry
+        # Rule: remaining = 0 ใน gap + item นี้ไม่ได้ผลิตใน week นั้น = เครื่องถูก item อื่นยึดครบ
+        # Exception: ถ้า item เดิมผลิตอยู่เองและเครื่องเหลือ 0 → ยังคง carry ได้
+        if is_continuing and prev_week_idx is not None and current_week_idx is not None:
+            if _carry_blocked_by_gap(item, mc_key, mc_group, _sel_gauge, prev_week_idx, current_week_idx):
+                is_continuing = False
+                setup_needed = True
+
         if is_continuing:
             # เครื่อง carry ต่อใช้ได้เต็ม prev_machines (ไม่ต้องเช็คเครื่องว่าง)
             # เพราะเป็นเครื่องที่ใช้อยู่แล้ว ไม่ใช่เครื่องใหม่
-            carryover_mc = prev_machines
+            # 🔧 FIX: ถ้า SC เดียวกันกำลัง carry ต่อ อย่าลดเครื่องต่ำกว่าที่วิ่งอยู่แล้ว
+            # ป้องกันกรณี FG ถัดไปของ SC เดียวกัน ถูก cap ลงทั้งที่เครื่องยังวิ่งอยู่
+            if prev_machines > available_machines:
+                print(f"[SC CONTINUING RAISE] {item} SC {sc_so_no} W{plan_week}: prev={prev_machines} > avail={available_machines} → raise to {prev_machines}")
+                available_machines = prev_machines
+            carryover_mc = min(prev_machines, available_machines)
             # เครื่องใหม่ = available_machines - carryover (อาจเป็น 0 หรือติดลบ)
             new_mc = max(0, available_machines - carryover_mc)
         else:
             carryover_mc = 0
             new_mc = available_machines  # ทุกเครื่องต้อง setup
+            # 🔧 FIX: ถ้า is_continuing=False → ต้อง setup ใหม่เสมอ
+            # ป้องกัน RTS/LB set setup_needed=False ทั้งที่ gap > SETUP_GAP_WEEK
+            if not _is_carryover:
+                setup_needed = True
         # Enforce RTS+LOCAL: use existing carryover machines only (no new setup)
         # prev_machines comes from machines_in_use (last active week, MC_USE_CEIL>0)
+        # 🔧 FIX: เช็ค is_continuing ก่อน — ถ้า gap > SETUP_GAP_WEEK ต้อง setup ใหม่
         if rts_local_force and str(mc_group).strip().upper() in rts_local_force.get(
             "last_old_by_mc", {}
-        ):
-            carryover_mc = int(prev_machines or 0)
+        ) and is_continuing:
+            # 🔧 FIX: จำกัด carryover ไม่ให้เกิน available_machines
+            carryover_mc = min(int(prev_machines or 0), available_machines)
             new_mc = 0
             available_machines = carryover_mc
             setup_needed = False
@@ -4532,10 +5040,10 @@ for _, order in orders_sorted.iterrows():
                 q -= total
                 wk = next_week(wk)
                 _sim_count += 1
-            return q  # <= rev_weight หมายถึงทัน (ไม่เกิน 1 พับ ถือว่าครบ)
+            return q
 
         if rdd_idx is not None and not rts_local_force and new_mc > 0:
-            _rw_tol = rev_weight or 0
+            _rw_tol = 0.0
             # ใช้ demand ระดับ item (ทุก FG ของ item) เพื่อคงเครื่องไว้เมื่อยังมี FG เหลือของ item
             _fwd_qty = _qty_for_machine_calc if _qty_for_machine_calc > qty_left else qty_left
             if carryover_mc > 0 and _forward_sim(carryover_mc, 0, _fwd_qty) <= _rw_tol:
@@ -4582,7 +5090,126 @@ for _, order in orders_sorted.iterrows():
             print(f"[YD SUB_COLOR] {item} W{plan_week}: SUB_COLOR เปลี่ยนครั้งที่ {_total_color_setups} → prod_days_old={prod_days_old} (หัก 1 วันจากที่เหลือ)")
         # เครื่องใหม่ (new_mc) ต้อง setup เสมอ แม้ item จะ warm บนเครื่องเดิม (setup_needed=False)
         # setup_needed=False หมายถึงเครื่องที่วิ่งอยู่แล้ว ไม่ใช่เครื่องที่เพิ่งเพิ่มมา
-        prod_days_new = max(0, actual_working_days - item_setup_days)
+        # 🔧 FIX: ถ้าวันทำงานน้อยกว่า setup days → ใช้ 0.5 วัน setup แทน (เพื่อให้มีวันผลิตบ้าง)
+        if new_mc > 0 and actual_working_days < item_setup_days:
+            # วันทำงานน้อยเกินไป → ลด setup เป็น 0.5 วัน
+            prod_days_new = max(0, actual_working_days - 0.5)
+        elif new_mc > 0:
+            # ปกติ แต่ถ้า actual_working_days == item_setup_days → ผลิต 0 วัน → บังคับ 0.5 วันขั้นต่ำ
+            prod_days_new = max(0.5, actual_working_days - item_setup_days)
+        else:
+            prod_days_new = max(0, actual_working_days - item_setup_days)
+
+        # ===== NEW: Multi-FG min-mc — ลดเครื่องตาม demand รวมของทุก FG ที่เหลือ =====
+        # ถ้า total item demand ผลิตครบได้ภายใน latest FG target ด้วยเครื่องน้อยกว่า
+        # ปัจจุบัน → ลดลง เพื่อ free เครื่องให้ item อื่น
+        # (ทำนอกบล็อก _sim_produce > qty_left เพราะ FG ปัจจุบันอาจใหญ่กว่า 1 week cap)
+        if (
+            carryover_mc + new_mc > 1
+            and _qty_for_machine_calc > qty_left + 1.0
+            and daily_capacity
+        ):
+            _cur_fg_int_m = 0
+            try:
+                _cur_fg_int_m = int(fg_week or 0)
+            except Exception:
+                pass
+            _latest_tgt_idx_m = rdd_idx if rdd_idx is not None else current_week_idx
+            for _oi_m, _or_m in orders_sorted.iterrows():
+                if str(_or_m.get("Item Code", "")).strip() != str(item).strip():
+                    continue
+                _ofg_m = _or_m.get("FG Week")
+                if not pd.notna(_ofg_m):
+                    continue
+                try:
+                    _ofgi_m = int(_ofg_m)
+                except Exception:
+                    continue
+                if _ofgi_m < _cur_fg_int_m:
+                    continue
+                _ofs_m = str(_ofgi_m)
+                try:
+                    if len(_ofs_m) >= 5:
+                        _oy_m = int(_ofs_m[:4])
+                        _owk_m = int(_ofs_m[4:])
+                    elif len(_ofs_m) <= 2:
+                        _oy_m = TODAY.year
+                        _owk_m = int(_ofs_m)
+                    else:
+                        _oy_m = TODAY.year
+                        _owk_m = int(_ofs_m)
+                    _orow_m = calendar_week[
+                        (calendar_week["YEAR"] == _oy_m)
+                        & (calendar_week["WEEK"] == _owk_m)
+                    ]
+                    if _orow_m.empty:
+                        continue
+                    _ofb_m = str(_or_m.get("FOB_TYPE", "")).strip()
+                    if _ofb_m in ["PILOT_RUN", "Salesman", "Salesman-PO", "Sample"]:
+                        _ooff_m = 1
+                    else:
+                        _ooff_m = 4
+                    _ordd_m = max(0, int(_orow_m.index[0]) - _ooff_m)
+                    if _latest_tgt_idx_m is None or _ordd_m > _latest_tgt_idx_m:
+                        _latest_tgt_idx_m = _ordd_m
+                except Exception:
+                    continue
+
+            def _sim_total_fit_multi(total_mc):
+                if total_mc <= 0 or daily_capacity is None:
+                    return False
+                _q = float(_qty_for_machine_calc)
+                _wk = plan_week
+                _first = True
+                while _wk is not None and _q > 0:
+                    _wi = week_index(_wk)
+                    if _wi is None:
+                        break
+                    if _latest_tgt_idx_m is not None and _wi > _latest_tgt_idx_m:
+                        break
+                    _cal = len(get_working_days_in_week(_wk))
+                    _fac = get_working_days_by_factory(mc_group, total_mc, week=_wk)
+                    _wd = min(_cal, _fac)
+                    if _first:
+                        _c_cnt = min(total_mc, carryover_mc)
+                        _n_cnt = max(0, total_mc - _c_cnt)
+                        _c_prod = _c_cnt * _wd * daily_capacity
+                        _n_prod = _n_cnt * max(0, _wd - item_setup_days) * daily_capacity
+                        _prod_wk = _c_prod + _n_prod
+                        _first = False
+                    else:
+                        _prod_wk = total_mc * _wd * daily_capacity
+                    if rev_weight and rev_weight > 0 and _prod_wk > 0:
+                        _prod_wk = (_prod_wk // rev_weight) * rev_weight
+                    _q -= _prod_wk
+                    _wk = next_week(_wk)
+                return _q <= 0
+
+            _cur_tot_m = carryover_mc + new_mc
+            _min_tot_m = _cur_tot_m
+            for _tt in range(1, _cur_tot_m):
+                if _sim_total_fit_multi(_tt):
+                    _min_tot_m = _tt
+                    break
+            if _min_tot_m < _cur_tot_m:
+                _new_carry = min(carryover_mc, _min_tot_m)
+                _new_new = max(0, _min_tot_m - _new_carry)
+                print(
+                    f"[MIN MC FIT] {item} W{plan_week}: ลดเครื่อง "
+                    f"{_cur_tot_m}→{_min_tot_m} (carry {carryover_mc}→{_new_carry}, "
+                    f"new {new_mc}→{_new_new}, latest_tgt_idx={_latest_tgt_idx_m}, "
+                    f"total_demand={_qty_for_machine_calc:.0f})"
+                )
+                carryover_mc = _new_carry
+                new_mc = _new_new
+                available_machines = carryover_mc + new_mc
+                # recompute prod_days_new ตามจำนวนเครื่องใหม่
+                if new_mc > 0 and actual_working_days < item_setup_days:
+                    prod_days_new = max(0, actual_working_days - 0.5)
+                elif new_mc > 0:
+                    prod_days_new = max(0.5, actual_working_days - item_setup_days)
+                else:
+                    prod_days_new = max(0, actual_working_days - item_setup_days)
 
         # ===== Optimize: ลดเครื่องให้น้อยสุดที่ยังผลิตพอครอบคลุม qty_left =====
         # เช่น week15 carry=3 แต่ qty_left น้อย → ใช้แค่ 1 เครื่องก็เสร็จใน week นี้
@@ -4605,8 +5232,9 @@ for _, order in orders_sorted.iterrows():
             # ครอบคลุมทั้ง 2 กรณี:
             #   1. คนละ SC แต่ item เดียวกัน (SC อื่น plan ไปแล้ว → ไม่ hold เครื่อง)
             #   2. SC เดียวกัน คนละ FG (FG ก่อนหน้า plan ไปแล้ว → ไม่ hold เครื่อง)
-            _already_planned_for_item = _item_cumulative_planned.get(item, 0)
-            next_fg_qty = max(0, _qty_for_machine_calc - _already_planned_for_item - order_qty)  # demand จาก order ที่ยังไม่ได้ plan
+            # _qty_for_machine_calc ครอบเฉพาะ FG ที่ยังไม่ plan อยู่แล้ว
+            # หักแค่ order_qty ของ FG ปัจจุบัน = demand ของ FG ถัดไป
+            next_fg_qty = max(0, _qty_for_machine_calc - order_qty)
 
             # ถ้ามี FG ถัดไป ให้คำนึงถึง ORDER_QTY รวมของ item ในการตัดสินใจลดเครื่อง
             total_qty_to_consider = _qty_for_machine_calc  # total ของ item (current + future FG)
@@ -4617,17 +5245,109 @@ for _, order in orders_sorted.iterrows():
             # 🔧 FIX: ใช้ threshold > 1.0 แทน > 0 เพื่อป้องกัน floating-point residual
             # จากการหัก qty ที่มีทศนิยม (เช่น 2530 - 687.89 - 1841.77 = 0.34)
             if next_fg_qty > 1.0:
-                opt_carry = carryover_mc
-                opt_new = new_mc
+                # 🔧 NEW: หา min mc ที่ยังผลิต total item demand ทัน latest target
+                # ของ FG ที่เหลือทั้งหมด เพื่อ free เครื่องให้ item อื่น
+                _cur_fg_int_opt = 0
+                try:
+                    _cur_fg_int_opt = int(fg_week or 0)
+                except Exception:
+                    pass
+                _latest_tgt_idx_opt = rdd_idx if rdd_idx is not None else current_week_idx
+                for _o_idx_c, _o_row_c in orders_sorted.iterrows():
+                    if str(_o_row_c.get("Item Code", "")).strip() != str(item).strip():
+                        continue
+                    _o_fg_raw_c = _o_row_c.get("FG Week")
+                    if not pd.notna(_o_fg_raw_c):
+                        continue
+                    try:
+                        _o_fg_i_c = int(_o_fg_raw_c)
+                    except Exception:
+                        continue
+                    if _o_fg_i_c < _cur_fg_int_opt:
+                        continue
+                    _ofs_c = str(_o_fg_i_c)
+                    try:
+                        if len(_ofs_c) >= 5:
+                            _oy_c = int(_ofs_c[:4])
+                            _owk_c = int(_ofs_c[4:])
+                        elif len(_ofs_c) <= 2:
+                            _oy_c = TODAY.year
+                            _owk_c = int(_ofs_c)
+                        else:
+                            _oy_c = TODAY.year
+                            _owk_c = int(_ofs_c)
+                        _orow_c = calendar_week[
+                            (calendar_week["YEAR"] == _oy_c)
+                            & (calendar_week["WEEK"] == _owk_c)
+                        ]
+                        if _orow_c.empty:
+                            continue
+                        _ofb_c = str(_o_row_c.get("FOB_TYPE", "")).strip()
+                        if _ofb_c in ["PILOT_RUN", "Salesman", "Salesman-PO", "Sample"]:
+                            _ooff_c = 1
+                        else:
+                            _ooff_c = 4
+                        _o_rdd_c = max(0, int(_orow_c.index[0]) - _ooff_c)
+                        if _latest_tgt_idx_opt is None or _o_rdd_c > _latest_tgt_idx_opt:
+                            _latest_tgt_idx_opt = _o_rdd_c
+                    except Exception:
+                        continue
+
+                def _sim_total_fit(total_mc):
+                    if total_mc <= 0 or daily_capacity is None:
+                        return False
+                    _q = float(_qty_for_machine_calc)
+                    _wk = plan_week
+                    _first = True
+                    while _wk is not None and _q > 0:
+                        _wi = week_index(_wk)
+                        if _wi is None:
+                            break
+                        if _latest_tgt_idx_opt is not None and _wi > _latest_tgt_idx_opt:
+                            break
+                        _cal = len(get_working_days_in_week(_wk))
+                        _fac = get_working_days_by_factory(mc_group, total_mc, week=_wk)
+                        _wd = min(_cal, _fac)
+                        if _first:
+                            _c_cnt = min(total_mc, carryover_mc)
+                            _n_cnt = max(0, total_mc - _c_cnt)
+                            _c_prod = _c_cnt * _wd * daily_capacity
+                            _n_prod = _n_cnt * max(0, _wd - item_setup_days) * daily_capacity
+                            _prod_wk = _c_prod + _n_prod
+                            _first = False
+                        else:
+                            _prod_wk = total_mc * _wd * daily_capacity
+                        if rev_weight and rev_weight > 0 and _prod_wk > 0:
+                            _prod_wk = (_prod_wk // rev_weight) * rev_weight
+                        _q -= _prod_wk
+                        _wk = next_week(_wk)
+                    return _q <= 0
+
+                _current_total_opt = carryover_mc + new_mc
+                _min_total_opt = _current_total_opt
+                for _try_t in range(1, _current_total_opt):
+                    if _sim_total_fit(_try_t):
+                        _min_total_opt = _try_t
+                        break
+
+                if _min_total_opt < _current_total_opt:
+                    opt_carry = min(carryover_mc, _min_total_opt)
+                    opt_new = max(0, _min_total_opt - opt_carry)
+                    print(
+                        f"[MIN MC FIT] {item} W{plan_week}: ลดเครื่อง "
+                        f"{_current_total_opt}→{_min_total_opt} "
+                        f"(latest_tgt_idx={_latest_tgt_idx_opt}, demand={_qty_for_machine_calc:.0f})"
+                    )
+                else:
+                    opt_carry = carryover_mc
+                    opt_new = new_mc
             else:
                 # ไม่มี FG ถัดไป หรือ capacity เพียงพอสำหรับทั้ง FG ปัจจุบันและถัดไป
                 # ให้ลดเครื่องตามปกติ
                 # ขั้นที่ 1: ลอง carry-only (ไม่ต้อง setup เพิ่ม) หาน้อยสุดที่ produce ≥ qty_left
-                # ถ้า qty ที่เหลือ (qty_left - produce) ≤ REVOLUTION_WEIGHT → ถือว่า 1 เครื่องพอ (ไม่เกิน 1 พับ)
-                _rw_opt = rev_weight or 0
                 found = False
                 for try_c in range(1, carryover_mc + 1):
-                    if _sim_produce(try_c, 0) + _rw_opt >= qty_left:
+                    if _sim_produce(try_c, 0) >= qty_left:
                         opt_carry = try_c
                         opt_new = 0
                         found = True
@@ -4638,7 +5358,7 @@ for _, order in orders_sorted.iterrows():
                     # ถ้า carryover_mc=0 ต้องเริ่มจาก 1 เพราะต้องมีเครื่องอย่างน้อย 1 เครื่อง
                     _try_n_start = 0 if carryover_mc > 0 else 1
                     for try_n in range(_try_n_start, new_mc + 1):
-                        if _sim_produce(carryover_mc, try_n) + _rw_opt >= qty_left:
+                        if _sim_produce(carryover_mc, try_n) >= qty_left:
                             opt_carry = carryover_mc
                             opt_new = try_n
                             break
@@ -4674,7 +5394,14 @@ for _, order in orders_sorted.iterrows():
 
         # 🔧 FIX: ถ้า qty_left < rev_weight × จำนวนเครื่อง → ลดเครื่องลง
         # เพราะไม่สามารถแบ่ง qty น้อยกว่า rev_weight ลงหลายเครื่องได้
-        if rev_weight and rev_weight > 0 and available_machines > 1 and qty_left < rev_weight * available_machines:
+        _already_planned_rev = _item_cumulative_planned.get(item, 0)
+        _next_fg_qty_rev = max(0, _qty_for_machine_calc - order_qty)
+        if (
+            rev_weight and rev_weight > 0
+            and available_machines > 1
+            and qty_left < rev_weight * available_machines
+            and _next_fg_qty_rev <= 1.0
+        ):
             _max_mc_for_qty = max(1, int(qty_left // rev_weight))
             if _max_mc_for_qty < available_machines:
                 print(f"[REV_WEIGHT CAP] {item} W{plan_week}: qty_left={qty_left:.0f} < rev_weight({rev_weight})×mc({available_machines})={rev_weight*available_machines:.0f} → ลดเครื่องจาก {available_machines} เป็น {_max_mc_for_qty}")
@@ -4697,6 +5424,9 @@ for _, order in orders_sorted.iterrows():
         _same_week_key = (plan_week, item, mc_group)
         _same_week_rem_cap = remaining_week_cap.get(_same_week_key, None)
         _same_week_total_cap = None
+        # DEBUG: FD3BASPK34B0 Week 26-27
+        if item == "FD3BASPK34B0" and plan_week in [26, 27]:
+            print(f"[DEBUG W{plan_week}] _same_week_rem_cap = {_same_week_rem_cap}, carryover_mc = {carryover_mc}, new_mc = {new_mc}, prod_days_old = {prod_days_old}, daily_capacity = {daily_capacity}, qty_left = {qty_left}")
         # 🔧 FIX: remaining_week_cap override logic
         # - ถ้า remaining มาจาก new plan (owner != None): remaining คำนวณถูกต้องจาก production จริง
         #   ใน week เดียวกัน → ต้องเคารพ (ห้าม override) เพราะเครื่องที่ setup ไปแล้ว
@@ -4716,41 +5446,24 @@ for _, order in orders_sorted.iterrows():
                 _total_cs = _yd_week_color_setups.get((mc_key, plan_week), 0)
                 print(f"[YD SUB_COLOR SAME-WEEK] {item} W{plan_week}: หัก {_color_cap_deduct:.0f} units จาก remaining cap (เปลี่ยนสีครั้งที่ {_total_cs}, remaining={_same_week_base_cap:.0f})")
             _same_week_new_cap = max(0.0, float(daily_capacity * prod_days_new * new_mc))
-            # 🔧 FIX: ถ้า remaining_week_cap มาจาก booking (owner=None) และ new plan มี carry-over machine
-            # → carry-over machine เป็นเครื่องอิสระจาก booking → ต้องเพิ่ม capacity ของ carry-over ด้วย
-            # ไม่งั้น carry-over machine จะถูกจำกัดโดย booking remaining ทั้งที่เป็นคนละเครื่อง
+            # FIX: ห้ามเพิ่ม carryover capacity เมื่อมี remaining_week_cap
+            # เพราะ remaining_week_cap คำนวณจากวันทำงานของสัปดาห์ปัจจุบันแล้ว
+            # การเพิ่ม carryover capacity จะทำให้นับซ้ำ (double counting)
             _same_week_carry_cap = 0.0
-            if carryover_mc > 0 and _rem_cap_owner is None:
-                _same_week_carry_cap = max(0.0, float(daily_capacity * prod_days_old * carryover_mc))
+            # ไม่เพิ่ม carry capacity เมื่อมี remaining cap อยู่แล้ว
             _same_week_total_cap = _same_week_base_cap + _same_week_new_cap + _same_week_carry_cap
 
             if rev_weight and rev_weight > 0:
                 _rem_batches = int(_same_week_total_cap // rev_weight)
                 produce = min(qty_left, _rem_batches * rev_weight)
-                # ✅ ถ้า qty ที่เหลือหลัง rounding ≤ 1 พับ → ดูดเข้าสัปดาห์นี้เลย
-                if produce < qty_left and (qty_left - produce) <= rev_weight:
-                    produce = qty_left
             else:
                 produce = min(qty_left, _same_week_total_cap)
-            if produce <= 0:
-                # cap เหลือน้อยเกินไป (rev_weight rounding) → ข้ามไป week ถัดไป
-                remaining_week_cap.pop((plan_week, item, mc_group), None)
-                remaining_week_cap_owner.pop((plan_week, item, mc_group), None)
-                plan_week = next_week(plan_week)
-                continue
-
-            _used_from_base = min(produce, _same_week_base_cap + _same_week_carry_cap)
-            _used_from_new = max(0.0, produce - _used_from_base)
-            cap_old, cap_new = _used_from_base, _used_from_new  # สำหรับ remaining cap tracking
         elif rev_weight is not None and rev_weight > 0:
             cap_old = daily_capacity * prod_days_old * carryover_mc
             cap_new = daily_capacity * prod_days_new * new_mc
             max_capacity = cap_old + cap_new
             max_batches = max_capacity // rev_weight
             produce = min(qty_left, max_batches * rev_weight)
-            # ✅ ถ้า qty ที่เหลือหลัง rounding ≤ 1 พับ → ดูดเข้าสัปดาห์นี้เลย (ไม่เพิ่มเครื่อง)
-            if produce < qty_left and (qty_left - produce) <= rev_weight:
-                produce = qty_left
         else:
             cap_old = daily_capacity * prod_days_old * carryover_mc
             cap_new = daily_capacity * prod_days_new * new_mc
@@ -4770,7 +5483,33 @@ for _, order in orders_sorted.iterrows():
         if _same_week_rem_cap is not None:
             _max_additional_qty = max(0.0, float(_same_week_total_cap or 0.0))
         else:
-            _week_capacity = max(0.0, float(cap_old + cap_new))
+            # 🔧 FIX: ตรวจสอบว่า booking ในสัปดาห์เดียวกันมีการ setup เพิ่มเครื่องหรือไม่
+            # ถ้ามี → true_week_cap ต้องหัก setup days จากเครื่องใหม่ใน booking ออกก่อน
+            # ป้องกัน new order ผลิตเกินกว่าที่เครื่องสามารถทำได้จริงใน week ที่ old booking ต้อง setup
+            _bk_cur_w_idx = week_index(plan_week)
+            _bk_prev_w_idx_cap = (_bk_cur_w_idx - 1) if _bk_cur_w_idx is not None else None
+            _bk_mc_cur = booking_mc_by_week.get(mc_key, {}).get(_bk_cur_w_idx, 0)
+            _bk_mc_prev = (
+                booking_mc_by_week.get(mc_key, {}).get(_bk_prev_w_idx_cap, 0)
+                if _bk_prev_w_idx_cap is not None
+                else 0
+            )
+            _bk_new_mc_cnt = max(0, _bk_mc_cur - _bk_mc_prev)   # เครื่องใหม่ที่ setup ใน booking week นี้
+            _bk_carry_mc_cnt = _bk_mc_cur - _bk_new_mc_cnt        # เครื่องที่ carry-over จาก booking week ก่อนหน้า
+            if _bk_new_mc_cnt > 0 and daily_capacity is not None and daily_capacity > 0:
+                # คำนวณ true_week_cap โดยหัก setup days จากเครื่องใหม่ใน old booking
+                _true_week_cap = (
+                    _bk_carry_mc_cnt * actual_working_days
+                    + _bk_new_mc_cnt * max(0, actual_working_days - item_setup_days)
+                ) * daily_capacity
+                _week_capacity = max(0.0, _true_week_cap)
+                print(
+                    f"[OLD SETUP CLAMP] {item} W{plan_week} {mc_group}: "
+                    f"bk_new_mc={_bk_new_mc_cnt:.0f} bk_carry_mc={_bk_carry_mc_cnt:.0f} "
+                    f"→ true_cap={_week_capacity:.2f} (naive={float(cap_old + cap_new):.2f})"
+                )
+            else:
+                _week_capacity = max(0.0, float(cap_old + cap_new))
             _max_additional_qty = max(0.0, _week_capacity - _already_planned_qty)
 
         if produce > _max_additional_qty:
@@ -4782,12 +5521,11 @@ for _, order in orders_sorted.iterrows():
             _clamped_qty = max(0.0, float(_max_additional_qty))
             if rev_weight and rev_weight > 0:
                 _rounded_cap = int(_clamped_qty // rev_weight) * rev_weight
-                if qty_left <= _clamped_qty and (qty_left - _rounded_cap) <= rev_weight:
-                    _clamped_qty = qty_left
-                elif _rounded_cap > 0:
+                if _rounded_cap > 0:
                     _clamped_qty = _rounded_cap
                 elif _clamped_qty < rev_weight:
                     _clamped_qty = 0
+
             produce = _clamped_qty
 
         # ไม่เพิ่มแถวถ้าไม่มีการผลิต — แต่ถ้า setup ไปแล้ว (new_mc>0) ให้บันทึกว่าเครื่อง setup เสร็จ
@@ -4796,8 +5534,11 @@ for _, order in orders_sorted.iterrows():
             if new_mc > 0:
                 _plan_ck_setup = _resolve_carry_key(item, mc_group, _sel_gauge)
                 machines_in_use[_plan_ck_setup] = available_machines
-                # 🔧 FIX: อย่าเขียนทับ last_production ด้วย week ที่เก่ากว่า (จาก SETUP ONLY)
-                # เช่น booking อยู่ที่ week 22 แล้ว SETUP ONLY ที่ week 19 ไม่ควร override
+                last_sc_machines[(item, mc_group, _sel_gauge, sc_so_no)] = available_machines
+                last_sc_week[(item, mc_group, _sel_gauge, sc_so_no)] = week_index(plan_week)
+                # 🔧 FIX: SETUP ONLY (ไม่มีการผลิต) ควรบันทึก last_production
+                # เพื่อให้ week ถัดไปรู้ว่าเครื่อง setup แล้ว (ไม่ต้อง setup ซ้ำ)
+                # แต่ต้องบันทึกเฉพาะกรณีที่ week นี้ >= week ที่บันทึกไว้
                 _cur_lp = last_production.get(_plan_ck_setup)
                 if _cur_lp is None or week_index(plan_week) >= _cur_lp:
                     last_production[_plan_ck_setup] = week_index(plan_week)
@@ -4842,7 +5583,9 @@ for _, order in orders_sorted.iterrows():
         if order_type == "YD-ORDERS":
             _is_fg_split = True  # บังคับสร้าง row ใหม่เสมอ
         elif _current_item_week_mc in _existing_item_week_mc:
-            # Merge ลงแถวเดิมของ Item+Week+MC_GROUP เฉพาะ FG_WEEK เดียวกันเท่านั้น
+            # Merge ลงแถวเดิมของ Item+Week+MC_GROUP เฉพาะ FG_WEEK + SC เดียวกันเท่านั้น
+            # ⚠️ ห้าม merge ข้าม SC — มิฉะนั้น production ของ SC อื่นจะถูกนับรวม
+            # ทำให้ PRODUCE_QTY ของแถวเกิน ORDER_QTY ของ SC นั้น
             _merged = False
             for _p in plans:
                 if (
@@ -4850,6 +5593,7 @@ for _, order in orders_sorted.iterrows():
                     and _p.get("PLAN_WEEK") == plan_week
                     and _p.get("MC_GROUP") == mc_group
                     and _p.get("FG_WEEK") == fg_week
+                    and _p.get("SC_SO_NO") == sc_so_no
                 ):
                     _p["PRODUCE_QTY"] = float(_p.get("PRODUCE_QTY", 0) or 0) + float(produce)
                     _p["PLAN_QTY"] = max(0, float(qty_left - produce))
@@ -4865,24 +5609,30 @@ for _, order in orders_sorted.iterrows():
                 if qty_left <= 0:
                     qty_left = 0
 
+                # บันทึก week ที่ผลิตจริงก่อนเปลี่ยน plan_week
+                _produced_week = plan_week
+                
                 # อัปเดต remaining cap แบบเดียวกับเส้นทาง append ใหม่
                 if _same_week_rem_cap is not None:
                     _new_rem = max(0, float(_same_week_total_cap or 0.0) - produce)
                     if _new_rem > 0:
-                        remaining_week_cap[(plan_week, item, mc_group)] = _new_rem
-                        remaining_week_cap_owner[(plan_week, item, mc_group)] = sc_so_no
+                        remaining_week_cap[(_produced_week, item, mc_group)] = _new_rem
+                        remaining_week_cap_owner[(_produced_week, item, mc_group)] = sc_so_no
                     else:
-                        remaining_week_cap.pop((plan_week, item, mc_group), None)
-                        remaining_week_cap_owner.pop((plan_week, item, mc_group), None)
+                        remaining_week_cap.pop((_produced_week, item, mc_group), None)
+                        remaining_week_cap_owner.pop((_produced_week, item, mc_group), None)
                 else:
                     _full_week_cap = cap_old + cap_new
                     _rem = max(0, _full_week_cap - produce)
-                    remaining_week_cap[(plan_week, item, mc_group)] = _rem
-                    remaining_week_cap_owner[(plan_week, item, mc_group)] = sc_so_no
+                    remaining_week_cap[(_produced_week, item, mc_group)] = _rem
+                    remaining_week_cap_owner[(_produced_week, item, mc_group)] = sc_so_no
 
                 _plan_ck_merge = _resolve_carry_key(item, mc_group, _sel_gauge)
                 last_production[_plan_ck_merge] = week_index(plan_week)
-                # 🔧 FIX: ถ้า MERGE iteration นำเครื่องใหม่เข้ามา (new_mc > 0)
+                machines_in_use[_plan_ck_merge] = available_machines
+                last_sc_machines[(item, mc_group, _sel_gauge, sc_so_no)] = available_machines
+                last_sc_week[(item, mc_group, _sel_gauge, sc_so_no)] = week_index(plan_week)
+                # FIX: ถ้า MERGE iteration นำเครื่องใหม่เข้ามา (new_mc > 0)
                 # ต้องอัปเดต row + tracking ให้สะท้อนจำนวนเครื่องจริง
                 # เช่น cross-SC fill สร้าง row carry=2,new=0 → MERGE เพิ่ม new=2 →
                 # row ต้องแสดง actual=4 เพื่อไม่ให้ overcapacity ในผลลัพธ์
@@ -4897,8 +5647,7 @@ for _, order in orders_sorted.iterrows():
                     # เปลี่ยน SETUP_DAYS เป็นค่าจาก iteration ที่ setup จริง
                     _p["SETUP_DAYS"] = setup_days_used
                     _p["AVAILABLE_DAYS"] = available_days
-                    machines_in_use[_plan_ck_merge] = _merged_actual
-                    # อัพเดท tracking สำหรับเครื่องใหม่ที่ MERGE เพิ่มเข้ามา
+                    # อัพเดต tracking สำหรับเครื่องใหม่ที่ MERGE เพิ่มเข้ามา
                     _week_mc_key_m = (week_index(plan_week), mc_group)
                     weekly_mc_usage[_week_mc_key_m] = weekly_mc_usage.get(_week_mc_key_m, 0) + new_mc
                     if plan_week not in weekly_job_usage:
@@ -4911,14 +5660,68 @@ for _, order in orders_sorted.iterrows():
                         f"actual {_existing_actual_mc}→{_merged_actual} "
                         f"(carry={_p.get('CARRYOVER_MC')}, new={_merged_new})"
                     )
+                # FIX: ถ้า new_mc = 0 (ใช้ remaining cap) ไม่ต้องอัปเดต machines_in_use
+                # เพราะถูกตั้งค่าไว้อย่างถูกต้องแล้วที่ line 5492 = available_machines
+                # ห้าม overwrite ด้วย _existing_actual_mc เพราะจะทำให้ week ถัดไปคิดว่าไม่มี carryover
                 else:
-                    machines_in_use[_plan_ck_merge] = _existing_actual_mc
-                last_sc_so_no[_plan_ck_merge] = sc_so_no
+                    # machines_in_use already set correctly at line 5492
+                    # Only update SC-specific tracking if needed
+                    if _existing_actual_mc > 0:
+                        last_sc_machines[(item, mc_group, _sel_gauge, sc_so_no)] = _existing_actual_mc
+                    last_sc_week[(item, mc_group, _sel_gauge, sc_so_no)] = week_index(plan_week)
+                # FIX: ถ้า available_machines > 0 แต่ _existing_actual_mc = 0
+                # หมายถึง MERGE ครั้งแรกที่ใช้ remaining cap จาก booking → ต้องบันทึก available_machines
+                if available_machines > 0 and _existing_actual_mc == 0:
+                    machines_in_use[_plan_ck_merge] = available_machines
+                    last_sc_machines[(item, mc_group, _sel_gauge, sc_so_no)] = available_machines
+                    last_sc_week[(item, mc_group, _sel_gauge, sc_so_no)] = week_index(plan_week)
+                    print(
+                        f"[MERGE FIRST TIME] {item} W{plan_week}: "
+                        f"set machines_in_use={available_machines} (from booking remaining cap)"
+                    )
+                last_sc_so_no[_plan_ck_merge] = sc_so_no  # บันทึก SC/SO NO ล่าสุดที่ผลิต
                 if order_type == "YD-ORDERS" and sub_color:
                     last_sub_color[_plan_ck_merge] = sub_color
                 new_plan_started_items.add(_plan_ck_merge)
-
+                # บันทึก total machines per (week, mc_group) สำหรับ gradual increase
+                # 🔧 FG SPLIT: ถ้าเป็น FG split row → เครื่องนับไปแล้วจาก FG แรก ห้ามนับซ้ำ
+                if not _is_fg_split:
+                    _week_mc_key = (week_index(plan_week), mc_group)
+                    weekly_mc_usage[_week_mc_key] = weekly_mc_usage.get(_week_mc_key, 0) + available_machines
+                    # อัพเดท job usage สำหรับสัปดาห์นี้ (นับเฉพาะ new_mc = machines ที่ setup ใหม่)
+                    # เครื่อง carry ต่อ (carryover_mc) ไม่ต้องนับเป็น job ใหม่เพราะไม่ต้อง setup
+                    if plan_week not in weekly_job_usage:
+                        weekly_job_usage[plan_week] = {}
+                    weekly_job_usage[plan_week][mc_group] = (
+                        weekly_job_usage[plan_week].get(mc_group, 0) + new_mc
+                    )
+                # อัพเดต new plan usage (นับทั้ง carryover+new สำหรับ get_actual_mc_remain)
+                # key ต้องเป็น (mc_group, gauge_str) เสมอ — ห้าม pool ข้าม GUAGE
+                # ถ้าเป็น same-week continuation หรือ FG split → เครื่องนับไปแล้วจาก FG ก่อนหน้า ห้ามนับซ้ำ
+                if _same_week_rem_cap is None and not _is_fg_split:
+                    if plan_week not in weekly_new_plan_usage:
+                        weekly_new_plan_usage[plan_week] = {}
+                    _wpu_cap = item_cap_data[
+                        (item_cap_data["ITEM_CODE"] == item)
+                        & (item_cap_data["MC_GROUP"] == mc_group)
+                    ]
+                    _wpu_gauge_raw = _wpu_cap.iloc[0]["GUAGE"] if not _wpu_cap.empty else None
+                    _wpu_gauge_str = (
+                        str(_wpu_gauge_raw).strip()
+                        if _wpu_gauge_raw is not None
+                        and not (isinstance(_wpu_gauge_raw, float) and pd.isna(_wpu_gauge_raw))
+                        else ""
+                    )
+                    # ถ้า mc_group+gauge อยู่ใน MC_GROUP_REDIRECT → หักเครื่องจาก target แทน
+                    # เช่น SKP 20 → หักจาก FA 20 เสมอ
+                    _wpu_mc_r, _wpu_gauge_r = _apply_mc_redirect(mc_group, _wpu_gauge_str)
+                    _wpu_key = (_wpu_mc_r, _wpu_gauge_r)
+                    weekly_new_plan_usage[plan_week][_wpu_key] = (
+                        weekly_new_plan_usage[plan_week].get(_wpu_key, 0) + max(0, available_machines - _booking_week_mc)
+                    )
+                # ก้าวไป week ถัดไปเสมอหลัง produce (ห้าม plan item เดิมใน week เดิมซ้ำ)
                 _produced_week = plan_week
+
                 plan_week = next_week(plan_week)
                 continue
 
@@ -4990,8 +5793,13 @@ for _, order in orders_sorted.iterrows():
                 "DATE_IN": order.get("DATE_IN"),
                 "EARLIEST_PLAN_WEEK": order.get("DYE_END_DATE") if order_type == "YD-ORDERS" else get_yarn_lt_earliest_week(item, date_in=order.get("DATE_IN")),
                 "SUB_COLOR": sub_color,
+                "PO_NO": str(order.get("PO_NO", "")).strip(),
+                "RDD_WEEK": fg_week,
+                "SC_LINE_ID": str(order.get("SC/SO NO", "")).strip(),
             }
         )
+        plans[-1]["NAY_COLOR"] = str(order.get("NAY_COLOR", "")).strip()
+        plans[-1]["COLOR_DESC"] = str(order.get("COLOR_DESC", "")).strip()
         qty_left -= produce
         if qty_left <= 0:
             qty_left = 0  # ป้องกันค่าติดลบ
@@ -5015,24 +5823,16 @@ for _, order in orders_sorted.iterrows():
             # เพื่อให้ SC/SO อื่นสามารถ carry ต่อใน week เดียวกันได้
             _full_week_cap = cap_old + cap_new
             _rem = max(0, _full_week_cap - produce)
-            # 🔧 FIX: ถ้า item ลดเครื่องจากสัปดาห์ก่อน (tail end) → เพิ่ม capacity ของเครื่องที่ปล่อย
-            # เพื่อให้ SC/SO อื่นของ item เดียวกันสามารถใช้เครื่องต่อโดยไม่ drop
-            # ⚠️ ต้องมี carryover_mc > 0 (คือลดจริงจาก week ก่อนใน new plan) เท่านั้น
-            # ถ้า carryover_mc == 0 คือ cold start → ไม่มีเครื่องที่ "ปล่อย" จริง
-            mc_key = _resolve_carry_key(item, mc_group, _sel_gauge)
-            _prev_mc_for_item = machines_in_use.get(mc_key, 0)
-            if _prev_mc_for_item > available_machines and available_machines > 0 and carryover_mc > 0:
-                _freed_mc = _prev_mc_for_item - available_machines
-                _freed_cap = _freed_mc * actual_working_days * daily_capacity
-                if rev_weight and rev_weight > 0:
-                    _freed_cap = (int(_freed_cap // rev_weight)) * rev_weight
-                _rem += _freed_cap
-                print(f"🔧 Freed capacity: {item} W{plan_week} reduced {_prev_mc_for_item}→{available_machines} mc, freed {_freed_mc} mc = {_freed_cap:.0f} units")
+            # NOTE: ห้ามเพิ่ม freed capacity จากเครื่องที่ลดลง เพราะเครื่องที่ "ปล่อย"
+            # ไม่ได้วิ่งอยู่ใน week นี้แล้ว → capacity ต้องอิงจากเครื่องที่ใช้จริงเท่านั้น
+            # เครื่องที่ปล่อยจะว่างให้ item อื่นใช้ผ่าน machine pool แทน
             remaining_week_cap[(plan_week, item, mc_group)] = _rem
             remaining_week_cap_owner[(plan_week, item, mc_group)] = sc_so_no
         _plan_ck = _resolve_carry_key(item, mc_group, _sel_gauge)
         last_production[_plan_ck] = week_index(plan_week)
         machines_in_use[_plan_ck] = available_machines  # บันทึกจำนวนเครื่องที่ใช้จริง
+        last_sc_machines[(item, mc_group, _sel_gauge, sc_so_no)] = available_machines
+        last_sc_week[(item, mc_group, _sel_gauge, sc_so_no)] = week_index(plan_week)
         last_sc_so_no[_plan_ck] = sc_so_no  # บันทึก SC/SO NO ล่าสุดที่ผลิต
         if order_type == "YD-ORDERS" and sub_color:
             last_sub_color[_plan_ck] = sub_color
@@ -5077,7 +5877,7 @@ for _, order in orders_sorted.iterrows():
             _wpu_mc_r, _wpu_gauge_r = _apply_mc_redirect(mc_group, _wpu_gauge_str)
             _wpu_key = (_wpu_mc_r, _wpu_gauge_r)
             weekly_new_plan_usage[plan_week][_wpu_key] = (
-                weekly_new_plan_usage[plan_week].get(_wpu_key, 0) + available_machines
+                weekly_new_plan_usage[plan_week].get(_wpu_key, 0) + max(0, available_machines - _booking_week_mc)
             )
         # ก้าวไป week ถัดไปเสมอหลัง produce (ห้าม plan item เดิมใน week เดิมซ้ำ)
         _produced_week = plan_week
@@ -5224,13 +6024,27 @@ for _, order in orders_sorted.iterrows():
 # =========================
 # Optimize machine utilization by filling unused capacity with same-item orders from different SCs
 plans = detect_and_fill_unused_capacity(plans, orders, summary_mc)
-
-# =========================
 # EXPORT
 
 # =========================
 plan_df = pd.DataFrame(plans)
 DATA_PLAN_DIR.mkdir(exist_ok=True)
+
+# สร้าง week -> year lookup จาก calendar_week (รองรับข้ามปี)
+_week_year_lookup = {}
+for _, row in calendar_week.iterrows():
+    w = int(row["WEEK"])
+    y = int(row["YEAR"])
+    if w not in _week_year_lookup:
+        _week_year_lookup[w] = y
+    else:
+        # ถ้า week ซ้ำข้ามปี → ใช้ปีที่ใกล้ TODAY.year ที่สุด
+        if abs(y - TODAY.year) < abs(_week_year_lookup[w] - TODAY.year):
+            _week_year_lookup[w] = y
+
+# เพิ่ม PLAN_YEAR ให้ new plan_df
+if not plan_df.empty and "PLAN_WEEK" in plan_df.columns:
+    plan_df["PLAN_YEAR"] = plan_df["PLAN_WEEK"].map(_week_year_lookup).fillna(TODAY.year).astype(int)
 
 # =========================
 # LOAD BALANCING - Apply to final plan
@@ -5238,8 +6052,6 @@ DATA_PLAN_DIR.mkdir(exist_ok=True)
 # ปิดการใช้ Load Balancing ตอนสรุปผลลัพธ์เพื่อรักษาความสามารถในการผลิตตาม ORDERS_QTY
 # Load Balancing ทำงานเฉพาะตอนเลือกเครื่องเพื่อกระจายงานอย่างสมดุล
 if False and USE_LOAD_BALANCING and not plan_df.empty:
-    print("🔄 Applying Load Balancing to final plan...")
-    
     # Group plans by week for load balancing
     balanced_plans = []
     for week in sorted(plan_df['PLAN_WEEK'].unique()):
@@ -5521,11 +6333,21 @@ if not detail_mc.empty:
             # fallback: ใช้ FIBER_TYPE (POLY / None POLY) จาก YARN-USED ของ item
             return get_fiber_type_for_item(_ic)
         old_booking_df["MATERIAL_CONTENT"] = old_booking_df.apply(_get_mat_from_order, axis=1)
-    # แปลง DAILY_CAPACITY จากฐาน 24 ชั่วโมง → 20 ชั่วโมง (เหมือน _normalize_capacity)
+    # แปลง DAILY_CAPACITY จากฐาน 24 ชั่วโมง → ตาม Item Special working hour (หรือ 20 ชั่วโมง default)
     if "DAILY_CAPACITY" in old_booking_df.columns:
-        old_booking_df["DAILY_CAPACITY"] = pd.to_numeric(
-            old_booking_df["DAILY_CAPACITY"], errors="coerce"
-        ) * (20 / 24)
+        def _adj_old_cap(row):
+            cap = pd.to_numeric(row["DAILY_CAPACITY"], errors="coerce")
+            if pd.isna(cap):
+                return cap
+            _is = get_item_special(
+                str(row.get("ITEM_CODE", "")).strip().upper(),
+                str(row.get("MC_GROUP", "")).strip().upper(),
+                str(row.get("MC_GUAGE", "")).strip(),
+            )
+            if _is is not None:
+                return cap * (_is[1] / 24)  # Item Special working_hour override
+            return cap * (20 / 24)
+        old_booking_df["DAILY_CAPACITY"] = old_booking_df.apply(_adj_old_cap, axis=1)
     # ตัด S นำหน้า SC_SO_NO (เช่น "S717455" → "717455")
     if "SC_SO_NO" in old_booking_df.columns:
         old_booking_df["SC_SO_NO"] = (
@@ -5537,10 +6359,80 @@ if not detail_mc.empty:
         old_booking_df["PLAN_WEEK"] = pd.to_numeric(
             old_booking_df["PLAN_WEEK"], errors="coerce"
         )
+    # 🔧 FIX: Recalculate ACTUAL_MC / REQUIRED_MC สำหรับ OLD rows ตาม calendar จริง
+    # (booking เดิมคำนวณด้วย factory days 6 วัน แต่บาง week เช่น W19 มี 5 วันทำงานจริง)
+    if all(
+        c in old_booking_df.columns
+        for c in [
+            "PRODUCE_QTY",
+            "DAILY_CAPACITY",
+            "PLAN_WEEK",
+            "MC_GROUP",
+            "ACTUAL_MC",
+            "REQUIRED_MC",
+        ]
+    ):
+
+        # 🔧 FIX: หา week แรกของแต่ละ (item, mc_group, gauge) เพื่อคำนวณ setup เฉพาะ week แรก
+        _first_week_map = {}
+        if "ITEM_CODE" in old_booking_df.columns and "MC_GUAGE" in old_booking_df.columns:
+            for _, grp in old_booking_df.groupby(["ITEM_CODE", "MC_GROUP", "MC_GUAGE"]):
+                weeks = sorted(grp["PLAN_WEEK"].dropna().unique())
+                if weeks:
+                    _first_week_map[(grp.iloc[0]["ITEM_CODE"], grp.iloc[0]["MC_GROUP"], grp.iloc[0]["MC_GUAGE"])] = min(weeks)
+
+        def _recalc_old_mc(row):
+            try:
+                qty = float(row.get("PRODUCE_QTY", 0) or 0)
+                cap = float(row.get("DAILY_CAPACITY", 0) or 0)
+                week_val = row.get("PLAN_WEEK")
+                mc_group = str(row.get("MC_GROUP", "")).strip()
+                item_code = str(row.get("ITEM_CODE", "")).strip().upper()
+                item_material = str(row.get("MATERIAL_CONTENT", "")).strip()
+                item_gauge = str(row.get("MC_GUAGE", "")).strip()
+                if qty <= 0 or cap <= 0 or pd.isna(week_val):
+                    return row.get("ACTUAL_MC", 0), row.get("REQUIRED_MC", 0)
+                week = int(week_val)
+                cal_wd = len(get_working_days_in_week(week))
+                fac_wd = get_working_days_by_factory(mc_group, 1, week=week, item_code=item_code, gauge=item_gauge)
+                actual_wd = fac_wd if week == 17 else min(cal_wd, fac_wd)
+                if actual_wd <= 0:
+                    return row.get("ACTUAL_MC", 0), row.get("REQUIRED_MC", 0)
+                # 🔧 FIX: คำนวณ setup days เฉพาะ week แรกของ item เท่านั้น
+                # Week ถัดไป = carryover ไม่ต้อง setup (ใช้ capacity เต็ม)
+                _key = (item_code, mc_group, item_gauge)
+                _first_week = _first_week_map.get(_key)
+                is_first_week = (_first_week is not None and week == _first_week)
+                if is_first_week:
+                    setup_days = get_setup_days_for_item(item_code, item_material)
+                    productive_wd = max(0, actual_wd - setup_days)
+                else:
+                    # Week ถัดไป = carryover ไม่ต้อง setup
+                    productive_wd = actual_wd
+                if productive_wd <= 0:
+                    # ถ้า setup days มากกว่า working days → ไม่สามารถผลิตได้
+                    return row.get("ACTUAL_MC", 0), row.get("REQUIRED_MC", 0)
+                needed = qty / (productive_wd * cap)
+                mc = max(
+                    1, int(needed) + (1 if (needed - int(needed)) > 1e-9 else 0)
+                )
+                return mc, mc
+            except Exception:
+                return row.get("ACTUAL_MC", 0), row.get("REQUIRED_MC", 0)
+
+        old_booking_df[["ACTUAL_MC", "REQUIRED_MC"]] = old_booking_df.apply(
+            lambda r: pd.Series(_recalc_old_mc(r)), axis=1
+        )
+
     # เก็บแถว OLD ทั้งหมด (ไม่จำกัดสัปดาห์)
     old_booking_df = old_booking_df.sort_values(
         ["ITEM_CODE", "MC_GROUP", "PLAN_WEEK"], na_position="last"
     ).reset_index(drop=True)
+    # เพิ่ม PLAN_YEAR ให้ old booking rows
+    if "YEAR" in old_booking_df.columns:
+        old_booking_df["PLAN_YEAR"] = pd.to_numeric(old_booking_df["YEAR"], errors="coerce").fillna(TODAY.year).astype(int)
+    elif "PLAN_WEEK" in old_booking_df.columns:
+        old_booking_df["PLAN_YEAR"] = old_booking_df["PLAN_WEEK"].map(_week_year_lookup).fillna(TODAY.year).astype(int)
     print(
         f"📦 OLD rows จาก booking_final_ready25 (ทั้งหมด): {len(old_booking_df)} rows"
     )
@@ -5650,12 +6542,51 @@ if not old_booking_df.empty:
             _match = orders[orders["SC/SO NO"].astype(str).str.strip() == _so]
             if _match.empty:
                 return None
-
             return pd.to_numeric(_match.iloc[0].get("Orders.Qty"), errors="coerce")
 
         old_booking_df["ORDERS_QTY"] = old_booking_df.apply(
             _lookup_orders_qty_old, axis=1
         )
+    if "PO_NO" not in common_cols and "PO_NO" in new_df.columns:
+        common_cols.append("PO_NO")
+
+        def _lookup_po_no_old(row):
+            _so = str(row.get("SC_SO_NO", "")).strip().lstrip("Ss")
+            _match = orders[orders["SO_NO"].astype(str).str.strip() == _so]
+            if _match.empty:
+                _match = orders[orders["SC/SO NO"].astype(str).str.strip() == _so]
+            if _match.empty:
+                return ""
+            return str(_match.iloc[0].get("PO_NO", "")).strip()
+
+        old_booking_df["PO_NO"] = old_booking_df.apply(_lookup_po_no_old, axis=1)
+    if "RDD_WEEK" not in common_cols and "RDD_WEEK" in new_df.columns:
+        common_cols.append("RDD_WEEK")
+
+        def _lookup_rdd_week_old(row):
+            _so = str(row.get("SC_SO_NO", "")).strip().lstrip("Ss")
+            _match = orders[orders["SO_NO"].astype(str).str.strip() == _so]
+            if _match.empty:
+                _match = orders[orders["SC/SO NO"].astype(str).str.strip() == _so]
+            if _match.empty:
+                return None
+            _fg = _match.iloc[0].get("FG Week")
+            return None if pd.isna(_fg) else _fg
+
+        old_booking_df["RDD_WEEK"] = old_booking_df.apply(_lookup_rdd_week_old, axis=1)
+    if "SC_LINE_ID" not in common_cols and "SC_LINE_ID" in new_df.columns:
+        common_cols.append("SC_LINE_ID")
+
+        def _lookup_sc_line_id_old(row):
+            _so = str(row.get("SC_SO_NO", "")).strip().lstrip("Ss")
+            _match = orders[orders["SO_NO"].astype(str).str.strip() == _so]
+            if _match.empty:
+                _match = orders[orders["SC/SO NO"].astype(str).str.strip() == _so]
+            if _match.empty:
+                return ""
+            return str(_match.iloc[0].get("SC/SO NO", "")).strip()
+
+        old_booking_df["SC_LINE_ID"] = old_booking_df.apply(_lookup_sc_line_id_old, axis=1)
     combined_df = pd.concat(
         [
             old_booking_df[common_cols],
@@ -5759,6 +6690,35 @@ def _target_status(row) -> str:
         return "-"
 
 combined_df["TARGET_STATUS"] = combined_df.apply(_target_status, axis=1)
+# Reorder columns: move PLAN_YEAR to column AL (index 37) and COLOR_DESC after it
+print(f"DEBUG: Total columns before reordering: {len(combined_df.columns)}")
+print(f"DEBUG: Columns before reordering: {list(combined_df.columns)}")
+if "PLAN_YEAR" in combined_df.columns:
+    cols = list(combined_df.columns)
+    plan_year_idx = cols.index("PLAN_YEAR")
+    print(f"DEBUG: PLAN_YEAR is currently at index {plan_year_idx}")
+    # Remove PLAN_YEAR from current position
+    cols.remove("PLAN_YEAR")
+    print(f"DEBUG: After removing PLAN_YEAR, total columns: {len(cols)}")
+    # Insert PLAN_YEAR at index 37 (column AL)
+    # If we have fewer than 38 columns, add padding columns first
+    if len(cols) < 38:
+        print(f"DEBUG: Only {len(cols)} columns, adding padding to reach 38")
+        for i in range(38 - len(cols)):
+            cols.append(f"_PAD_{i}")
+    target_idx = 37
+    cols.insert(target_idx, "PLAN_YEAR")
+    # Move COLOR_DESC after PLAN_YEAR if it exists
+    if "COLOR_DESC" in cols:
+        cols.remove("COLOR_DESC")
+        cols.insert(target_idx + 1, "COLOR_DESC")
+    # Remove padding columns
+    cols = [c for c in cols if not c.startswith("_PAD_")]
+    combined_df = combined_df[cols]
+    print(f"DEBUG: Columns after reordering: {list(combined_df.columns)}")
+    print(f"DEBUG: PLAN_YEAR is now at index {cols.index('PLAN_YEAR')} (column {chr(65 + cols.index('PLAN_YEAR'))})")
+else:
+    print(f"DEBUG: PLAN_YEAR not found in columns")
 with pd.ExcelWriter(COMBINED_FILE, engine="openpyxl") as writer:
     combined_df.to_excel(writer, sheet_name="PLAN", index=False)
     if not _no_cap_df.empty:
@@ -5789,6 +6749,7 @@ if not plan_df.empty and "NEW_MC" in plan_df.columns:
         setup_tracking_rows.append({
             "PLAN_SOURCE": "NEW",
             "PLAN_WEEK": row["PLAN_WEEK"],
+            "PLAN_YEAR": row.get("PLAN_YEAR"),
             "ITEM_CODE": row["ITEM_CODE"],
             "SC_SO_NO": row["SC_SO_NO"],
             "CUSTOMER": row.get("CUSTOMER", ""),
@@ -5875,6 +6836,7 @@ if (
                 setup_tracking_rows.append({
                     "PLAN_SOURCE": "OLD",
                     "PLAN_WEEK": _wk_t,
+                    "PLAN_YEAR": _week_year_lookup.get(int(_wk_t), TODAY.year),
                     "ITEM_CODE": _item_t,
                     "SC_SO_NO": _so_t,
                     "CUSTOMER": _cust_t,
@@ -5894,11 +6856,15 @@ setup_tracking_df = (
     pd.DataFrame(setup_tracking_rows)
     if setup_tracking_rows
     else pd.DataFrame(columns=[
-        "PLAN_SOURCE", "PLAN_WEEK", "ITEM_CODE", "SC_SO_NO", "CUSTOMER",
+        "PLAN_SOURCE", "PLAN_WEEK", "PLAN_YEAR", "ITEM_CODE", "SC_SO_NO", "CUSTOMER",
         "MC_GROUP", "MC_GUAGE", "TYPE", "JOBS_DEDUCTED", "SETUP_MC", "CARRYOVER_MC",
         "SETUP_DAYS", "ORDER_TYPE", "FG_WEEK", "TARGET_KNIT",
     ])
 )
+
+# เพิ่ม PLAN_YEAR ให้ setup_tracking_df
+if not setup_tracking_df.empty and "PLAN_WEEK" in setup_tracking_df.columns:
+    setup_tracking_df["PLAN_YEAR"] = setup_tracking_df["PLAN_WEEK"].map(_week_year_lookup).fillna(TODAY.year).astype(int)
 
 if not setup_tracking_df.empty:
     setup_tracking_df = setup_tracking_df.sort_values(
