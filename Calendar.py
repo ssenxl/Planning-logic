@@ -96,6 +96,17 @@ def _read_calendar_any(source: Path | str, sheet_name: str) -> pd.DataFrame:
     except Exception:
         pass
 
+    # sheet name ไม่ตรง → ลอง sheet แรกที่มีอยู่จริง
+    if _looks_like_excel(data):
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+            first_sheet = wb.sheetnames[0]
+            wb.close()
+            return pd.read_excel(io.BytesIO(data), sheet_name=first_sheet)
+        except Exception:
+            pass
+
     for enc in ("utf-8-sig", "utf-8", "cp874", "latin1"):
         try:
             text = data.decode(enc)
@@ -226,7 +237,7 @@ def _download_calendar_file(file_url: str, local_path: Path) -> Path:
     )
 
 
-def load_calendar(file_path: Path | str, sheet_name: str = "Calendar") -> pd.DataFrame:
+def load_calendar(file_path: Path | str, sheet_name: str = "Work day") -> pd.DataFrame:
     """
     Calendar master (Daily level)
 
@@ -234,19 +245,16 @@ def load_calendar(file_path: Path | str, sheet_name: str = "Calendar") -> pd.Dat
     status = 0 : holiday (ห้ามวางแผน)
     """
 
-    source = file_path
-    if isinstance(file_path, str) and file_path.lower().startswith(("http://", "https://")):
-        local_calendar = Path(__file__).parent / "Calendar.xlsx"
-        if local_calendar.exists():
-            source = local_calendar
-        else:
-            source = _download_calendar_file(file_path, local_calendar)
+    # ใช้ไฟล์ local เท่านั้น ไม่ใช้ SharePoint
+    source = r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\Calendar.xlsx"
 
     try:
         df = _read_calendar_any(source, sheet_name=sheet_name)
     except Exception as e:
         print(f"⚠️ อ่าน Calendar source ไม่ได้ ({e}) — ใช้ fallback calendar อัตโนมัติ")
         df = _build_fallback_calendar()
+        date_col = "DATE"
+        status_col = "status"
 
     # clean column names
     df.columns = df.columns.str.strip()
@@ -274,14 +282,22 @@ def load_calendar(file_path: Path | str, sheet_name: str = "Calendar") -> pd.Dat
     # sort for safety
     df = df.sort_values("DATE").reset_index(drop=True)
 
-    # derive helpful calendar fields used by planner
-    # Week definition: Friday–Thursday (เริ่มวันศุกร์ จบวันพฤหัสบดี)
-    # เทคนิค: บวก 3 วัน → ศุกร์กลายเป็นจันทร์ → ใช้ ISO week ปกติได้เลย
-    # ตัวอย่าง: ศ. 2 ม.ค. +3 = จ. 5 ม.ค. → ISO W2  /  พฤ. 8 ม.ค. +3 = อา. 11 ม.ค. → ISO W2
-    _shifted = df["DATE"] + pd.Timedelta(days=3)
-    iso = _shifted.dt.isocalendar()
-    df["YEAR"] = iso["year"].astype(int)
-    df["WEEK"] = iso["week"].astype(int)
+    # ใช้ WEEK/YEAR จาก source file ถ้ามี (บริษัทกำหนดเองเช่น week 17 ครอบสงกรานต์)
+    # ถ้าไม่มี → fallback คำนวณด้วย ISO+3 shift
+    _src_week_col = next((c for c in df.columns if str(c).strip().upper() == "WEEK"), None)
+    _src_year_col = next((c for c in df.columns if str(c).strip().upper() == "YEAR"), None)
+    if _src_week_col and pd.to_numeric(df[_src_week_col], errors="coerce").notna().mean() > 0.8:
+        df["WEEK"] = pd.to_numeric(df[_src_week_col], errors="coerce").fillna(0).astype(int)
+        if _src_year_col:
+            df["YEAR"] = pd.to_numeric(df[_src_year_col], errors="coerce").fillna(df["DATE"].dt.year).astype(int)
+        else:
+            df["YEAR"] = df["DATE"].dt.year
+    else:
+        # fallback: Friday–Thursday (บวก 3 วัน → ISO week)
+        _shifted = df["DATE"] + pd.Timedelta(days=3)
+        iso = _shifted.dt.isocalendar()
+        df["YEAR"] = iso["year"].astype(int)
+        df["WEEK"] = iso["week"].astype(int)
     df["MONTH"] = df["DATE"].dt.month
     # Year-Week key (e.g., 2026-02) for grouping
     df["YW"] = df["YEAR"].astype(str) + "-" + df["WEEK"].astype(str).str.zfill(2)
@@ -320,7 +336,7 @@ if __name__ == "__main__":
     # =========================
     # Run only for validation
     # =========================
-    CALENDAR_FILE = "https://nanyangtextilegroup.sharepoint.com/:x:/s/SCM_Cloud/IQCXP4jH73zhQozDNvw1XF8OAY5m4p-UFv35Tcpza6v8mJo?e=43ffCc"
+    CALENDAR_FILE = r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\Calendar.xlsx"
     cal_df = load_calendar(CALENDAR_FILE, sheet_name="Sheet1")
     cal_week_df = calendar_week_map(cal_df)
 

@@ -2,7 +2,6 @@ import re
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from Yarn_Master import load_yarn_master
 from Calendar import load_calendar
 
 # Load calendar from SharePoint URL (auto-sync)
@@ -13,10 +12,6 @@ _calendar_df["DATE"] = pd.to_datetime(_calendar_df["DATE"], errors="coerce")
 _calendar_df = _calendar_df[_calendar_df["DATE"].notna()].copy()
 _calendar_df["is_working_day"] = _calendar_df["status"].map({1: 1, 0: 0}).fillna(0)
 
-# Calculate week ranges
-_shifted = _calendar_df["DATE"] + pd.Timedelta(days=3)
-iso = _shifted.dt.isocalendar()
-_calendar_df["WEEK"] = iso["week"].astype(int)
 
 def get_working_days_in_week(week):
     """Get working days for a specific week from calendar"""
@@ -31,35 +26,32 @@ def get_working_days_in_week(week):
 SETUP_DAYS = 5  # default setup days
 BASE_DIR = Path(__file__).parent
 
-def get_setup_days_for_item(yarn_used: str) -> int:
+def get_setup_days_for_item(material_content: str, yarn_used: str) -> int:
     """
-    คำนวณ setup days ตาม YARN-USED (เหมือน Planning.py แต่ใช้ YARN-USED แทน MATERIAL_CONTENT)
-    
+    คำนวณ setup days ตาม MATERIAL_CONTENT และ YARN_USED
+
     Logic:
-    0. ถ้า YARN-USED เป็น pure COTTON (ไม่มี CD/POLY) → 3 วัน
-    1. ถ้า YARN-USED เป็น POLY / CD / TC → 5 วัน
-    2. ถ้า YARN-USED มีหลายเส้น (+) → 5 วัน
-    3. default → 3 วัน
+    0. ถ้า MATERIAL_CONTENT เป็น COTTON → 3 วัน (ไม่สนใจ YARN_USED)
+    1. ถ้า MATERIAL_CONTENT เป็น POLY → 5 วัน
+    2. ถ้า MATERIAL_CONTENT เป็นอื่นๆ (CD, TC, CVC, CT, ฯลฯ) → เช็ค YARN_USED: DTY → 5 วัน
+    3. ถ้าไม่มีทั้งสองอย่าง → default 3 วัน
     """
-    if pd.isna(yarn_used) or str(yarn_used).strip() == "":
-        return SETUP_DAYS
-    
-    yarn_upper = str(yarn_used).strip().upper()
-    
-    # pure COTTON เท่านั้น (ไม่มี CD, POLY, TC ผสม)
-    if ("COTTON" in yarn_upper or "COT" in yarn_upper) and \
-       "CD" not in yarn_upper and "POLY" not in yarn_upper and "TC" not in yarn_upper:
+    mat = str(material_content).strip().upper() if not pd.isna(material_content) else ""
+    yarn = str(yarn_used).strip().upper() if not pd.isna(yarn_used) else ""
+
+    if mat == "COTTON":
+        if "DTY" in yarn:
+            return 5
         return 3
-    elif "POLY" in yarn_upper or "CD" in yarn_upper or "TC" in yarn_upper:
+    if mat == "POLY":
         return 5
-    
-    # ตรวจสอบว่ามีหลายเส้น (มี +)
-    if "+" in yarn_upper:
-        return 5
-    
-    return SETUP_DAYS
+    if mat:  # CD, TC, CVC, CT, ฯลฯ
+        if "DTY" in yarn:
+            return 5
+        return 3
+    return 3
 BOOKING_DIR = BASE_DIR / "Booking"
-MASTER_MC_FILE = BASE_DIR / "data" / "MC" / "Master_MC_5.xlsx"
+MASTER_MC_FILE = Path(r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\MasterMC.xlsx")
 OUTPUT_DIR = BASE_DIR / "data_plan"
 OUTPUT_FILE = OUTPUT_DIR / "booking_final_ready25.xlsx"
 
@@ -82,13 +74,15 @@ KEEP_COLUMNS = [
     "GUAGE",
     "ITEM_CODE",
     "SO_NO",
-    "CAP ทอ",
-    "REVOLUTION/WEIGHT",
+    "CAP_KNIT",
     "KP_WEIGHT",
     "WEEK",
     "TYPE",
     "YARN-USED",
+    "YARN_USED",
     "STRUCTURE",
+    "MATERIAL_CONTENT",
+    "DESCRIPTION",
 ]
 
 
@@ -102,7 +96,9 @@ def load_capability_groups(file_path: str) -> pd.DataFrame:
             df_sheet = pd.read_excel(xls, sheet_name=sheet)
             df_sheet.columns = df_sheet.columns.str.strip()
 
-            if {"MC_GROUP", "GUAGE", "Capability Group"}.issubset(df_sheet.columns):
+            # Rename columns to match expected format
+            if "MC" in df_sheet.columns and "Guage" in df_sheet.columns and "Group" in df_sheet.columns:
+                df_sheet = df_sheet.rename(columns={"MC": "MC_GROUP", "Guage": "GUAGE", "Group": "Capability Group"})
                 records.append(
                     df_sheet[["MC_GROUP", "GUAGE", "Capability Group"]]
                     .dropna()
@@ -212,7 +208,7 @@ except Exception as _e_is_ava:
 TOTAL_MC_MAP = {
     (row["MC"], row["Guage"]): int(row["Total MC"])
     for _, row in _master_mc_df.iterrows()
-    if pd.notna(row.get("Total MC")) and str(row.get("Total MC", "")).strip() != ""
+    if pd.notna(row.get("Total MC")) and str(row.get("Total MC", "")).strip() not in ("", "-")
 }
 
 # =========================
@@ -220,36 +216,107 @@ TOTAL_MC_MAP = {
 # กลุ่ม MC ที่ใช้เครื่องร่วมกัน (pool) → TOTAL_MC_REMAIN จะถูกปรับให้สะท้อนเครื่องว่างรวม
 # key = pool name, value = (total_machines, [(MC_GROUP, GUAGE), ...])
 # =========================
-SHARED_POOL_MAP = {
-    "SKP_SKPTA_14_POOL": (5, [("SKP", "14"), ("SKPTA", "14")]),
-    "SKPLE_SKPTA_26_POOL": (41, [("SKPLE", "26"), ("SKPTA", "26")]),
-    "SKPLE_SKPTA_36_POOL": (19, [("SKPLE", "36"), ("SKPTA", "36")]),
-    "IIP_RL_POOL": (10, [("IIP", "20"), ("RL", "18")]),
-    "RAO_RAP_19_POOL": (14, [("RAO", "19"), ("RAP", "19")]),
-    "IIP_II_24_POOL": (3, [("IIP", "24"), ("II", "24")]),
-    "GAUGE28_POOL": (
-        47,
-        [
-            ("IBLTA", "28"),
-            ("RAP", "28"),
-            ("RAP60", "28"),
-            ("RAP98", "28"),
-            ("SYN", "28"),
-        ],
-    ),
-    "GAUGE22_POOL": (
-        65,
-        [
-            ("IBLTA", "22"),
-            ("IBP", "22"),
-            ("RAO", "22"),
-            ("RAP", "22"),
-            ("RAP60", "22"),
-            ("RAP98", "22"),
-            ("SYN", "22"),
-        ],
-    ),
-}
+
+def _parse_group_string(group_str: str) -> list:
+    """
+    แปลง Group string เช่น "SKP , SKPTA 14G" → [("SKP", "14"), ("SKPTA", "14")]
+    """
+    if pd.isna(group_str) or not group_str:
+        return []
+    
+    # แยก MC และ Guage จาก Group string
+    # เช่น "SKP , SKPTA 14G" → MC: ["SKP", "SKPTA"], Guage: "14"
+    parts = str(group_str).strip().split(',')
+    
+    # หา Guage จากส่วนสุดท้าย (มักจะมีตัว G ต่อท้าย)
+    mc_list = []
+    gauge = None
+    
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        
+        # ถ้ามีตัว G แปลว่าเป็นส่วนที่มี Guage
+        if 'G' in part.upper():
+            # แยก MC และ Guage
+            # เช่น "SKPTA 14G" → MC: "SKPTA", Guage: "14"
+            match = part.split()
+            if len(match) >= 2:
+                mc_name = match[0].strip()
+                gauge_part = match[-1].strip().upper().replace('G', '')
+                if gauge:
+                    # ถ้า gauge ถูกตั้งค่าแล้ว ต้องเท่ากัน
+                    if gauge != gauge_part:
+                        continue  # skip ถ้า gauge ไม่ตรง
+                else:
+                    gauge = gauge_part
+                mc_list.append(mc_name)
+        else:
+            # MC ที่ไม่มี Guage ในส่วนนี้
+            mc_list.append(part)
+    
+    if not gauge:
+        return []
+    
+    # สร้าง list of (MC_GROUP, GUAGE) tuples
+    result = []
+    for mc in mc_list:
+        if mc:
+            result.append((mc, gauge))
+    
+    return result
+
+def _build_shared_pool_map_from_master_mc(master_mc_path: str) -> dict:
+    """
+    อ่าน MasterMC และสร้าง SHARED_POOL_MAP แบบ dynamic จากคอลัมน์ Group
+    รวม Total MC ตามกลุ่มเครื่อง
+    """
+    try:
+        df = pd.read_excel(master_mc_path)
+        df.columns = df.columns.str.strip()
+        
+        if "Group" not in df.columns:
+            print("⚠️ ไม่พบคอลัมน์ Group ใน MasterMC - ใช้ SHARED_POOL_MAP default")
+            return None
+        
+        # กรองข้อมูลที่ Total MC เป็นตัวเลขเท่านั้น (เพื่อหลีกเลี่ยงค่า '-' หรือข้อความอื่น)
+        df = df.copy()
+        df["Total MC"] = pd.to_numeric(df["Total MC"], errors="coerce")
+        df = df.dropna(subset=["Total MC"])
+        
+        # Group ตามคอลัมน์ Group และรวม Total MC
+        grouped = df.groupby("Group").agg({
+            "Total MC": "sum",
+            "MC": lambda x: list(x.unique()),
+            "Guage": lambda x: list(x.unique())
+        }).reset_index()
+        
+        # สร้าง SHARED_POOL_MAP
+        shared_pool_map = {}
+        
+        for _, row in grouped.iterrows():
+            group_str = row["Group"]
+            total_mc = int(row["Total MC"])
+            
+            # แปลง Group string เป็น list of (MC_GROUP, GUAGE)
+            pool_members = _parse_group_string(group_str)
+            
+            if pool_members and len(pool_members) > 1:  # เฉพาะกลุ่มที่มีหลาย MC
+                # สร้าง pool name จาก Group string
+                pool_name = group_str.replace(" ", "_").replace(",", "_").replace("G", "")
+                shared_pool_map[pool_name] = (total_mc, pool_members)
+        
+        print(f"✅ สร้าง SHARED_POOL_MAP จาก MasterMC: {len(shared_pool_map)} pools")
+        return shared_pool_map
+        
+    except Exception as e:
+        print(f"⚠️ ไม่สามารถอ่าน MasterMC เพื่อสร้าง SHARED_POOL_MAP: {e}")
+        return None
+
+# โหลด SHARED_POOL_MAP แบบ dynamic จาก MasterMC
+_MASTER_MC_PATH = r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\MasterMC.xlsx"
+SHARED_POOL_MAP = _build_shared_pool_map_from_master_mc(_MASTER_MC_PATH)
 # =========================
 import io
 
@@ -328,7 +395,7 @@ df = df[df["TYPE"] != "COLLAR"]
 df = df[[c for c in KEEP_COLUMNS if c in df.columns]]
 
 df["GUAGE"] = df["GUAGE"].astype(str).str.strip()
-df["CAP ทอ"] = pd.to_numeric(df["CAP ทอ"], errors="coerce")
+df["CAP_KNIT"] = pd.to_numeric(df["CAP_KNIT"], errors="coerce")
 df["KP_WEIGHT"] = pd.to_numeric(df["KP_WEIGHT"], errors="coerce")
 
 # =========================
@@ -337,11 +404,11 @@ df["KP_WEIGHT"] = pd.to_numeric(df["KP_WEIGHT"], errors="coerce")
 def _apply_cap_adj(r):
     _is = _get_item_special_ava(r["ITEM_CODE"], r["MC_GROUP"], r["GUAGE"])
     if _is is not None:
-        return r["CAP ทอ"] * (_is[1] / 24)  # Item Special working_hour override
+        return r["CAP_KNIT"] * (_is[1] / 24)  # Item Special working_hour override
     elif (r["MC_GROUP"], r["GUAGE"]) in MULTIPLY_RULES:
-        return r["CAP ทอ"] * (20 / 24)
+        return r["CAP_KNIT"] * (20 / 24)
     else:
-        return r["CAP ทอ"]
+        return r["CAP_KNIT"]
 
 df["_CAP_ADJ"] = df.apply(_apply_cap_adj, axis=1)
 
@@ -350,41 +417,19 @@ df["_CAP_ADJ"] = df.apply(_apply_cap_adj, axis=1)
 # =========================
 agg_dict = {
     "KP_WEIGHT": "sum",
-    "CAP ทอ": "first",       # raw cap จาก booking (ไม่ปรับ 20/24)
+    "CAP_KNIT": "first",       # raw cap จาก booking (ไม่ปรับ 20/24)
     "_CAP_ADJ": "first",     # adjusted cap สำหรับคำนวณ MC_USE
-    "REVOLUTION/WEIGHT": "first",
+
 }
 if "SO_NO" in df.columns:
     agg_dict["SO_NO"] = lambda x: ",".join(x.dropna().astype(str).unique())
-for col in ["YARN-USED", "STRUCTURE"]:
+for col in ["YARN-USED", "YARN_USED", "STRUCTURE", "MATERIAL_CONTENT", "DESCRIPTION"]:
     if col in df.columns:
         agg_dict[col] = "first"
 
 df = df.groupby(["MC_GROUP", "GUAGE", "ITEM_CODE", "WEEK"], as_index=False).agg(
     agg_dict
 )
-
-# =========================
-# FIBER TYPE (จาก YARN-USED)
-# =========================
-_yarn_df = load_yarn_master()
-_fiber_lookup = dict(zip(_yarn_df["ITEM_CODE"], _yarn_df["FIBER_TYPE"]))
-
-
-def get_fiber_type(yarn_used: str) -> str:
-    """แยก YARN-USED ด้วย '+' แล้วเช็ค FIBER_TYPE แต่ละตัว
-    ถ้ามีตัวใดเป็น POLY → POLY, ไม่งั้น None POLY"""
-    if pd.isna(yarn_used) or str(yarn_used).strip() == "":
-        return "None POLY"
-    parts = [p.strip() for p in str(yarn_used).split("+") if p.strip()]
-    for part in parts:
-        if _fiber_lookup.get(part, "None POLY") == "POLY":
-            return "POLY"
-    return "None POLY"
-
-
-if "YARN-USED" in df.columns:
-    df["FIBER_TYPE"] = df["YARN-USED"].apply(get_fiber_type)
 
 # =========================
 # WORKING DAY
@@ -414,8 +459,13 @@ df["_week_gap"] = df["WEEK"] - df["_prev_week"]
 # ถ้า gap > SETUP_GAP_WEEK หรือไม่มี week ก่อนหน้า → setup ใหม่
 df["_is_new_setup"] = (df["_week_gap"] > SETUP_GAP_WEEK) | (df["_prev_week"].isna())
 
-# คำนวณ setup days สำหรับแต่ละ item - ใช้ค่าคงที่ SETUP_DAYS = 5
-df["_setup_days"] = SETUP_DAYS
+# คำนวณ setup days สำหรับแต่ละ item ตาม MATERIAL_CONTENT และ YARN-USED
+df["_setup_days"] = df.apply(
+    lambda r: get_setup_days_for_item(
+        r.get("MATERIAL_CONTENT", ""),
+        r.get("YARN-USED", "") or r.get("YARN_USED", "")
+    ), axis=1
+)
 
 # =========================
 # MC USE (คำนวณเบื้องต้นด้วย WORKING_DAY เต็ม)
@@ -513,23 +563,28 @@ summary["TOTAL_MC_REMAIN"] = summary["TOTAL_MC"] - summary["MC_USE_CEIL"]
 # pool_remain = pool_total - sum(MC_USE_CEIL ของทุก member ใน week นั้น)
 # ทุก member ใน pool จะเห็น TOTAL_MC_REMAIN = pool_remain เท่ากัน
 # =========================
-for _pool_name, (_pool_total, _pool_members) in SHARED_POOL_MAP.items():
-    for _week in summary["WEEK"].unique():
-        _week_mask = summary["WEEK"] == _week
-        _member_mask = _week_mask & summary.apply(
-            lambda r: (r["MC_GROUP"], str(r["GUAGE"])) in _pool_members, axis=1
-        )
-        _total_used = summary.loc[_member_mask, "MC_USE_CEIL"].sum()
-        _pool_remain = max(0, _pool_total - _total_used)
-        summary.loc[_member_mask, "TOTAL_MC"] = _pool_total
-        summary.loc[_member_mask, "TOTAL_MC_REMAIN"] = _pool_remain
+if SHARED_POOL_MAP is not None:
+    for _pool_name, (_pool_total, _pool_members) in SHARED_POOL_MAP.items():
+        for _week in summary["WEEK"].unique():
+            _week_mask = summary["WEEK"] == _week
+            _member_mask = _week_mask & summary.apply(
+                lambda r: (r["MC_GROUP"], str(r["GUAGE"])) in _pool_members, axis=1
+            )
+            _total_used = summary.loc[_member_mask, "MC_USE_CEIL"].sum()
+            _pool_remain = max(0, _pool_total - _total_used)
+            summary.loc[_member_mask, "TOTAL_MC"] = _pool_total
+            summary.loc[_member_mask, "TOTAL_MC_REMAIN"] = _pool_remain
 
-capability_groups = load_capability_groups(MASTER_MC_FILE)
-summary = summary.merge(capability_groups, on=["MC_GROUP", "GUAGE"], how="left")
-
-summary["CAPABILITY_TOTAL_MC_REMAIN"] = summary.groupby(["Capability Group", "WEEK"])[
-    "TOTAL_MC_REMAIN"
-].transform("sum")
+try:
+    capability_groups = load_capability_groups(MASTER_MC_FILE)
+    summary = summary.merge(capability_groups, on=["MC_GROUP", "GUAGE"], how="left")
+    summary["CAPABILITY_TOTAL_MC_REMAIN"] = summary.groupby(["Capability Group", "WEEK"])[
+        "TOTAL_MC_REMAIN"
+    ].transform("sum")
+except FileNotFoundError:
+    print(f"⚠️ ไม่พบไฟล์ {MASTER_MC_FILE} - ข้าม Capability Group merge")
+    summary["Capability Group"] = None
+    summary["CAPABILITY_TOTAL_MC_REMAIN"] = summary["TOTAL_MC_REMAIN"]
 
 summary = summary[
     [
