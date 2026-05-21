@@ -733,6 +733,29 @@ except Exception as _e_is:
     ITEM_SPECIAL_LOOKUP = {}
 
 
+# S9 Logic: โหลด Item S9, S9 Only, MC S9
+_s9_eligible_items: set = set()  # items ที่ใช้ S9 เป็น fallback เมื่อไม่ทัน
+_s9_only_items: set = set()       # items ที่ใช้ S9 เสมอ
+_mc_s9_df: "pd.DataFrame" = pd.DataFrame()
+_s9_weekly_usage: dict = {}  # {(week, s9_mc_upper, gauge_norm): machines_allocated}
+try:
+    _is9_df = pd.read_excel(_MASTER_MC_PATH, sheet_name="Item S9")
+    _is9_df.columns = _is9_df.columns.str.strip()
+    _tmp_is9 = _is9_df.dropna(subset=["ITEM_CODE", "MC_GAUGE"])
+    _s9_eligible_items = set(
+        zip(
+            _tmp_is9["ITEM_CODE"].astype(str).str.strip().str.upper(),
+            _tmp_is9["MC_GAUGE"].astype(str).str.strip().str.upper().str.replace("G", "").str.replace("GAUGE", ""),
+        )
+    )
+    _s9only_df = pd.read_excel(_MASTER_MC_PATH, sheet_name="S9 Only")
+    _s9only_df.columns = _s9only_df.columns.str.strip()
+    _s9_only_items = set(str(v).strip().upper() for v in _s9only_df["ITEM_CODE"].dropna())
+    _mc_s9_df = pd.read_excel(_MASTER_MC_PATH, sheet_name="MC S9")
+    _mc_s9_df.columns = _mc_s9_df.columns.str.strip()
+    print(f"[S9] Loaded {len(_s9_eligible_items)} eligible (item,gauge) pairs, {len(_s9_only_items)} S9-only, {len(_mc_s9_df)} MC S9 entries")
+except Exception as _s9_err:
+    print(f"[WARN] Cannot load S9 data from MasterMC: {_s9_err}")
 
 
 def get_item_special(item_code, mc_group, gauge=None):
@@ -746,6 +769,68 @@ def get_item_special(item_code, mc_group, gauge=None):
     if result is None and g_u:
         result = ITEM_SPECIAL_LOOKUP.get((item_u, mc_u, ""))
     return result
+
+
+def _calc_s9_required_machines(qty, plan_week, rdd_idx, gauge, mc_cat="", setup_days=SETUP_DAYS, material_content=""):
+    """คำนวณ required machines จาก S9 MC pool โดย match MC_CAT + gauge
+    คืน (s9_mc_group, s9_cap_per_day, req_mc, feasible, gauge)
+    ถ้า gauge ไม่ตรงกับ MC S9 → คืน (None, None, None, False, gauge)
+    """
+    if _mc_s9_df.empty or gauge is None:
+        return None, None, None, False, gauge
+    g = _normalize_gauge(gauge)
+    if not g:
+        return None, None, None, False, gauge
+    df = _mc_s9_df.copy()
+    df["_g"] = df["Guage"].apply(_normalize_gauge)
+    matches = df[df["_g"] == g]
+    if mc_cat:
+        mc_cat_u = str(mc_cat).strip().upper()
+        _cat_m = matches[matches["MC_CAT"].str.strip().str.upper() == mc_cat_u]
+        if not _cat_m.empty:
+            matches = _cat_m
+    if matches.empty:
+        return None, None, None, False, gauge
+    # เลือก pool ตาม material: POLY → Poly Only, อื่นๆ → non-Poly-Only
+    _is_poly = "POLY" in str(material_content).strip().upper() if material_content else False
+    _remark_col = "Remark" if "Remark" in matches.columns else None
+    if _remark_col:
+        _poly_flag = matches[_remark_col].fillna("").str.strip().str.upper().str.contains("POLY")
+        if _is_poly:
+            _poly_rows = matches[_poly_flag]
+            if not _poly_rows.empty:
+                matches = _poly_rows
+        else:
+            _non_poly_rows = matches[~_poly_flag]
+            if not _non_poly_rows.empty:
+                matches = _non_poly_rows
+    matches = matches.sort_values("Total MC", ascending=False)
+    row = matches.iloc[0]
+    s9_mc = str(row["MC Group"]).strip()
+    s9_cap = float(row["Cap/Day"])
+    s9_total = int(row["Total MC"])
+    s9_wd = int(row["Working day"])
+    if s9_cap <= 0:
+        return None, None, None, False, gauge
+    g_norm = _normalize_gauge(g)
+    s9_mc_upper = str(s9_mc).strip().upper()
+    s9_used = _s9_weekly_usage.get((plan_week, s9_mc_upper, g_norm), 0)
+    s9_remain = max(0, s9_total - s9_used)
+    # คำนวณ req_mc ตาม qty และ weeks เหลือจนถึง RDD
+    _pw_idx = week_index(plan_week)
+    weeks_left = max(1, (rdd_idx - _pw_idx)) if rdd_idx is not None and _pw_idx is not None else 1
+    week_cap_1mc = s9_cap * s9_wd
+    if week_cap_1mc > 0:
+        import math as _math
+        req_mc = max(1, _math.ceil(qty / (weeks_left * week_cap_1mc)))
+    else:
+        req_mc = 1
+    req_mc = min(req_mc, s9_remain) if s9_remain > 0 else req_mc
+    feasible = s9_remain > 0
+    # S9: ใช้เครื่องที่ว่างทั้งหมด — ไม่คำนวณเพื่อจบใน 1 สัปดาห์ (แผนปกติยังจบตาม target)
+    print(f"[S9 CALC] gauge={g}, MC_CAT={mc_cat}, material={material_content} → MC={s9_mc}, cap={s9_cap}, total={s9_total}, used={s9_used}, remain={s9_remain}, req_mc={req_mc}, feasible={feasible}")
+    return s9_mc, s9_cap, req_mc, feasible, gauge
+
 
 def _ck(item, mc_group, gauge=None):
     """สร้าง carryover key: (item, mc_group, gauge) — match ITEM+MC_GROUP+GUAGE"""
@@ -3082,6 +3167,16 @@ for _, row in master_mc.iterrows():
 
 
 
+# set คู่ (MC_GROUP, gauge_normalized) ที่มีจริงใน MasterMC — ใช้ skip order ที่ไม่มีใน Master
+_VALID_MC_GAUGE_SET: set = set()
+for _, _vmrow in master_mc.iterrows():
+    _vmc = str(_vmrow.get("MC", "")).strip().upper()
+    _vg = _normalize_gauge(_vmrow.get("Guage", ""))
+    if _vmc:
+        _VALID_MC_GAUGE_SET.add((_vmc, _vg))
+        _VALID_MC_GAUGE_SET.add((_vmc, ""))  # fallback ไม่เช็ค gauge
+print(f"✅ Valid MC+Gauge set: {len(_VALID_MC_GAUGE_SET)} entries")
+
 # =========================
 
 # TODAY (ห้ามวางย้อนหลัง)
@@ -5246,6 +5341,9 @@ def get_best_machine_for_item(
                 # ไม่ต้อง cylinder change — restore actual_remain กลับเป็น booking count
                 actual_remain = _booking_mc_used
                 print(f"[BOOKING RESTORE] {item_code} W{plan_week}: actual_remain=0 เพราะ double-subtract booking → restore to {_booking_mc_used}")
+            elif str(item_code).strip().upper() in _s9_only_items:
+                # S9 Only: ข้าม cylinder change — item จะใช้ MC จาก S9 pool ไม่ใช่ normal pool
+                pass
             else:
                 _cyl_mc_cat = _mc_to_type1(mc_group, item_gauge)
                 _cyl_factory = _mc_to_factory(mc_group, item_gauge)
@@ -5925,17 +6023,21 @@ def detect_and_fill_unused_capacity(plans_list, orders_df, summary_mc):
 
                     'NEW_MC': 0,
 
-                    'FACTORY_WORKING_DAYS': get_working_days_by_factory(mc_group, usage_row['REQUIRED_MC'], week=week),
+                    'FACTORY_WORKING_DAYS': get_working_days_by_factory(mc_group, usage_row['REQUIRED_MC'], week=week, gauge=gauge),
 
                     'CALENDAR_WORKING_DAYS': len(get_working_days_in_week(week)),
 
-                    'ACTUAL_WORKING_DAYS': get_working_days_by_factory(mc_group, usage_row['REQUIRED_MC'], week=week),
+                    'ACTUAL_WORKING_DAYS': get_working_days_by_factory(mc_group, usage_row['REQUIRED_MC'], week=week, gauge=gauge)
+                    if week == 17
+                    else max(1, get_working_days_by_factory(mc_group, usage_row['REQUIRED_MC'], week=week, gauge=gauge) - max(0, 6 - len(get_working_days_in_week(week)))),
 
                     'DAILY_CAPACITY': usage_row['DAILY_CAPACITY'],
 
                     'REVOLUTION_WEIGHT': get_revolution_weight_from_orders(item, mc_group),
 
-                    'AVAILABLE_DAYS': get_working_days_by_factory(mc_group, usage_row['REQUIRED_MC'], week=week),
+                    'AVAILABLE_DAYS': get_working_days_by_factory(mc_group, usage_row['REQUIRED_MC'], week=week, gauge=gauge)
+                    if week == 17
+                    else max(1, get_working_days_by_factory(mc_group, usage_row['REQUIRED_MC'], week=week, gauge=gauge) - max(0, 6 - len(get_working_days_in_week(week)))),
 
                     'ORDERS_QTY': order['Orders.Qty'],
 
@@ -6805,6 +6907,8 @@ _skip_no_mc_group = []  # เก็บ order ที่ไม่มี MC GROUP �
 
 _skip_no_factory = []  # เก็บ order ที่ MC GROUP ไม่มี FACTORY_TYPE → ไม่วางแผน
 
+_skip_not_in_master = []  # เก็บ order ที่ MC+Gauge ไม่มีใน MasterMC → ไม่วางแผน
+
 new_plan_started_items = set()  # ติดตาม (item, mc_group) ที่เริ่มการผลิตใน new plan แล้ว
 
 # YD-ORDERS: ล็อกจำนวนเครื่องต่อ (item, mc_group, plan_week)
@@ -7023,6 +7127,18 @@ for _, order in orders_sorted.iterrows():
 
         })
 
+        continue
+
+    # ถ้า (MC GROUP, Gauge) ไม่มีใน MasterMC → เก็บไว้แจ้ง ไม่วางแผน
+    _ord_gauge_norm = _normalize_gauge(order.get("MC_GUAGE", ""))
+    if (_ord_mc_grp, _ord_gauge_norm) not in _VALID_MC_GAUGE_SET:
+        _skip_not_in_master.append({
+            "SC_SO_NO": sc_so_no, "ITEM_CODE": item,
+            "MC_GROUP": _ord_mc_grp, "GAUGE": _ord_gauge_norm,
+            "ORDERS_QTY": order_qty, "PENDING_PLAN": pending_plan,
+            "FG_WEEK": order.get("FG Week", ""),
+            "REASON": f"MC GROUP '{_ord_mc_grp}' Gauge '{_ord_gauge_norm}' ไม่มีใน MasterMC"
+        })
         continue
 
     # ถ้า Pending Plan = 0 แสดงว่า order นี้วางแผนครบแล้ว ไม่ต้องวางแผนซ้ำ
@@ -7749,6 +7865,9 @@ for _, order in orders_sorted.iterrows():
     # ----------------------
     # คำนวณจำนวนเครื่องที่ต้องการตั้งแต่แรก (ถ้าทัน RDD)
     required_machines_info = None
+    # S9 Logic: per-order flags
+    _s9_active = False   # True เมื่อ S9 routing ถูก activate สำหรับ order นี้
+    _s9_split_done = False  # True = order ถูก split แล้ว → normal loop ห้าม activate S9 ซ้ำ
     # คำนวณ setup days ล่วงหน้า (ใช้ใน calculate_required_machines ด้วย)
     order_material_content = str(order.get("MATERIAL_CONTENT", "")).strip() or _material_content_lookup.get(str(item).strip().upper(), "")
     _order_yarn_used = str(order.get("YARN-USED", "") or order.get("YARN_USED", "") or order.get("YARN_ITEM", "") or _yarn_used_lookup.get(str(item).strip().upper(), "")).strip()
@@ -8168,12 +8287,13 @@ for _, order in orders_sorted.iterrows():
                 print(f"[CARRY+BK FILL] {item} W{_fill_week}: new plan carry={_new_carry_at_fill} + booking={_bk_mc_at_fill_week} → combined={_fill_avail_mc} mc")
             if _fill_week == 17:
                 _fill_actual_wd = get_working_days_by_factory(
-                    _fill_mc_group, _fill_avail_mc, week=_fill_week
+                    _fill_mc_group, _fill_avail_mc, week=_fill_week, gauge=_fill_gauge
                 )
             else:
-                _fill_actual_wd = min(
-                    len(get_working_days_in_week(_fill_week)),
-                    get_working_days_by_factory(_fill_mc_group, _fill_avail_mc, week=_fill_week),
+                _fill_actual_wd = max(
+                    1,
+                    get_working_days_by_factory(_fill_mc_group, _fill_avail_mc, week=_fill_week, gauge=_fill_gauge)
+                    - max(0, 6 - len(get_working_days_in_week(_fill_week))),
                 )
             # 🔧 FIX: ถ้า remaining capacity มากกว่า 1 เครื่อง → คำนวณเครื่องจาก capacity
             # เพื่อรองรับกรณี freed capacity จากเครื่องที่ปล่อย (tail end)
@@ -8224,7 +8344,7 @@ for _, order in orders_sorted.iterrows():
                         "ACTUAL_MC": _fill_avail_mc,
                         "CARRYOVER_MC": _fill_avail_mc,
                         "NEW_MC": 0,
-                        "FACTORY_WORKING_DAYS": get_working_days_by_factory(_fill_mc_group, _fill_avail_mc, week=_fill_week),
+                        "FACTORY_WORKING_DAYS": get_working_days_by_factory(_fill_mc_group, _fill_avail_mc, week=_fill_week, gauge=_fill_gauge),
                         "CALENDAR_WORKING_DAYS": len(get_working_days_in_week(_fill_week)),
                         "ACTUAL_WORKING_DAYS": _fill_actual_wd,
                         "DAILY_CAPACITY": _fill_daily_cap,
@@ -8366,6 +8486,36 @@ for _, order in orders_sorted.iterrows():
                 required_machines_info = (_mc_r, _cap_r, _req_r, _feas_r, _gauge_r)
                 if _mc_r and (sc_so_no, item) not in locked_mc_group_for:
                     locked_mc_group_for[(sc_so_no, item)] = _mc_r
+            # S9 Logic: reset flag ต่อ iteration แล้วตรวจสอบใหม่
+            _s9_active = False
+            if not _s9_split_done and required_machines_info:
+                _item_u_s9 = str(item).strip().upper()
+                _gauge_norm_s9 = _normalize_gauge(_gauge_r) if _gauge_r is not None else ""
+                _s9_trigger = (
+                    _item_u_s9 in _s9_only_items
+                    or ((_item_u_s9, _gauge_norm_s9) in _s9_eligible_items and not _feas_r)
+                )
+                if _s9_trigger and _gauge_r is not None and _mc_r is not None:
+                    _s9_mc_cat_t = _mc_to_type1(_mc_r, _gauge_r)
+                    _s9r = _calc_s9_required_machines(
+                        _dynamic_qty_for_calc, plan_week, target_knit_idx2,
+                        _gauge_r, _s9_mc_cat_t, order_setup_days, order_material_content
+                    )
+                    if _s9r[0] is not None:
+                        _is_s9_only = _item_u_s9 in _s9_only_items
+                        _s9_mc_g, _s9_cap_g, _s9_req_g, _s9_feas_g, _s9_gauge_g = _s9r
+                        required_machines_info = (_s9_mc_g, _s9_cap_g, _s9_req_g, _s9_feas_g, _s9_gauge_g)
+                        locked_mc_group_for[(sc_so_no, item)] = _s9_mc_g
+                        _s9_active = True
+                        if not _is_s9_only:
+                            _s9_split_done = True
+                        # S9 จ้างทอ: วางเสมอที่ TODAY+3 weeks
+                        _s9_min_idx = TODAY_IDX + 3
+                        if _s9_min_idx < len(calendar_week):
+                            plan_week = int(calendar_week.iloc[_s9_min_idx]["WEEK"])
+                            print(f"[S9] {item}: plan_week set to W{plan_week} (S9 always today+3w)")
+                        _s9_tag = "S9_ONLY" if _is_s9_only else "ELIGIBLE+INFEASIBLE"
+                        print(f"[S9] {item}: S9 activated ({_s9_tag}) → MC={_s9_mc_g}, cap={_s9_cap_g}, req={_s9_req_g}")
         # เลือกเครื่องที่เหมาะสมที่สุดสำหรับ item นี้
         # ถ้าเป็นกรณี RTS+LOCAL ให้บังคับใช้ MC เดิมและเริ่มหลัง old สุดท้าย
         mc_group = daily_capacity = setup_needed = available_machines = _sel_gauge = (
@@ -8514,6 +8664,15 @@ for _, order in orders_sorted.iterrows():
         if _core_production_schedule:
             _is_carryover = False
 
+        # S9 จ้างทอ: ข้ามการเลือกเครื่องปกติทั้งหมด → ใช้ข้อมูล S9 pool โดยตรง
+        if _s9_active and required_machines_info and required_machines_info[0] and required_machines_info[2] > 0:
+            mc_group = required_machines_info[0]
+            daily_capacity = required_machines_info[1]
+            available_machines = int(required_machines_info[2])
+            _sel_gauge = required_machines_info[4]
+            setup_needed = False
+            _is_carryover = False  # S9 จ้างทอ: เครื่องแยกจากแผนปกติ ไม่ carry
+            print(f"[S9 MACHINE] {item} W{plan_week}: MC={mc_group}, cap={daily_capacity}, avail={available_machines}, gauge={_sel_gauge}")
 
         # ถ้าเป็น carryover แต่มีเครื่องว่างมากและ order ยังเหลือเยอะ → ให้ Load Balancing ทำงาน
         # ถ้าเป็น carryover ปกติ → ใช้เครื่องเดิมต่อไป
@@ -8651,7 +8810,7 @@ for _, order in orders_sorted.iterrows():
         
             if item == "FD1BASFZ15/1A0" or item == "FD3GNTPE54/14A0":
                 print(f"[DEBUG CARRY] Week {plan_week}: Using carryover - mc_group={mc_group}, machines={available_machines}, daily_cap={daily_capacity}, actual_remain={_actual_remain}, same_sc={_same_sc_carry}")
-        elif USE_LOAD_BALANCING or should_check_increase:
+        elif (USE_LOAD_BALANCING or should_check_increase) and not _s9_active:
             print(f"[DEBUG LB] Using Load Balancing for {item} in week {plan_week}")
             # ดึง daily_capacity จาก required_machines_info ถ้ามี
             _input_daily_cap = required_machines_info[1] if required_machines_info and len(required_machines_info) > 1 else 0
@@ -8850,13 +9009,12 @@ for _, order in orders_sorted.iterrows():
                 available_machines = first_week_limit
         # Calculate available capacity considering setup days and factory type
         working_days = get_working_days_in_week(plan_week)
-        factory_working_days = get_working_days_by_factory(mc_group, available_machines, week=plan_week)
+        factory_working_days = get_working_days_by_factory(mc_group, available_machines, week=plan_week, gauge=_sel_gauge)
         # Week 17: ใช้ factory_working_days โดยตรง (ไม่ cap ด้วย calendar)
         if plan_week == 17:
             actual_working_days = factory_working_days
         else:
-            # ใช้จำนวนวันทำงานที่น้อยกว่าระหว่าง calendar และ factory capacity
-            actual_working_days = min(len(working_days), factory_working_days)
+            actual_working_days = max(1, factory_working_days - max(0, 6 - len(working_days)))
         # หา REVOLUTION/WEIGHT ที่มากที่สุด
         rev_weight = get_revolution_weight_from_orders(item, mc_group)
         # กำหนด setup days ตาม MATERIAL_CONTENT และ YARN_ITEM
@@ -8872,7 +9030,7 @@ for _, order in orders_sorted.iterrows():
 
         # ตรวจสอบว่าสัปดาห์นี้เคยใช้ setup ไปแล้วหรือไม่
         week_key = (plan_week, mc_group)
-        factory_working_days = get_working_days_by_factory(mc_group, available_machines, week=plan_week)
+        factory_working_days = get_working_days_by_factory(mc_group, available_machines, week=plan_week, gauge=_sel_gauge)
         # แยกเครื่อง carry-over (ไม่ต้อง setup) vs เครื่องใหม่ (ต้อง setup)
         mc_key = _resolve_carry_key(item, mc_group, _sel_gauge)
         _sc_key_init = (item, mc_group, _sel_gauge, sc_so_no)
@@ -8888,11 +9046,11 @@ for _, order in orders_sorted.iterrows():
                     plan_week = start_after
                     # Recalculate working days for updated plan_week
                     working_days = get_working_days_in_week(plan_week)
-                    factory_working_days = get_working_days_by_factory(mc_group, available_machines, week=plan_week)
+                    factory_working_days = get_working_days_by_factory(mc_group, available_machines, week=plan_week, gauge=_sel_gauge)
                     if plan_week == 17:
                         actual_working_days = factory_working_days
                     else:
-                        actual_working_days = min(len(working_days), factory_working_days)
+                        actual_working_days = max(1, factory_working_days - max(0, 6 - len(working_days)))
                 # ใช้ machines_by_mc (จาก booking_final_ready25 ทุก week) เป็น primary
                 # เพราะ machines_in_use มีแค่ week <= TODAY_WEEK ซึ่งอาจเป็น SO เก่า/เครื่องมากกว่าจริง
                 _bk_mc = machines_by_mc.get(str(mc_group).strip().upper())
@@ -9228,7 +9386,7 @@ for _, order in orders_sorted.iterrows():
                 _sim_count += 1
             return q
 
-        if rdd_idx is not None and not rts_local_force and new_mc > 0:
+        if rdd_idx is not None and not rts_local_force and new_mc > 0 and not _s9_active:
             _rw_tol = 0.0
             # ตรวจก่อน: carry เพียงพอจบ FG ปัจจุบันหรือไม่ (qty_left FG นี้เท่านั้น)
             # ป้องกันการเพิ่มเครื่องเพราะ total demand สูง ทั้งที่ carryover จบ FG นี้ได้พอ
@@ -9713,6 +9871,10 @@ for _, order in orders_sorted.iterrows():
         # ไม่เพิ่มแถวถ้าไม่มีการผลิต — แต่ถ้า setup ไปแล้ว (new_mc>0) ให้บันทึกว่าเครื่อง setup เสร็จ
         # เพื่อให้ week ถัดไปนับเป็น carryover (ไม่ต้อง setup ซ้ำ) → ผลิตได้เต็มจำนวนวัน
         if produce <= 0:
+            if _s9_active:
+                # S9: IRM pool เต็ม → หยุดวางแผน order นี้ (ไม่ advance week เพราะ S9 lock W+3)
+                print(f"[S9 FULL] {item} W{plan_week} MC={mc_group}: S9 pool เต็ม (produce=0) → break")
+                break
             if new_mc > 0:
                 _plan_ck_setup = _resolve_carry_key(item, mc_group, _sel_gauge)
                 machines_in_use[_plan_ck_setup] = available_machines
@@ -10008,15 +10170,15 @@ for _, order in orders_sorted.iterrows():
                 "CARRYOVER_MC": carryover_mc,  # เครื่องที่ carry-over จาก week ก่อน
                 "NEW_MC": new_mc,  # เครื่องใหม่ที่ setup week นี้
                 "FACTORY_WORKING_DAYS": get_working_days_by_factory(
-                    mc_group, available_machines, week=plan_week
+                    mc_group, available_machines, week=plan_week, gauge=item_gauge
                 ),
                 "CALENDAR_WORKING_DAYS": len(get_working_days_in_week(plan_week)),
-                "ACTUAL_WORKING_DAYS": get_working_days_by_factory(mc_group, available_machines, week=plan_week)
-
+                "ACTUAL_WORKING_DAYS": get_working_days_by_factory(mc_group, available_machines, week=plan_week, gauge=item_gauge)
                 if plan_week == 17
-                else min(
-                    len(get_working_days_in_week(plan_week)),
-                    get_working_days_by_factory(mc_group, available_machines, week=plan_week),
+                else max(
+                    1,
+                    get_working_days_by_factory(mc_group, available_machines, week=plan_week, gauge=item_gauge)
+                    - max(0, 6 - len(get_working_days_in_week(plan_week))),
                 ),
                 "DAILY_CAPACITY": daily_capacity,
                 "REVOLUTION_WEIGHT": rev_weight if rev_weight is not None else 0,
@@ -10040,11 +10202,21 @@ for _, order in orders_sorted.iterrows():
                 "PO_NO": str(order.get("PO_NO", "")).strip(),
                 "RDD_WEEK": fg_week,
                 "SC_LINE_ID": str(order.get("SC_LINE_ID", "")).strip(),
+                "S9_ROUTING": _s9_active,
             }
         )
         plans[-1]["NAY_COLOR"] = str(order.get("NAY_COLOR", "")).strip()
         plans[-1]["COLOR_DESC"] = str(order.get("COLOR_DESC", "")).strip()
         qty_left -= produce
+        # S9 weekly usage tracking — อัปเดตหลัง plans.append ทุกครั้งที่ S9 active
+        if _s9_active and mc_group:
+            _s9_mc_upper_t = str(mc_group).strip().upper()
+            _s9_g_norm_t = _normalize_gauge(_sel_gauge) if _sel_gauge is not None else ""
+            _s9_wk = plan_week
+            _s9_weekly_usage[(_s9_wk, _s9_mc_upper_t, _s9_g_norm_t)] = (
+                _s9_weekly_usage.get((_s9_wk, _s9_mc_upper_t, _s9_g_norm_t), 0) + available_machines
+            )
+            print(f"[S9 USAGE] W{_s9_wk} MC={_s9_mc_upper_t} gauge={_s9_g_norm_t}: total_used={_s9_weekly_usage[(_s9_wk, _s9_mc_upper_t, _s9_g_norm_t)]}")
         if qty_left <= 0:
             qty_left = 0  # ป้องกันค่าติดลบ
 
@@ -10478,8 +10650,15 @@ if _skip_no_factory:
     for _s in _skip_no_factory:
         print(f"   - {_s['SC_SO_NO']} | {_s['ITEM_CODE']} | MC={_s['MC_GROUP']}")
 
+# แสดง orders ที่ MC+Gauge ไม่มีใน MasterMC
+if _skip_not_in_master:
+    print(f"\n⚠️  Orders ที่ MC+Gauge ไม่มีใน MasterMC ({len(_skip_not_in_master)} รายการ) → ไม่ได้วางแผน:")
+    for _s in _skip_not_in_master:
+        print(f"   - {_s['SC_SO_NO']} | {_s['ITEM_CODE']} | MC={_s['MC_GROUP']} G{_s['GAUGE']}")
+    print()
+
 # รวม unplanned orders เป็น DataFrame
-_unplanned_rows = _skip_no_mc_group + _skip_no_factory
+_unplanned_rows = _skip_no_mc_group + _skip_no_factory + _skip_not_in_master
 _unplanned_df = pd.DataFrame(_unplanned_rows) if _unplanned_rows else pd.DataFrame(
     columns=["SC_SO_NO", "ITEM_CODE", "MC_GROUP", "ORDERS_QTY", "PENDING_PLAN", "FG_WEEK", "REASON"]
 )
@@ -11186,7 +11365,6 @@ if not plan_df.empty:
             "NEW_MC",
             "ACTUAL_MC",
         ]].sort_values(["PLAN_WEEK", "SC_SO_NO"])
-        print("[DEBUG EXPORT] FD6PRTPG99A0 rows before writing OUTPUT_FILE:")
         print(_dbg_view.to_string(index=False))
 
 
@@ -11215,21 +11393,36 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as _writer:
     setup_tracking_df.to_excel(_writer, sheet_name="SETUP_TRACKING", index=False)
     _unplanned_df.to_excel(_writer, sheet_name="UNPLANNED", index=False)
     _cylinder_change_df.to_excel(_writer, sheet_name="CYLINDER_CHANGE", index=False)
+    # PLAN_NO_S9: แผนเฉพาะ item ที่ไม่ได้ใช้ S9 routing (กรอง S9_ROUTING=False)
+    if "S9_ROUTING" in plan_df.columns:
+        _plan_no_s9 = plan_df[plan_df["S9_ROUTING"] != True].copy()
+    else:
+        _plan_no_s9 = plan_df.copy()
+    _plan_no_s9.to_excel(_writer, sheet_name="PLAN_NO_S9", index=False)
 
-# ใส่สีเหลืองทั้ง row สำหรับ CYLINDER_CHANGE = Yes ใน PLAN sheet
-if _cyl_trigger_item_mc:
+# ใส่สีให้ PLAN sheet: เหลือง=CYLINDER_CHANGE, แดง=S9_ROUTING
+_need_color = _cyl_trigger_item_mc or (
+    "S9_ROUTING" in plan_df.columns and plan_df["S9_ROUTING"].any()
+)
+if _need_color:
     from openpyxl import load_workbook
     from openpyxl.styles import PatternFill
     _yellow = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+    _red_fill = PatternFill(start_color="FF9999", end_color="FF9999", fill_type="solid")
     _wb = load_workbook(OUTPUT_FILE)
     _ws = _wb["PLAN"]
     _hdr = {cell.value: cell.column for cell in _ws[1]}
     _cyl_col_idx = _hdr.get("CYLINDER_CHANGE")
-    if _cyl_col_idx:
-        for _row in _ws.iter_rows(min_row=2, max_row=_ws.max_row):
-            if str(_row[_cyl_col_idx - 1].value).strip() == "Yes":
-                for _cell in _row:
-                    _cell.fill = _yellow
+    _s9_col_idx = _hdr.get("S9_ROUTING")
+    for _row in _ws.iter_rows(min_row=2, max_row=_ws.max_row):
+        _is_s9_row = _s9_col_idx and str(_row[_s9_col_idx - 1].value).strip() in ("True", "TRUE", "1")
+        _is_cyl_row = _cyl_col_idx and str(_row[_cyl_col_idx - 1].value).strip() == "Yes"
+        if _is_s9_row:
+            for _cell in _row:
+                _cell.fill = _red_fill
+        elif _is_cyl_row:
+            for _cell in _row:
+                _cell.fill = _yellow
     _wb.save(OUTPUT_FILE)
 
 
