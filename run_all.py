@@ -5,14 +5,15 @@ Run All Pipeline
   1. Calendar.py     – ตรวจสอบ Calendar
   2. View_Booking.py – ดึงข้อมูล Booking จาก Oracle DB
   3. View_Stock.py   – ดึงข้อมูล Stock จาก Oracle DB
-  4. AVA_MC.py       – คำนวณ Machine Availability
-  5. Order.py        – เตรียม Order data
-  6. Planning.py     – รัน Planning หลัก
-
+  4. View_SC.py      – ดึงข้อมูล SC Pending จาก Oracle DB
+  5. Stock.py        – ประมวลผลข้อมูล Stock
+  6. AVA_MC.py       – คำนวณ Machine Availability
+  7. Order.py        – เตรียม Order data
+  8. Planning.py     – รัน Planning หลัก
 Usage:
     python run_all.py
-    python run_all.py --skip-view-stock    # ข้าม View_Stock (ถ้า DB ไม่พร้อม)
-    python run_all.py --from avA_mc        # เริ่มจาก step ที่ระบุ
+    python run_all.py --skip View_Stock    # ข้าม View_Stock (ถ้า DB ไม่พร้อม)
+    python run_all.py --from AVA_MC        # เริ่มจาก step ที่ระบุ
 """
 
 import subprocess
@@ -39,6 +40,16 @@ STEPS = [
         "name": "View_Stock",
         "script": BASE_DIR / "View_Stock.py",
         "desc": "ดึงข้อมูล Stock จาก Oracle DB",
+    },
+    {
+        "name": "View_SC",
+        "script": BASE_DIR / "View_SC.py",
+        "desc": "ดึงข้อมูล SC Pending จาก Oracle DB",
+    },
+    {
+        "name": "Stock",
+        "script": BASE_DIR / "Stock.py",
+        "desc": "ประมวลผลข้อมูล Stock",
     },
     {
         "name": "AVA_MC",

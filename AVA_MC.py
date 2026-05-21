@@ -26,6 +26,16 @@ def get_working_days_in_week(week):
 SETUP_DAYS = 5  # default setup days
 BASE_DIR = Path(__file__).parent
 
+def _get_item_cotton_poly(item_code: str) -> str:
+    """Return 'COTTON' if FD5/F5 prefix, 'POLY' if FD4/F4 prefix, '' otherwise."""
+    item = str(item_code).strip().upper()
+    if item.startswith("FD5") or item.startswith("F5"):
+        return "COTTON"
+    if item.startswith("FD4") or item.startswith("F4"):
+        return "POLY"
+    return ""
+
+
 def get_setup_days_for_item(material_content: str, yarn_used: str) -> int:
     """
     คำนวณ setup days ตาม MATERIAL_CONTENT และ YARN_USED
@@ -70,6 +80,7 @@ EXCLUDE_MC_GROUP = [
 ]
 
 KEEP_COLUMNS = [
+    "CAT",
     "MC_GROUP",
     "GUAGE",
     "ITEM_CODE",
@@ -122,6 +133,10 @@ _MASTER_MC_PATH = Path(r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Pla
 def _load_master_mc(path: Path) -> pd.DataFrame:
     df = pd.read_excel(path)
     df.columns = df.columns.str.strip()
+    # forward-fill merged cells (Excel merged → NaN in non-first rows)
+    for _col in ["Factory", "Type", "MC_CAT", "MC"]:
+        if _col in df.columns:
+            df[_col] = df[_col].ffill()
     df["MC"] = df["MC"].astype(str).str.strip().str.upper()
     df["Guage"] = df["Guage"].astype(str).str.strip()
     return df
@@ -133,34 +148,6 @@ except Exception as _e_mmc:
     print(f"⚠️ โหลด MasterMC ไม่ได้ ({_e_mmc}) — ใช้ค่า default")
     _master_mc_df = pd.DataFrame(columns=["MC", "Guage", "Total MC", "Working Hours."])
 
-# =========================
-# 20 / 24 RULE  (Working Hours. == 20 → ต้องคูณ 20/24)
-# =========================
-MULTIPLY_RULES = {
-    (row["MC"], row["Guage"])
-    for _, row in _master_mc_df.iterrows()
-    if str(row.get("Working Hours.", "")).strip() == "20"
-}
-
-# =========================
-# MC กลุ่มที่ห้าม *20/24 อย่างชัดเจน (PHET DOUBLE + รายการพิเศษ)
-# =========================
-# ทุก MC group ต้องคูณ 20/24 หมดแล้ว
-NO_MULTIPLY_RULES = set()  # ไม่มีข้อยกเว้น
-
-# =========================
-# WORKING DAY = 6
-# =========================
-WORKING_DAY_6 = set(MULTIPLY_RULES) | NO_MULTIPLY_RULES
-
-# =========================
-# ITEM SPECIAL: per-(Item, MC, Guage) override for Working day and Working hour
-# Source: C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\Item Special.xlsx
-# =========================
-_ITEM_SPECIAL_FILE_AVA = Path(r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\Item Special.xlsx")
-_ITEM_SPECIAL_LOOKUP_AVA: dict = {}  # key=(item_upper, mc_upper, gauge_str), value=(working_day, working_hour)
-
-
 def _norm_gauge_ava(gauge) -> str:
     """Normalize gauge: 22.0 → 22"""
     if gauge is None or (isinstance(gauge, float) and pd.isna(gauge)):
@@ -171,6 +158,44 @@ def _norm_gauge_ava(gauge) -> str:
     if re.fullmatch(r"\d+\.0+", s):
         return s.split(".", 1)[0]
     return s
+
+# =========================
+# WORKING HOURS MAP  (โหลดค่า Working Hours. จริงจาก MasterMC.xlsx)
+# key=(MC, Guage), value=ชั่วโมง (int), default=24
+# =========================
+WORKING_HOURS_MAP: dict = {}
+for _, _wh_row in _master_mc_df.iterrows():
+    _wh_raw = _wh_row.get("Working Hours.", "")
+    if pd.notna(_wh_raw) and str(_wh_raw).strip() not in ("", "-", "nan"):
+        try:
+            WORKING_HOURS_MAP[(_wh_row["MC"], _norm_gauge_ava(_wh_row["Guage"]))] = int(float(str(_wh_raw).strip()))
+        except (ValueError, TypeError):
+            pass
+
+# =========================
+# WORKING DAYS MAP  (โหลดค่า Working Day จริงจาก MasterMC.xlsx)
+# key=(MC, Guage), value=วัน (int), default=6
+# =========================
+WORKING_DAYS_MAP: dict = {}
+_WORKING_DAYS_MC_ONLY: dict = {}  # fallback key=MC อย่างเดียว
+for _, _wd_row in _master_mc_df.iterrows():
+    _wd_raw = _wd_row.get("Working Day", "")
+    if pd.notna(_wd_raw) and str(_wd_raw).strip() not in ("", "-", "nan"):
+        try:
+            _wd_val = int(float(str(_wd_raw).strip()))
+            _wd_mc = _wd_row["MC"]
+            _wd_g = _norm_gauge_ava(_wd_row["Guage"])
+            WORKING_DAYS_MAP[(_wd_mc, _wd_g)] = _wd_val
+            if _wd_mc not in _WORKING_DAYS_MC_ONLY:
+                _WORKING_DAYS_MC_ONLY[_wd_mc] = _wd_val
+        except (ValueError, TypeError):
+            pass
+
+# =========================
+# ITEM SPECIAL: per-(Item, MC, Guage) override for Working day and Working hour
+# Source: MasterMC.xlsx sheet "Item Special"
+# =========================
+_ITEM_SPECIAL_LOOKUP_AVA: dict = {}  # key=(item_upper, mc_upper, gauge_str), value=(working_day, working_hour)
 
 
 def _get_item_special_ava(item_code, mc_group, gauge=None):
@@ -187,7 +212,7 @@ def _get_item_special_ava(item_code, mc_group, gauge=None):
 
 
 try:
-    _is_df_ava = pd.read_excel(_ITEM_SPECIAL_FILE_AVA)
+    _is_df_ava = pd.read_excel(MASTER_MC_FILE, sheet_name="Item Special")
     _is_df_ava.columns = _is_df_ava.columns.str.strip()
     for _, _is_row in _is_df_ava.iterrows():
         _is_mc = str(_is_row.get("MC", "")).strip().upper()
@@ -203,6 +228,89 @@ except Exception as _e_is_ava:
     _ITEM_SPECIAL_LOOKUP_AVA = {}
 
 # =========================
+# MC SPECIAL: per-(Factory, MC_CAT, MC, Gauge) → POLY/COTTON machine count
+# Source: MasterMC.xlsx sheet "MC Special"
+# ถ้า ITEM_CODE ขึ้นต้น FD5/F5 → ใช้ pool COTTON, FD4/F4 → ใช้ pool POLY
+# =========================
+_MC_SPECIAL_LOOKUP: dict = {}  # key=(factory_upper, mc_cat_upper, mc_upper, gauge_str) → {"POLY": int, "COTTON": int}
+
+try:
+    _mcs_df = pd.read_excel(MASTER_MC_FILE, sheet_name="MC Special")
+    _mcs_df.columns = _mcs_df.columns.str.strip()
+    for _, _mcs_row in _mcs_df.iterrows():
+        _mcs_fac = str(_mcs_row.get("Factory", "")).strip().upper()
+        _mcs_cat = str(_mcs_row.get("MC_CAT", "")).strip().upper()
+        _mcs_mc_raw = str(_mcs_row.get("MC", "")).strip().upper()
+        _mcs_mc = "" if _mcs_mc_raw in ("NAN", "NONE", "") else _mcs_mc_raw
+        _mcs_g = _norm_gauge_ava(_mcs_row.get("Guage", ""))
+        if not _mcs_fac or not _mcs_cat or not _mcs_g:
+            continue
+        _mcs_poly_raw = _mcs_row.get("POLY")
+        _mcs_cotton_raw = _mcs_row.get("COTTON")
+        _mcs_poly = int(_mcs_poly_raw) if pd.notna(_mcs_poly_raw) and str(_mcs_poly_raw).strip() not in ("", "-") else 0
+        _mcs_cotton = int(_mcs_cotton_raw) if pd.notna(_mcs_cotton_raw) and str(_mcs_cotton_raw).strip() not in ("", "-") else 0
+        if _mcs_poly > 0 or _mcs_cotton > 0:
+            _MC_SPECIAL_LOOKUP[(_mcs_fac, _mcs_cat, _mcs_mc, _mcs_g)] = {"POLY": _mcs_poly, "COTTON": _mcs_cotton}
+    print(f"MC Special: {len(_MC_SPECIAL_LOOKUP)} entries loaded")
+    for _k, _v in _MC_SPECIAL_LOOKUP.items():
+        print(f"  {_k} → {_v}")
+except Exception as _e_mcs:
+    print(f"Cannot load MC Special ({_e_mcs}) -- no Cotton/Poly split")
+    _MC_SPECIAL_LOOKUP = {}
+
+# --- Type-based description rules (Factory+Type rows ใน MC Special) ---
+# key=(factory_upper, type_upper) → {max_mc: int, keywords: list[str]}
+_TYPE_DESC_RULES: dict = {}
+
+def _is_description_special_type(desc: str, keywords: list) -> bool:
+    """Return True ถ้า DESCRIPTION match keyword ใดๆ แต่ถ้ามี FRENCH TERRY → False เสมอ"""
+    d = str(desc).strip().upper()
+    if "FRENCH TERRY" in d:
+        return False
+    base_kws = [kw.lstrip("$") for kw in keywords]
+    return any(kw in d for kw in base_kws)
+
+try:
+    _mcs_df2 = pd.read_excel(MASTER_MC_FILE, sheet_name="MC Special")
+    _mcs_df2.columns = _mcs_df2.columns.str.strip()
+    _kw_col = "Unnamed: 8" if "Unnamed: 8" in _mcs_df2.columns else None
+    _cur_key = None
+    _cur_kws: list = []
+    _cur_max = 0
+    _cur_cat = ""
+    for _, _mcs2_row in _mcs_df2.iterrows():
+        _mcs2_fac  = str(_mcs2_row.get("Factory", "")).strip().upper()
+        _mcs2_type = str(_mcs2_row.get("Type",    "")).strip().upper()
+        _mcs2_cat  = str(_mcs2_row.get("MC_CAT",  "")).strip().upper()
+        if _mcs2_cat == "NAN":
+            _mcs2_cat = ""
+        _mcs2_desc = _mcs2_row.get("DESCRIPTION")
+        _mcs2_kw   = str(_mcs2_row.get(_kw_col, "") if _kw_col else "").strip().upper()
+        _mcs2_guage_raw = _mcs2_row.get("Guage")
+        _mcs2_has_guage = pd.notna(_mcs2_guage_raw) and str(_mcs2_guage_raw).strip() not in ("", "-", "NAN")
+        # TYPE_SPECIAL row: มี Factory+Type แต่ไม่มี Guage
+        if (_mcs2_fac not in ("", "NAN")
+                and _mcs2_type not in ("", "NAN")
+                and not _mcs2_has_guage):
+            if _cur_key and _cur_kws:
+                _TYPE_DESC_RULES[_cur_key] = {"max_mc": _cur_max, "keywords": _cur_kws[:], "mc_cat": _cur_cat}
+            _cur_key  = (_mcs2_fac, _mcs2_type)
+            _cur_cat  = _mcs2_cat  # เก็บ MC_CAT จาก rule (เช่น SINGLE-32)
+            _cur_max  = int(_mcs2_desc) if pd.notna(_mcs2_desc) and str(_mcs2_desc).strip() not in ("", "-") else 0
+            _cur_kws  = [_mcs2_kw] if _mcs2_kw and _mcs2_kw != "NAN" else []
+        elif _mcs2_fac in ("", "NAN") and _mcs2_type in ("", "NAN") and _mcs2_kw not in ("", "NAN"):
+            if _cur_key is not None:
+                _cur_kws.append(_mcs2_kw)
+    if _cur_key and _cur_kws:
+        _TYPE_DESC_RULES[_cur_key] = {"max_mc": _cur_max, "keywords": _cur_kws[:], "mc_cat": _cur_cat}
+    print(f"Type DESC rules: {len(_TYPE_DESC_RULES)} entries")
+    for _k, _v in _TYPE_DESC_RULES.items():
+        print(f"  {_k} → mc_cat={_v['mc_cat']!r}, max_mc={_v['max_mc']}, keywords={_v['keywords']}")
+except Exception as _e_tdr:
+    print(f"Cannot parse Type DESC rules ({_e_tdr})")
+    _TYPE_DESC_RULES = {}
+
+# =========================
 # TOTAL MC MASTER  (โหลดจาก MasterMC.xlsx)
 # =========================
 TOTAL_MC_MAP = {
@@ -211,113 +319,143 @@ TOTAL_MC_MAP = {
     if pd.notna(row.get("Total MC")) and str(row.get("Total MC", "")).strip() not in ("", "-")
 }
 
-# =========================
-# SHARED POOL
-# กลุ่ม MC ที่ใช้เครื่องร่วมกัน (pool) → TOTAL_MC_REMAIN จะถูกปรับให้สะท้อนเครื่องว่างรวม
-# key = pool name, value = (total_machines, [(MC_GROUP, GUAGE), ...])
-# =========================
+# TOTAL_MC รวมตาม Type_1 + Guage (จาก MasterMC)
+TOTAL_MC_MAP_TYPE1 = {}
+for _, _row in _master_mc_df.iterrows():
+    _t1 = str(_row.get("MC_CAT", "")).strip()
+    _g = str(_row.get("Guage", "")).strip()
+    _total = _row.get("Total MC")
+    if _t1 and _g and pd.notna(_total) and str(_total).strip() not in ("", "-"):
+        try:
+            TOTAL_MC_MAP_TYPE1[(_t1, _g)] = TOTAL_MC_MAP_TYPE1.get((_t1, _g), 0) + int(_total)
+        except (ValueError, TypeError):
+            pass
 
-def _parse_group_string(group_str: str) -> list:
-    """
-    แปลง Group string เช่น "SKP , SKPTA 14G" → [("SKP", "14"), ("SKPTA", "14")]
-    """
-    if pd.isna(group_str) or not group_str:
-        return []
-    
-    # แยก MC และ Guage จาก Group string
-    # เช่น "SKP , SKPTA 14G" → MC: ["SKP", "SKPTA"], Guage: "14"
-    parts = str(group_str).strip().split(',')
-    
-    # หา Guage จากส่วนสุดท้าย (มักจะมีตัว G ต่อท้าย)
-    mc_list = []
-    gauge = None
-    
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        
-        # ถ้ามีตัว G แปลว่าเป็นส่วนที่มี Guage
-        if 'G' in part.upper():
-            # แยก MC และ Guage
-            # เช่น "SKPTA 14G" → MC: "SKPTA", Guage: "14"
-            match = part.split()
-            if len(match) >= 2:
-                mc_name = match[0].strip()
-                gauge_part = match[-1].strip().upper().replace('G', '')
-                if gauge:
-                    # ถ้า gauge ถูกตั้งค่าแล้ว ต้องเท่ากัน
-                    if gauge != gauge_part:
-                        continue  # skip ถ้า gauge ไม่ตรง
-                else:
-                    gauge = gauge_part
-                mc_list.append(mc_name)
-        else:
-            # MC ที่ไม่มี Guage ในส่วนนี้
-            mc_list.append(part)
-    
-    if not gauge:
-        return []
-    
-    # สร้าง list of (MC_GROUP, GUAGE) tuples
-    result = []
-    for mc in mc_list:
-        if mc:
-            result.append((mc, gauge))
-    
-    return result
-
-def _build_shared_pool_map_from_master_mc(master_mc_path: str) -> dict:
-    """
-    อ่าน MasterMC และสร้าง SHARED_POOL_MAP แบบ dynamic จากคอลัมน์ Group
-    รวม Total MC ตามกลุ่มเครื่อง
-    """
-    try:
-        df = pd.read_excel(master_mc_path)
-        df.columns = df.columns.str.strip()
-        
-        if "Group" not in df.columns:
-            print("⚠️ ไม่พบคอลัมน์ Group ใน MasterMC - ใช้ SHARED_POOL_MAP default")
-            return None
-        
-        # กรองข้อมูลที่ Total MC เป็นตัวเลขเท่านั้น (เพื่อหลีกเลี่ยงค่า '-' หรือข้อความอื่น)
-        df = df.copy()
-        df["Total MC"] = pd.to_numeric(df["Total MC"], errors="coerce")
-        df = df.dropna(subset=["Total MC"])
-        
-        # Group ตามคอลัมน์ Group และรวม Total MC
-        grouped = df.groupby("Group").agg({
-            "Total MC": "sum",
-            "MC": lambda x: list(x.unique()),
-            "Guage": lambda x: list(x.unique())
-        }).reset_index()
-        
-        # สร้าง SHARED_POOL_MAP
-        shared_pool_map = {}
-        
-        for _, row in grouped.iterrows():
-            group_str = row["Group"]
-            total_mc = int(row["Total MC"])
-            
-            # แปลง Group string เป็น list of (MC_GROUP, GUAGE)
-            pool_members = _parse_group_string(group_str)
-            
-            if pool_members and len(pool_members) > 1:  # เฉพาะกลุ่มที่มีหลาย MC
-                # สร้าง pool name จาก Group string
-                pool_name = group_str.replace(" ", "_").replace(",", "_").replace("G", "")
-                shared_pool_map[pool_name] = (total_mc, pool_members)
-        
-        print(f"✅ สร้าง SHARED_POOL_MAP จาก MasterMC: {len(shared_pool_map)} pools")
-        return shared_pool_map
-        
-    except Exception as e:
-        print(f"⚠️ ไม่สามารถอ่าน MasterMC เพื่อสร้าง SHARED_POOL_MAP: {e}")
-        return None
-
-# โหลด SHARED_POOL_MAP แบบ dynamic จาก MasterMC
-_MASTER_MC_PATH = r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\MasterMC.xlsx"
-SHARED_POOL_MAP = _build_shared_pool_map_from_master_mc(_MASTER_MC_PATH)
 # =========================
+# SHARED POOL — รวมเครื่องตาม Type ใน MasterMC
+# แยกตาม Factory: เครื่องคนละ Factory ไม่นำมารวมกัน
+# pool_key format: "Factory|Type_1:Guage" หรือ "Factory|Group"
+# =========================
+_MC_TO_POOL: dict = {}      # (MC_upper, norm_guage) → pool_key
+_MC_TO_FACTORY: dict = {}   # (MC_upper, norm_guage) → factory_str
+_MC_TO_TYPE: dict = {}      # (MC_upper, norm_guage) → type_str (SINGLE/DOUBLE/...)
+_TOTAL_MC_BY_TYPE: dict = {}   # pool_key → total machines
+
+# รวบรวมข้อมูล MasterMC
+_t1g_total: dict = {}    # (factory, Type_1_upper, norm_guage) → total
+_group_t1gs: dict = {}   # group_str → set of (factory, Type_1_upper, norm_guage)
+_mc_to_group: dict = {}  # (MC_upper, norm_guage) → group_str
+_mc_to_t1g: dict = {}    # (MC_upper, norm_guage) → (Type_1_upper, norm_guage)
+
+for _, _row in _master_mc_df.iterrows():
+    _mc  = str(_row.get("MC",      "")).strip().upper()
+    _t1  = str(_row.get("MC_CAT",  "")).strip().upper()
+    _g   = _norm_gauge_ava(_row.get("Guage", ""))
+    _grp = str(_row.get("Group",   "")).strip()
+    _fac = str(_row.get("Factory", "")).strip()
+    _tot = _row.get("Total MC")
+    if not _mc or not _t1 or not _g:
+        continue
+    _tot_int = 0
+    if pd.notna(_tot) and str(_tot).strip() not in ("", "-"):
+        try:
+            _tot_int = int(_tot)
+        except (ValueError, TypeError):
+            pass
+    if _tot_int > 0:
+        _t1g_total[(_fac, _t1, _g)] = _t1g_total.get((_fac, _t1, _g), 0) + _tot_int
+    if _grp:
+        _group_t1gs.setdefault(_grp, set()).add((_fac, _t1, _g))
+        _mc_to_group[(_mc, _g)] = _grp
+    _mc_to_t1g[(_mc, _g)] = (_t1, _g)
+    _MC_TO_FACTORY[(_mc, _g)] = _fac
+    _MC_TO_TYPE[(_mc, _g)] = str(_row.get("Type", "")).strip().upper()
+
+# Groups ที่ span ข้าม Type_1+Guage ภายใน Factory เดียวกัน (cross-pool)
+_cross_groups = set()
+for _grp, _fac_t1gs in _group_t1gs.items():
+    _per_fac: dict = {}
+    for (_fac, _t1, _g) in _fac_t1gs:
+        _per_fac.setdefault(_fac, set()).add((_t1, _g))
+    if any(len(v) > 1 for v in _per_fac.values()):
+        _cross_groups.add(_grp)
+
+# Build pool key ต่อ MC (รวม Factory เสมอ):
+# - cross-pool → "Factory|Group name"
+# - T1G pool   → "Factory|Type_1:Guage"
+# Special: SINGLE-32 MC SKP → แยก pool ไม่รวมกับ SINGLE-32 MC อื่น
+#   - SKP ทุก Guage → "Factory|SINGLE-32:SKP:Guage"  (ไม่รวมกับ SINGLE-32 MC อื่น)
+#   - SKP Guage 20  → "Factory|SINGLE-32:SKP:20"     (โดดเดี่ยว ไม่รวมกับใคร)
+for (_mc, _g), (_t1, _gt) in _mc_to_t1g.items():
+    _grp = _mc_to_group.get((_mc, _g), "")
+    _fac = _MC_TO_FACTORY.get((_mc, _g), "")
+    _fac_pfx = f"{_fac}|" if _fac else ""
+    if _t1 == "SINGLE-32" and _mc == "SKP":
+        _MC_TO_POOL[(_mc, _g)] = f"{_fac_pfx}SINGLE-32:SKP:{_gt}"
+    else:
+        _MC_TO_POOL[(_mc, _g)] = (
+            f"{_fac_pfx}{_grp}" if (_grp and _grp in _cross_groups)
+            else f"{_fac_pfx}{_t1}:{_gt}"
+        )
+
+# Build _TOTAL_MC_BY_TYPE
+for (_fac, _t1, _g), _tot in _t1g_total.items():
+    _fac_pfx = f"{_fac}|" if _fac else ""
+    _TOTAL_MC_BY_TYPE[f"{_fac_pfx}{_t1}:{_g}"] = _tot    # T1G pool
+
+for _grp in _cross_groups:
+    _per_fac_tots: dict = {}
+    for (_fac, _t1, _g) in _group_t1gs[_grp]:
+        _fac_pfx = f"{_fac}|" if _fac else ""
+        _pk = f"{_fac_pfx}{_grp}"
+        _per_fac_tots[_pk] = _per_fac_tots.get(_pk, 0) + _t1g_total.get((_fac, _t1, _g), 0)
+    _TOTAL_MC_BY_TYPE.update(_per_fac_tots)
+
+# === Special: ตัด SINGLE-32 SKP ออกจาก pool รวม และสร้าง pool แยกต่างหาก ===
+# SKP ทุก Guage → pool แยกตาม Guage เฉพาะ (ไม่รวมกับ SINGLE-32 MC อื่น)
+# SKP Guage 20  → pool โดดเดี่ยวสมบูรณ์ (pool key ต่างจาก SKP Guage อื่น)
+_skp_by_fac_g: dict = {}
+for _, _skp_row in _master_mc_df.iterrows():
+    if (str(_skp_row.get("MC", "")).strip().upper() == "SKP"
+            and str(_skp_row.get("MC_CAT", "")).strip().upper() == "SINGLE-32"):
+        _sg = _norm_gauge_ava(_skp_row.get("Guage", ""))
+        _sf = str(_skp_row.get("Factory", "")).strip()
+        _st_raw = _skp_row.get("Total MC")
+        _st = int(_st_raw) if pd.notna(_st_raw) and str(_st_raw).strip() not in ("", "-") else 0
+        if _st > 0:
+            _skp_by_fac_g[(_sf, _sg)] = _skp_by_fac_g.get((_sf, _sg), 0) + _st
+for (_sf, _sg), _skp_tot in _skp_by_fac_g.items():
+    _sf_pfx = f"{_sf}|" if _sf else ""
+    _skp_pk = f"{_sf_pfx}SINGLE-32:SKP:{_sg}"
+    _orig_pk = f"{_sf_pfx}SINGLE-32:{_sg}"
+    _TOTAL_MC_BY_TYPE[_skp_pk] = _skp_tot
+    if _orig_pk in _TOTAL_MC_BY_TYPE:
+        _TOTAL_MC_BY_TYPE[_orig_pk] = max(0, _TOTAL_MC_BY_TYPE[_orig_pk] - _skp_tot)
+
+# === Type-based DESC special pools ===
+for (_tdr_fac, _tdr_type), _tdr_val in _TYPE_DESC_RULES.items():
+    _tdr_pfx = f"{_tdr_fac}|" if _tdr_fac else ""
+    _TOTAL_MC_BY_TYPE[f"{_tdr_pfx}{_tdr_type}:TYPE_SPECIAL"] = _tdr_val["max_mc"]
+
+# === MC Special sub-pools: สร้าง COTTON/POLY sub-pool และลด normal pool ===
+for (_ms_fac, _ms_cat, _ms_mc, _ms_g), _ms_vals in _MC_SPECIAL_LOOKUP.items():
+    _ms_fac_pfx = f"{_ms_fac}|" if _ms_fac else ""
+    _ms_normal_pk = f"{_ms_fac_pfx}{_ms_cat}:{_ms_g}"
+    _ms_sub_base = f"{_ms_fac_pfx}{_ms_mc}:{_ms_g}" if _ms_mc else f"{_ms_fac_pfx}{_ms_cat}:{_ms_g}"
+    if _ms_vals["COTTON"] > 0:
+        _TOTAL_MC_BY_TYPE[f"{_ms_sub_base}:COTTON"] = _ms_vals["COTTON"]
+        if _ms_normal_pk in _TOTAL_MC_BY_TYPE:
+            _TOTAL_MC_BY_TYPE[_ms_normal_pk] = max(0, _TOTAL_MC_BY_TYPE[_ms_normal_pk] - _ms_vals["COTTON"])
+    if _ms_vals["POLY"] > 0:
+        _TOTAL_MC_BY_TYPE[f"{_ms_sub_base}:POLY"] = _ms_vals["POLY"]
+        if _ms_normal_pk in _TOTAL_MC_BY_TYPE:
+            _TOTAL_MC_BY_TYPE[_ms_normal_pk] = max(0, _TOTAL_MC_BY_TYPE[_ms_normal_pk] - _ms_vals["POLY"])
+
+print(f"📊 Pools by Factory (sample): { dict(list(_TOTAL_MC_BY_TYPE.items())[:10]) }")
+if not _master_mc_df.empty and "Group" in _master_mc_df.columns:
+    _show_cols = [c for c in ["Factory", "Type", "MC_CAT", "MC", "Guage", "Total MC", "Group"] if c in _master_mc_df.columns]
+    print(_master_mc_df[_show_cols].head(15).to_string())
+
 import io
 
 
@@ -380,6 +518,10 @@ for file in all_files:
 df = pd.concat(df_list, ignore_index=True)
 df.columns = df.columns.str.strip().str.upper()
 print("📋 Columns:", df.columns.tolist())
+if "CAT" in df.columns:
+    print(f"📦 CAT unique values:\n{df['CAT'].dropna().unique().tolist()}")
+if "MC_GROUP" in df.columns:
+    print(f"🔧 MC_GROUP unique values:\n{df['MC_GROUP'].dropna().unique().tolist()}")
 
 # =========================
 # CLEAN (❌ COLLAR ถูกลบถาวร)
@@ -394,6 +536,9 @@ df = df[df["TYPE"] != "COLLAR"]
 
 df = df[[c for c in KEEP_COLUMNS if c in df.columns]]
 
+# ใช้ CAT จาก booking โดยตรง (ตรงกับ Type_1 ใน MasterMC)
+df["MC_CAT"] = df["CAT"].astype(str).str.strip().str.upper() if "CAT" in df.columns else df["MC_GROUP"].astype(str).str.strip().str.upper()
+
 df["GUAGE"] = df["GUAGE"].astype(str).str.strip()
 df["CAP_KNIT"] = pd.to_numeric(df["CAP_KNIT"], errors="coerce")
 df["KP_WEIGHT"] = pd.to_numeric(df["KP_WEIGHT"], errors="coerce")
@@ -405,10 +550,8 @@ def _apply_cap_adj(r):
     _is = _get_item_special_ava(r["ITEM_CODE"], r["MC_GROUP"], r["GUAGE"])
     if _is is not None:
         return r["CAP_KNIT"] * (_is[1] / 24)  # Item Special working_hour override
-    elif (r["MC_GROUP"], r["GUAGE"]) in MULTIPLY_RULES:
-        return r["CAP_KNIT"] * (20 / 24)
-    else:
-        return r["CAP_KNIT"]
+    wh = WORKING_HOURS_MAP.get((r["MC_GROUP"], _norm_gauge_ava(r["GUAGE"])), 24)
+    return r["CAP_KNIT"] * (wh / 24)
 
 df["_CAP_ADJ"] = df.apply(_apply_cap_adj, axis=1)
 
@@ -417,10 +560,12 @@ df["_CAP_ADJ"] = df.apply(_apply_cap_adj, axis=1)
 # =========================
 agg_dict = {
     "KP_WEIGHT": "sum",
-    "CAP_KNIT": "first",       # raw cap จาก booking (ไม่ปรับ 20/24)
-    "_CAP_ADJ": "first",     # adjusted cap สำหรับคำนวณ MC_USE
-
+    "CAP_KNIT": "first",
+    "_CAP_ADJ": "first",
+    "MC_CAT": "first",
 }
+if "CAT" in df.columns:
+    agg_dict["CAT"] = "first"
 if "SO_NO" in df.columns:
     agg_dict["SO_NO"] = lambda x: ",".join(x.dropna().astype(str).unique())
 for col in ["YARN-USED", "YARN_USED", "STRUCTURE", "MATERIAL_CONTENT", "DESCRIPTION"]:
@@ -436,10 +581,16 @@ df = df.groupby(["MC_GROUP", "GUAGE", "ITEM_CODE", "WEEK"], as_index=False).agg(
 # =========================
 def _get_working_day_for_row(r):
     cal_wd = get_working_days_in_week(int(r["WEEK"]))
+    holiday_count = max(0, 6 - cal_wd)  # วันหยุดพิเศษ (อาทิตย์หยุดปกติอยู่แล้ว → base=6)
+
     _is = _get_item_special_ava(r["ITEM_CODE"], r["MC_GROUP"], r["GUAGE"])
     if _is is not None:
-        return min(cal_wd, _is[0])  # Item Special working_day override
-    return cal_wd
+        return max(1, _is[0] - holiday_count)  # Item Special working_day หักวันหยุด
+
+    _g = _norm_gauge_ava(r["GUAGE"])
+    mc_wd = WORKING_DAYS_MAP.get((r["MC_GROUP"], _g),
+            _WORKING_DAYS_MC_ONLY.get(r["MC_GROUP"], 6))
+    return max(1, mc_wd - holiday_count)
 
 df["WORKING_DAY"] = df.apply(_get_working_day_for_row, axis=1)
 
@@ -468,63 +619,154 @@ df["_setup_days"] = df.apply(
 )
 
 # =========================
-# MC USE (คำนวณเบื้องต้นด้วย WORKING_DAY เต็ม)
+# MC USE — INITIAL (คำนวณด้วย WORKING_DAY เต็ม)
 # =========================
 df["MC_USE"] = np.where(
     df["_CAP_ADJ"] > 0,
     df["KP_WEIGHT"] / (df["_CAP_ADJ"] * df["WORKING_DAY"]),
     0
 )
-
 df["MC_USE_CEIL"] = np.ceil(df["MC_USE"]).fillna(0).astype(int)
 
-# เช็ค MC_USE_CEIL ของ week ก่อนหน้า
-df["_prev_mc_use_ceil"] = df.groupby("_carry_key")["MC_USE_CEIL"].shift(1)
-
-# เช็คว่ามีการเพิ่มเครื่องหรือไม่
-df["_mc_increase"] = df["MC_USE_CEIL"] - df["_prev_mc_use_ceil"]
-df["_has_mc_increase"] = df["_mc_increase"] > 0
+# =========================
+# PASS 1: eff_days หัก setup เฉพาะ _is_new_setup
+# → ได้ FINAL MC_USE_CEIL ที่สะท้อนเครื่องจริงที่รันใน setup week
+# =========================
+_eff_pass1 = np.where(
+    df["_is_new_setup"],
+    np.maximum(df["WORKING_DAY"] - df["_setup_days"], 0.5),
+    df["WORKING_DAY"]
+)
+df["_mc_use_ceil_pass1"] = np.ceil(
+    np.where(
+        (df["_CAP_ADJ"] > 0) & (_eff_pass1 > 0),
+        df["KP_WEIGHT"] / (df["_CAP_ADJ"] * _eff_pass1),
+        0
+    )
+).astype(float)
+df["_mc_use_ceil_pass1"] = df["_mc_use_ceil_pass1"].fillna(0).astype(int)
 
 # =========================
-# RECALCULATE MC USE (หัก SETUP_DAYS สำหรับ setup ใหม่และการเพิ่มเครื่อง)
+# PASS 2: mc_increase เทียบกับ FINAL ของ week ก่อนหน้า (ไม่ใช่ INITIAL)
+# carry machines = เครื่องที่รันจริงใน prev week (FINAL)
+# new machines   = INITIAL ปัจจุบัน - FINAL prev (ส่วนที่เพิ่มขึ้นจริง)
 # =========================
-# Logic:
-# - ถ้า _is_new_setup = True → ทุกเครื่องต้อง setup → หัก SETUP_DAYS ทั้งหมด
-# - ถ้า _has_mc_increase = True → เครื่องที่เพิ่มต้อง setup → หัก SETUP_DAYS สำหรับเครื่องที่เพิ่ม
-# - ถ้า carryover และไม่เพิ่มเครื่อง → ใช้ WORKING_DAY เต็ม
+df["_prev_mc_use_ceil"] = df.groupby("_carry_key")["_mc_use_ceil_pass1"].shift(1)
+df["_mc_increase"] = np.maximum(
+    df["MC_USE_CEIL"] - df["_prev_mc_use_ceil"].fillna(0), 0
+).astype(int)
+df["_has_mc_increase"] = (df["_mc_increase"] > 0) & (~df["_is_new_setup"])
 
+# =========================
 # คำนวณ effective working days
-# - setup ใหม่: WORKING_DAY - SETUP_DAYS (ทุกเครื่องต้อง setup)
-# - เพิ่มเครื่อง: WORKING_DAY - (SETUP_DAYS * (เครื่องที่เพิ่ม / เครื่องทั้งหมด))
-# - carryover: WORKING_DAY เต็ม
-
+# - new_setup : ทุกเครื่องต้อง setup → WORKING_DAY - setup_days
+# - mc_increase: เฉพาะเครื่องที่เพิ่ม setup → weighted average
+# - carry       : วันเต็ม
+# =========================
 df["_effective_working_days"] = np.where(
     df["_is_new_setup"],
-    df["WORKING_DAY"] - df["_setup_days"],  # setup ใหม่: หัก setup days ทั้งหมด
+    np.maximum(df["WORKING_DAY"] - df["_setup_days"], 0.5),
     np.where(
         df["_has_mc_increase"] & (df["MC_USE_CEIL"] > 0),
-        df["WORKING_DAY"] - (df["_setup_days"] * df["_mc_increase"] / df["MC_USE_CEIL"]),  # เพิ่มเครื่อง: หัก setup days สำหรับเครื่องที่เพิ่ม
-        df["WORKING_DAY"]  # carryover: ใช้เต็ม
+        np.maximum(df["WORKING_DAY"] - (df["_setup_days"] * df["_mc_increase"] / df["MC_USE_CEIL"]), 0.5),
+        df["WORKING_DAY"]
     )
 )
 
-# คำนวณ MC_USE ใหม่ด้วย _effective_working_days
 df["MC_USE"] = np.where(
     (df["_CAP_ADJ"] > 0) & (df["_effective_working_days"] > 0),
     df["KP_WEIGHT"] / (df["_CAP_ADJ"] * df["_effective_working_days"]),
     0
 )
-
 df["MC_USE_CEIL"] = np.ceil(df["MC_USE"]).fillna(0).astype(int)
 
-# drop _CAP_ADJ ก่อน save (ไม่ส่งออก)
-df = df.drop(columns=["_CAP_ADJ"])
+# drop temp columns
+df = df.drop(columns=["_CAP_ADJ", "_mc_use_ceil_pass1"])
 
 # =========================
 # TOTAL MC
 # =========================
+# POOL_TYPE: ดูจาก Type ใน MasterMC ว่า (MC_GROUP, GUAGE) อยู่ใน pool ไหน
+# ถ้า MC อยู่ใน MC Special → แยก sub-pool ตาม ITEM_CODE prefix (FD5/F5=COTTON, FD4/F4=POLY)
+def _get_pool_type_for_row(r):
+    mc_u = str(r["MC_GROUP"]).strip().upper()
+    g_norm = _norm_gauge_ava(r["GUAGE"])
+    normal_pool = _MC_TO_POOL.get((mc_u, g_norm), "")
+    if not normal_pool:
+        return normal_pool
+    fac_u = _MC_TO_FACTORY.get((mc_u, g_norm), "").strip().upper()
+    t1, _ = _mc_to_t1g.get((mc_u, g_norm), ("", ""))
+    fac_pfx = f"{fac_u}|" if fac_u else ""
+
+    # 1. MC Special: POLY/COTTON split ตาม ITEM_CODE prefix (priority สูงสุด)
+    ms_key_specific = (fac_u, t1, mc_u, g_norm)
+    ms_key_general  = (fac_u, t1, "", g_norm)
+    if ms_key_specific in _MC_SPECIAL_LOOKUP:
+        ms_entry = _MC_SPECIAL_LOOKUP[ms_key_specific]
+        sub_base = f"{fac_pfx}{mc_u}:{g_norm}"
+    elif ms_key_general in _MC_SPECIAL_LOOKUP:
+        ms_entry = _MC_SPECIAL_LOOKUP[ms_key_general]
+        sub_base = f"{fac_pfx}{t1}:{g_norm}"
+    else:
+        ms_entry = None
+        sub_base = ""
+    if ms_entry:
+        item_type = _get_item_cotton_poly(r.get("ITEM_CODE", ""))
+        if item_type == "COTTON" and ms_entry["COTTON"] > 0:
+            return f"{sub_base}:COTTON"
+        if item_type == "POLY" and ms_entry["POLY"] > 0:
+            return f"{sub_base}:POLY"
+
+    # 2. Type-based description rules (Factory+Type ใน MC Special)
+    mc_type = _MC_TO_TYPE.get((mc_u, g_norm), "").strip().upper()
+    tdr_key = (fac_u, mc_type)
+    if tdr_key in _TYPE_DESC_RULES:
+        rule = _TYPE_DESC_RULES[tdr_key]
+        rule_mc_cat = rule.get("mc_cat", "")
+        # ตรวจ MC_CAT ตรงกับ rule และ ยกเว้น Gauge 20
+        if (rule_mc_cat and t1 != rule_mc_cat) or g_norm == "20":
+            return normal_pool
+        booking_desc = str(r.get("DESCRIPTION", ""))
+        if _is_description_special_type(booking_desc, rule["keywords"]):
+            return f"{fac_pfx}{mc_type}:TYPE_SPECIAL"
+
+    return normal_pool
+
+df["POOL_TYPE"] = df.apply(_get_pool_type_for_row, axis=1)
+
+# DESC_POOL_TYPE: secondary pool สำหรับ description-based rules
+# กำหนดให้ทุก row ที่ match TYPE_SPECIAL description (ไม่ว่า POOL_TYPE หลักจะเป็นอะไร)
+def _get_desc_pool_for_row(r):
+    mc_u = str(r["MC_GROUP"]).strip().upper()
+    g_norm = _norm_gauge_ava(r["GUAGE"])
+    fac_u = _MC_TO_FACTORY.get((mc_u, g_norm), "").strip().upper()
+    mc_type = _MC_TO_TYPE.get((mc_u, g_norm), "").strip().upper()
+    tdr_key = (fac_u, mc_type)
+    if tdr_key in _TYPE_DESC_RULES:
+        rule = _TYPE_DESC_RULES[tdr_key]
+        rule_mc_cat = rule.get("mc_cat", "")
+        t1, _ = _mc_to_t1g.get((mc_u, g_norm), ("", ""))
+        if (rule_mc_cat and t1 != rule_mc_cat) or g_norm == "20":
+            return ""
+        if _is_description_special_type(str(r.get("DESCRIPTION", "")), rule["keywords"]):
+            fac_pfx = f"{fac_u}|" if fac_u else ""
+            return f"{fac_pfx}{mc_type}:TYPE_SPECIAL"
+    return ""
+
+df["DESC_POOL_TYPE"] = df.apply(_get_desc_pool_for_row, axis=1)
+
+df["FACTORY"] = df.apply(
+    lambda r: _MC_TO_FACTORY.get((str(r["MC_GROUP"]).strip().upper(), _norm_gauge_ava(r["GUAGE"])), ""), axis=1
+)
+print(f"🔍 POOL_TYPE found: {(df['POOL_TYPE'] != '').sum()} rows / {len(df)} total")
+print(f"🔍 Sample FACTORY+MC_CAT+GUAGE → POOL_TYPE:\n{df[['FACTORY','MC_CAT','GUAGE','POOL_TYPE']].drop_duplicates().head(15).to_string()}")
+
+# TOTAL_MC: pool → ใช้ pool total; ไม่มี pool → ใช้ per-(MC_GROUP, GUAGE)
 df["TOTAL_MC"] = df.apply(
-    lambda r: TOTAL_MC_MAP.get((r["MC_GROUP"], r["GUAGE"]), 0), axis=1
+    lambda r: _TOTAL_MC_BY_TYPE[r["POOL_TYPE"]]
+              if r["POOL_TYPE"] and r["POOL_TYPE"] in _TOTAL_MC_BY_TYPE
+              else TOTAL_MC_MAP.get((r["MC_GROUP"], r["GUAGE"]), 0),
+    axis=1
 )
 
 # =========================
@@ -533,71 +775,154 @@ df["TOTAL_MC"] = df.apply(
 df = df.sort_values(["MC_GROUP", "GUAGE", "WEEK"])
 df["MC_USE_CUM"] = df.groupby(["MC_GROUP", "GUAGE", "WEEK"])["MC_USE_CEIL"].cumsum()
 
-df["TOTAL_MC_REMAIN"] = df["TOTAL_MC"] - df["MC_USE_CUM"]
+# Pool-level usage per WEEK: รวม MC_USE_CEIL ทุก MC_GROUP ใน pool เดียวกัน
+_pool_use = (
+    df[df["POOL_TYPE"] != ""]
+    .groupby(["POOL_TYPE", "WEEK"])["MC_USE_CEIL"]
+    .sum()
+    .reset_index()
+    .rename(columns={"MC_USE_CEIL": "_POOL_USE_TOTAL"})
+)
+df = df.merge(_pool_use, on=["POOL_TYPE", "WEEK"], how="left")
+
+# DESC pool usage per WEEK: รวม MC_USE_CEIL จากทุก row ที่ match TYPE_SPECIAL
+# (รวมทั้ง POLY primary + TYPE_SPECIAL primary เพื่อหักเครื่องทั้ง 2 pool พร้อมกัน)
+_desc_pool_use = (
+    df[df["DESC_POOL_TYPE"] != ""]
+    .groupby(["DESC_POOL_TYPE", "WEEK"])["MC_USE_CEIL"]
+    .sum()
+    .reset_index()
+    .rename(columns={"MC_USE_CEIL": "_DESC_POOL_USE_TOTAL", "DESC_POOL_TYPE": "_dpk"})
+)
+df = df.merge(
+    _desc_pool_use.rename(columns={"_dpk": "DESC_POOL_TYPE"}),
+    on=["DESC_POOL_TYPE", "WEEK"],
+    how="left"
+)
+
+# Non-pool rows: total MC_USE_CEIL per MC_CAT+GUAGE+WEEK (เหมือน pool rows)
+_nonpool_use = (
+    df[df["POOL_TYPE"] == ""]
+    .groupby(["MC_CAT", "GUAGE", "WEEK"])["MC_USE_CEIL"]
+    .sum()
+    .reset_index()
+    .rename(columns={"MC_USE_CEIL": "_NONPOOL_USE_TOTAL"})
+)
+df = df.merge(_nonpool_use, on=["MC_CAT", "GUAGE", "WEEK"], how="left")
+
+# TOTAL_MC_REMAIN:
+# - TYPE_SPECIAL primary rows → ใช้ desc_pool_use (รวม POLY+TYPE_SPECIAL ทั้งหมด)
+# - pool rows ที่ match TYPE_SPECIAL description (เช่น FD4/FD5 ใน POLY pool) → min(pool remain, TYPE_SPECIAL remain)
+# - pool rows อื่น → pool total - _pool_use
+# - non-pool rows → TOTAL_MC - MC_USE_CUM
+_desc_pool_total_s = df["DESC_POOL_TYPE"].map(
+    lambda pk: _TOTAL_MC_BY_TYPE.get(pk, 0) if pk else 0
+)
+_type_special_remain = _desc_pool_total_s - df["_DESC_POOL_USE_TOTAL"].fillna(0)
+
+df["TOTAL_MC_REMAIN"] = np.where(
+    df["POOL_TYPE"].str.endswith(":TYPE_SPECIAL", na=False),
+    df["TOTAL_MC"] - df["_DESC_POOL_USE_TOTAL"].fillna(0),
+    np.where(
+        (df["POOL_TYPE"] != "") & (df["DESC_POOL_TYPE"] != ""),
+        np.minimum(
+            df["TOTAL_MC"] - df["_POOL_USE_TOTAL"].fillna(0),
+            _type_special_remain
+        ),
+        np.where(
+            df["POOL_TYPE"] != "",
+            df["TOTAL_MC"] - df["_POOL_USE_TOTAL"].fillna(0),
+            df["TOTAL_MC"] - df["_NONPOOL_USE_TOTAL"].fillna(0)
+        )
+    )
+)
+df = df.drop(columns=["_POOL_USE_TOTAL", "_NONPOOL_USE_TOTAL"])
+
+# DESC_MC_REMAIN: เครื่องคงเหลือใน TYPE_SPECIAL pool สำหรับ row ที่ match description
+# (แสดงเฉพาะ row ที่มี DESC_POOL_TYPE — ทั้ง POLY primary และ TYPE_SPECIAL primary)
+df["DESC_POOL_TOTAL"] = df["DESC_POOL_TYPE"].map(
+    lambda pk: _TOTAL_MC_BY_TYPE.get(pk, 0) if pk else 0
+)
+df["DESC_MC_REMAIN"] = np.where(
+    df["DESC_POOL_TYPE"] != "",
+    df["DESC_POOL_TOTAL"] - df["_DESC_POOL_USE_TOTAL"].fillna(0),
+    np.nan
+)
+df = df.drop(columns=["_DESC_POOL_USE_TOTAL", "DESC_POOL_TOTAL"])
 
 # =========================
 # SUMMARY
+# - Pool groups  → group by POOL_TYPE (Type ใน MasterMC), TOTAL_MC = pool total
+# - Non-pool groups → group by MC_CAT + GUAGE เหมือนเดิม
 # =========================
-mc_master = pd.DataFrame(
-    [(k[0], k[1], v) for k, v in TOTAL_MC_MAP.items()],
-    columns=["MC_GROUP", "GUAGE", "TOTAL_MC"],
+weeks = sorted(df["WEEK"].unique())
+summary_parts = []
+
+# --- Pool summary: แสดง MC_CAT+GUAGE ทุกตัวใน MasterMC (รวมที่ไม่มี booking) ---
+pool_df = df[df["POOL_TYPE"] != ""]
+# Pool usage from booking
+if not pool_df.empty:
+    pool_use_week = pool_df.groupby(["POOL_TYPE", "WEEK"], as_index=False)["MC_USE_CEIL"].sum()
+else:
+    pool_use_week = pd.DataFrame(columns=["POOL_TYPE", "WEEK", "MC_USE_CEIL"])
+# Pool total per POOL_TYPE
+pool_total_df = pd.DataFrame(list(_TOTAL_MC_BY_TYPE.items()), columns=["POOL_TYPE", "TOTAL_MC"])
+# Build pool combos จาก MasterMC ทั้งหมด (ใช้ Type_1 raw = CAT ตรงกับ booking)
+_pool_base_records = []
+for _, _mmc_row in _master_mc_df.iterrows():
+    _mc_u = str(_mmc_row.get("MC", "")).strip().upper()
+    _g_norm = _norm_gauge_ava(_mmc_row.get("Guage", ""))
+    _t1_raw = str(_mmc_row.get("MC_CAT", "")).strip()
+    _g_raw = str(_mmc_row.get("Guage", "")).strip()
+    _fac_raw = str(_mmc_row.get("Factory", "")).strip()
+    if not _mc_u or not _t1_raw or not _g_norm:
+        continue
+    _pk = _MC_TO_POOL.get((_mc_u, _g_norm), "")
+    if _pk:
+        _pool_base_records.append({"FACTORY": _fac_raw, "MC_CAT": _t1_raw, "GUAGE": _g_raw, "POOL_TYPE": _pk})
+pool_combos = (
+    pd.DataFrame(_pool_base_records).drop_duplicates()
+    if _pool_base_records
+    else pd.DataFrame(columns=["FACTORY", "MC_CAT", "GUAGE", "POOL_TYPE"])
 )
+pool_combos = pool_combos.merge(pool_total_df, on="POOL_TYPE", how="left").dropna(subset=["TOTAL_MC"])
+if not pool_combos.empty:
+    week_df = pd.DataFrame({"WEEK": weeks})
+    pool_combos["key"] = 1
+    week_df["key"] = 1
+    pool_base = pool_combos.merge(week_df, on="key").drop(columns="key")
+    pool_sum = pool_base.merge(pool_use_week, on=["POOL_TYPE", "WEEK"], how="left")
+    pool_sum["MC_USE_CEIL"] = pool_sum["MC_USE_CEIL"].fillna(0).astype(int)
+    pool_sum["TOTAL_MC_REMAIN"] = pool_sum["TOTAL_MC"] - pool_sum["MC_USE_CEIL"]
+    summary_parts.append(pool_sum[["FACTORY", "MC_CAT", "GUAGE", "TOTAL_MC", "WEEK", "MC_USE_CEIL", "TOTAL_MC_REMAIN"]])
 
-week_master = pd.DataFrame({"WEEK": sorted(df["WEEK"].unique())})
-mc_master["key"] = 1
-week_master["key"] = 1
+# --- Non-pool summary: เฉพาะ MC_CAT+GUAGE ที่มี data จริงใน nonpool_df เท่านั้น ---
+nonpool_df = df[df["POOL_TYPE"] == ""]
+if not nonpool_df.empty:
+    mc_use_week = nonpool_df.groupby(["MC_CAT", "GUAGE", "WEEK"], as_index=False)["MC_USE_CEIL"].sum()
+    # ดึง TOTAL_MC เฉพาะ combo ที่มีใน nonpool_df จริง
+    _np_combos = set(zip(nonpool_df["MC_CAT"].str.strip(), nonpool_df["GUAGE"].astype(str).str.strip()))
+    mc_master_np = pd.DataFrame(
+        [(k[0], k[1], v) for k, v in TOTAL_MC_MAP_TYPE1.items()
+         if (k[0], k[1]) in _np_combos],
+        columns=["MC_CAT", "GUAGE", "TOTAL_MC"],
+    )
+    if not mc_master_np.empty:
+        week_df2 = pd.DataFrame({"WEEK": weeks})
+        mc_master_np["key"] = 1
+        week_df2["key"] = 1
+        summary_base = mc_master_np.merge(week_df2, on="key").drop(columns="key")
+        summary_np = summary_base.merge(mc_use_week, on=["MC_CAT", "GUAGE", "WEEK"], how="left")
+        summary_np["MC_USE_CEIL"] = summary_np["MC_USE_CEIL"].fillna(0).astype(int)
+        summary_np["TOTAL_MC_REMAIN"] = summary_np["TOTAL_MC"] - summary_np["MC_USE_CEIL"]
+        summary_np["FACTORY"] = ""
+        summary_parts.append(summary_np[["FACTORY", "MC_CAT", "GUAGE", "TOTAL_MC", "WEEK", "MC_USE_CEIL", "TOTAL_MC_REMAIN"]])
 
-summary_base = mc_master.merge(week_master, on="key").drop(columns="key")
-
-mc_use_week = df.groupby(["MC_GROUP", "GUAGE", "WEEK"], as_index=False).agg(
-    {"MC_USE_CEIL": "sum"}
+summary = (
+    pd.concat(summary_parts, ignore_index=True)
+    if summary_parts
+    else pd.DataFrame(columns=["FACTORY", "MC_CAT", "GUAGE", "TOTAL_MC", "WEEK", "MC_USE_CEIL", "TOTAL_MC_REMAIN"])
 )
-
-summary = summary_base.merge(mc_use_week, on=["MC_GROUP", "GUAGE", "WEEK"], how="left")
-
-summary["MC_USE_CEIL"] = summary["MC_USE_CEIL"].fillna(0).astype(int)
-summary["TOTAL_MC_REMAIN"] = summary["TOTAL_MC"] - summary["MC_USE_CEIL"]
-
-# =========================
-# APPLY SHARED POOL: ปรับ TOTAL_MC_REMAIN ให้สะท้อนเครื่องว่างรวมของ pool
-# pool_remain = pool_total - sum(MC_USE_CEIL ของทุก member ใน week นั้น)
-# ทุก member ใน pool จะเห็น TOTAL_MC_REMAIN = pool_remain เท่ากัน
-# =========================
-if SHARED_POOL_MAP is not None:
-    for _pool_name, (_pool_total, _pool_members) in SHARED_POOL_MAP.items():
-        for _week in summary["WEEK"].unique():
-            _week_mask = summary["WEEK"] == _week
-            _member_mask = _week_mask & summary.apply(
-                lambda r: (r["MC_GROUP"], str(r["GUAGE"])) in _pool_members, axis=1
-            )
-            _total_used = summary.loc[_member_mask, "MC_USE_CEIL"].sum()
-            _pool_remain = max(0, _pool_total - _total_used)
-            summary.loc[_member_mask, "TOTAL_MC"] = _pool_total
-            summary.loc[_member_mask, "TOTAL_MC_REMAIN"] = _pool_remain
-
-try:
-    capability_groups = load_capability_groups(MASTER_MC_FILE)
-    summary = summary.merge(capability_groups, on=["MC_GROUP", "GUAGE"], how="left")
-    summary["CAPABILITY_TOTAL_MC_REMAIN"] = summary.groupby(["Capability Group", "WEEK"])[
-        "TOTAL_MC_REMAIN"
-    ].transform("sum")
-except FileNotFoundError:
-    print(f"⚠️ ไม่พบไฟล์ {MASTER_MC_FILE} - ข้าม Capability Group merge")
-    summary["Capability Group"] = None
-    summary["CAPABILITY_TOTAL_MC_REMAIN"] = summary["TOTAL_MC_REMAIN"]
-
-summary = summary[
-    [
-        "MC_GROUP",
-        "Capability Group",
-        "GUAGE",
-        "TOTAL_MC",
-        "WEEK",
-        "MC_USE_CEIL",
-        "TOTAL_MC_REMAIN",
-        "CAPABILITY_TOTAL_MC_REMAIN",
-    ]
-]
 
 # =========================
 # SAVE
