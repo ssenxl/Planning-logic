@@ -10527,13 +10527,12 @@ plan_df["CYLINDER_CHANGE"] = ""
 _cyl_trigger_keys = set()
 for (_ciw, _cii, _cimg) in _cylinder_change_for_item:
     _cyl_trigger_keys.add((int(_ciw), _cii, str(_cimg).strip().upper()))
-# item+mc_group set สำหรับ fallback (กัน week mismatch)
 _cyl_trigger_item_mc = set((_cii, str(_cimg).strip().upper()) for (_ciw, _cii, _cimg) in _cylinder_change_for_item)
 for _ci, _cr in plan_df.iterrows():
     _ck_week = int(_cr.get("PLAN_WEEK") or 0)
     _ck_item = str(_cr.get("ITEM_CODE", "")).strip().upper()
     _ck_mc = str(_cr.get("MC_GROUP", "")).strip().upper()
-    if (_ck_week, _ck_item, _ck_mc) in _cyl_trigger_keys or (_ck_item, _ck_mc) in _cyl_trigger_item_mc:
+    if (_ck_week, _ck_item, _ck_mc) in _cyl_trigger_keys:
         plan_df.at[_ci, "CYLINDER_CHANGE"] = "Yes"
 
 # =========================
@@ -11449,7 +11448,7 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as _writer:
     _plan_no_s9_df.to_excel(_writer, sheet_name="PLAN_NO_S9", index=False)
 
 # ใส่สีให้ PLAN sheet: เหลือง=CYLINDER_CHANGE, แดง=S9_ROUTING
-_need_color = _cyl_trigger_item_mc or (
+_need_color = _cyl_trigger_keys or (
     "S9_ROUTING" in plan_df.columns and plan_df["S9_ROUTING"].any()
 )
 if _need_color:
