@@ -141,7 +141,11 @@
       "PowerShell(Select-String -Path c:\\\\vscode\\\\AI_plan\\\\plan_log.txt -Pattern \"FD5GNTMX102\" | Select-Object -Skip 120 -First 60 | ForEach-Object { $_.Line })",
       "PowerShell(cd \"c:\\\\vscode\\\\AI_plan\"; python Planning.py > plan_log.txt 2>&1; Write-Host \"Exit: $LASTEXITCODE\")",
       "Bash(findstr /C:\"FD5GNTMX102\")",
-      "PowerShell(cd c:\\\\vscode\\\\AI_plan; $output = python Planning.py 2>&1; Write-Output \"Exit: $LASTEXITCODE\"; $output | Select-String \"FD5GNTMX102|FD6DRTPZ09|Saved|Error|Traceback|Exception\" | Select-Object -Last 20)"
+      "PowerShell(cd c:\\\\vscode\\\\AI_plan; $output = python Planning.py 2>&1; Write-Output \"Exit: $LASTEXITCODE\"; $output | Select-String \"FD5GNTMX102|FD6DRTPZ09|Saved|Error|Traceback|Exception\" | Select-Object -Last 20)",
+      "Bash(git restore *)",
+      "Bash(Get-Content \"c:\\\\vscode\\\\AI_plan\\\\plan_log.txt\" -Tail 100)",
+      "Bash(Select-String -Pattern \"CYL|cylinder|CYLINDER\")",
+      "PowerShell(Copy-Item \"C:\\\\Users\\\\WICHARIT\\\\Nan Yang Textile\\\\SCM_Cloud - Knit Plan \\(AI\\)\\\\MasterMC.xlsx\" \"C:\\\\vscode\\\\AI_plan\\\\MasterMC_tmp.xlsx\" -Force)"
     ],
     "additionalDirectories": [
       "C:\\Users\\WICHARIT\\Nan Yang Textile\\SCM_Cloud - Knit Plan (AI)",

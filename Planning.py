@@ -199,6 +199,27 @@ try:
 except Exception as _e_spare:
     print(f"⚠️ ไม่สามารถโหลด Spare part: {_e_spare}")
 
+# Job sheet: cylinder changes ที่เกิดขึ้นจริงแล้วในแต่ละ week (จาก MasterMC)
+# format: {week_int: {group: count}}  group = 'OMNOI' / 'PHET_SINGLE' / 'PHET_DOUBLE'
+_job_cylinder_done: dict = {}
+try:
+    _job_df = pd.read_excel(_MASTER_MC_PATH, sheet_name="Job ", header=None)
+    _job_header = _job_df.iloc[0]
+    for _, _jrow in _job_df.iloc[1:].iterrows():
+        _jgroup = str(_jrow.iloc[0]).strip()
+        if not _jgroup or _jgroup == "nan":
+            continue
+        for _jcol in range(1, len(_job_header)):
+            _jweek_val = _job_header.iloc[_jcol]
+            _jcount = _jrow.iloc[_jcol]
+            if pd.isna(_jweek_val) or pd.isna(_jcount):
+                continue
+            _jweek = int(_jweek_val)
+            _job_cylinder_done.setdefault(_jweek, {})[_jgroup] = int(_jcount)
+    print(f"✅ Job cylinder done: {_job_cylinder_done}")
+except Exception as _e_job:
+    print(f"⚠️ ไม่สามารถโหลด Job sheet: {_e_job}")
+
 # MC Special: per-(Factory, MC_CAT, MC, Gauge) → POLY/COTTON machine count
 # Source: MasterMC.xlsx sheet "MC Special"
 _MC_SPECIAL_PLAN: dict = {}  # key=(factory_upper, mc_cat_upper, mc_upper, gauge_str) → {"POLY": int, "COTTON": int}
@@ -6700,6 +6721,10 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
     # Reset state ที่ถูก init ก่อน line 6737 (ต้อง reset ทุก pass)
     _type_special_weekly_usage = {}
     cylinder_change_count = {}
+    # Pre-load จำนวน cylinder ที่เปลี่ยนจริงไปแล้วจาก Job sheet (MasterMC)
+    for _jw, _jgroups in _job_cylinder_done.items():
+        for _jg, _jc in _jgroups.items():
+            cylinder_change_count.setdefault(_jw, {})[_jg] = _jc
     cylinder_adjustments = {}
     _cylinder_change_for_item = {}
     _cylinder_change_start_map = {}
@@ -10527,7 +10552,6 @@ plan_df["CYLINDER_CHANGE"] = ""
 _cyl_trigger_keys = set()
 for (_ciw, _cii, _cimg) in _cylinder_change_for_item:
     _cyl_trigger_keys.add((int(_ciw), _cii, str(_cimg).strip().upper()))
-_cyl_trigger_item_mc = set((_cii, str(_cimg).strip().upper()) for (_ciw, _cii, _cimg) in _cylinder_change_for_item)
 for _ci, _cr in plan_df.iterrows():
     _ck_week = int(_cr.get("PLAN_WEEK") or 0)
     _ck_item = str(_cr.get("ITEM_CODE", "")).strip().upper()
@@ -11435,15 +11459,13 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as _writer:
         # เพิ่ม CYLINDER_CHANGE จาก pass 2 cylinder data
         _plan_no_s9_df["CYLINDER_CHANGE"] = ""
         _cyl_keys_no_s9 = set()
-        _cyl_item_mc_no_s9 = set()
         for (_ciw, _cii, _cimg) in _cylinder_change_for_item_no_s9:
             _cyl_keys_no_s9.add((int(_ciw), _cii, str(_cimg).strip().upper()))
-            _cyl_item_mc_no_s9.add((_cii, str(_cimg).strip().upper()))
         for _ci, _cr in _plan_no_s9_df.iterrows():
             _ck_w = int(_cr.get("PLAN_WEEK") or 0)
             _ck_i = str(_cr.get("ITEM_CODE", "")).strip().upper()
             _ck_m = str(_cr.get("MC_GROUP", "")).strip().upper()
-            if (_ck_w, _ck_i, _ck_m) in _cyl_keys_no_s9 or (_ck_i, _ck_m) in _cyl_item_mc_no_s9:
+            if (_ck_w, _ck_i, _ck_m) in _cyl_keys_no_s9:
                 _plan_no_s9_df.at[_ci, "CYLINDER_CHANGE"] = "Yes"
     _plan_no_s9_df.to_excel(_writer, sheet_name="PLAN_NO_S9", index=False)
 
