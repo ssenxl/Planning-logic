@@ -1,11 +1,13 @@
+import sys
 import pandas as pd
 from pathlib import Path
 
 # =========================
 # CONFIG
 # =========================
-ORDER_DIR = Path(r"C:\vscode\AI_plan\Order")
-OUTPUT_DIR = Path(r"C:\vscode\AI_plan\data_plan")
+_APP_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+ORDER_DIR = _APP_DIR / "Order"
+OUTPUT_DIR = _APP_DIR / "data_plan"
 OUTPUT_FILE = OUTPUT_DIR / "order_ready.xlsx"
 
 EXCLUDE_ORDER_TYPES = [

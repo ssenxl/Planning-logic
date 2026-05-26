@@ -1,7 +1,11 @@
+import sys
 import pandas as pd
 import os
 import shutil
 import glob
+from pathlib import Path
+
+_APP_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 from datetime import datetime, timedelta
 
 
@@ -30,7 +34,7 @@ def add_stock_min_from_target(df_stock, target_file=None):
         DataFrame with STOCK_MIN column
     """
     if target_file is None:
-        target_file = r"C:\vscode\AI_plan\Estimate_Core\Target_Stock.xlsx"
+        target_file = str(_APP_DIR / "Estimate_Core" / "Target_Stock.xlsx")
     
     if not os.path.exists(target_file):
         print(f"⚠️  ไม่พบไฟล์ Target Stock: {target_file}")
@@ -376,7 +380,7 @@ def read_target_item_codes(target_file=None):
     Returns: list of item codes
     """
     if target_file is None:
-        target_file = r"C:\vscode\AI_plan\Estimate_Core\Target_Stock.xlsx"
+        target_file = str(_APP_DIR / "Estimate_Core" / "Target_Stock.xlsx")
     
     if not os.path.exists(target_file):
         print(f"ไม่พบไฟล์ Target Stock: {target_file}")
@@ -541,7 +545,7 @@ if __name__ == "__main__":
     
     # Step 6: บันทึกผลลัพธ์
     if stock_data is not None:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        script_dir = str(_APP_DIR)
         output_file = os.path.join(script_dir, "data_plan", "filtered_stock_data.xlsx")
         stock_data.to_excel(output_file, index=False)
         print(f"\n{'=' * 80}")

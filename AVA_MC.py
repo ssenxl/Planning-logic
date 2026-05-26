@@ -1,6 +1,8 @@
 import re
 import pandas as pd
 import numpy as np
+import sys
+import configparser as _cp
 from pathlib import Path
 from Calendar import load_calendar
 
@@ -24,7 +26,10 @@ def get_working_days_in_week(week):
 # CONFIG
 # =========================
 SETUP_DAYS = 5  # default setup days
-BASE_DIR = Path(__file__).parent
+BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+_cfg = _cp.ConfigParser()
+if not _cfg.read(BASE_DIR / "config.ini", encoding="utf-8"):
+    raise FileNotFoundError(f"ไม่พบ config.ini ที่ {BASE_DIR / 'config.ini'} — กรุณาสร้างไฟล์ config.ini ก่อนรัน")
 
 def _get_item_cotton_poly(item_code: str) -> str:
     """Return 'COTTON' if FD5/F5 prefix, 'POLY' if FD4/F4 prefix, '' otherwise."""
@@ -61,7 +66,7 @@ def get_setup_days_for_item(material_content: str, yarn_used: str) -> int:
         return 3
     return 3
 BOOKING_DIR = BASE_DIR / "Booking"
-MASTER_MC_FILE = Path(r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\MasterMC.xlsx")
+MASTER_MC_FILE = Path(_cfg["paths"]["master_mc"])
 OUTPUT_DIR = BASE_DIR / "data_plan"
 OUTPUT_FILE = OUTPUT_DIR / "booking_final_ready25.xlsx"
 

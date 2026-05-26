@@ -16,6 +16,7 @@ Usage:
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 
 import oracledb
 import pandas as pd
@@ -38,7 +39,7 @@ HOST = "172.16.7.55"
 PORT = 1521
 DB_NAME = "NYTG"
 VIEW_NAME = "nyf.DFIV_KP_BOOKING@NYKPB.WORLD"
-OUTPUT_FILE = r"C:\vscode\AI_plan\Booking\view_booking.xlsx"
+OUTPUT_FILE = str((Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent) / "Booking" / "view_booking.xlsx")
 
 USER = os.environ.get("SF5_USER", "hctr")
 PASSWORD = os.environ.get("SF5_PASSWORD", "HCTR#23")

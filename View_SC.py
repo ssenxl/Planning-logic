@@ -16,6 +16,7 @@ Usage:
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 
 import oracledb
 import pandas as pd
@@ -31,7 +32,7 @@ VIEW_CANDIDATES = [
     "BI_DATA_SC_PENDING_HL@NYKPB.WORLD",
     "nyf.BI_DATA_SC_PENDING_HL@NYKPB.WORLD",
 ]
-OUTPUT_FILE = r"C:\vscode\AI_plan\Order\view_sc.xlsx"
+OUTPUT_FILE = str((Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent) / "Order" / "view_sc.xlsx")
 
 USER = os.environ.get("SF5_USER", "hctr")
 PASSWORD = os.environ.get("SF5_PASSWORD", "HCTR#23")

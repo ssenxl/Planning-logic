@@ -5,6 +5,7 @@ import math
 import re
 import sys
 from datetime import date, datetime
+import configparser as _cp
 from pathlib import Path
 from Calendar import load_calendar, calendar_week_map
 
@@ -17,7 +18,10 @@ if sys.platform == "win32":
 # =========================
 # CONFIG
 # =========================
-BASE_DIR = Path(__file__).parent
+BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+_cfg = _cp.ConfigParser()
+if not _cfg.read(BASE_DIR / "config.ini", encoding="utf-8"):
+    raise FileNotFoundError(f"ไม่พบ config.ini ที่ {BASE_DIR / 'config.ini'} — กรุณาสร้างไฟล์ config.ini ก่อนรัน")
 TODAY = pd.Timestamp.today().normalize()
 DATA_PLAN_DIR = BASE_DIR / "data_plan"
 DATA_DIR = BASE_DIR / "data"
@@ -65,7 +69,7 @@ LOAD_BALANCING_THRESHOLD = 0.2  # เกณฑ์ที่ใช้พิจา�
 # กลุ่ม MC ที่ใช้เครื่องร่วมกัน — ต้องตรงกับ AVA_MC.py
 # =========================
 # โหลด SHARED_POOL_MAP แบบ dynamic จาก MasterMC
-_MASTER_MC_PATH = r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\MasterMC.xlsx"
+_MASTER_MC_PATH = _cfg["paths"]["master_mc"]
 
 
 
@@ -4323,7 +4327,7 @@ def calculate_required_machines(
 
     item_code, order_qty, start_week, fg_week, setup_days=SETUP_DAYS, only_mc_group=None,
 
-    order_type="", sub_color="",
+    order_type="", sub_color="", dye_end_date=None,
 
 ):
 
@@ -4517,7 +4521,7 @@ def calculate_required_machines(
 
         if order_type == "YD-ORDERS" and carryover_start > 0:
 
-            _dye_end_date = order.get("DYE_END_DATE")
+            _dye_end_date = dye_end_date
 
             if pd.notna(_dye_end_date):
 
@@ -7911,6 +7915,7 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                     only_mc_group=_locked_mc,
                     order_type=order_type,
                     sub_color=sub_color,
+                    dye_end_date=order.get("DYE_END_DATE"),
                 )
             )
             print(f"[DEBUG CALC] {item}: mc_group={mc_group_calc}, required_machines={required_machines}, feasible={feasible_calc}")
@@ -8476,6 +8481,7 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                     only_mc_group=_locked_mc2,
                     order_type=order_type,
                     sub_color=sub_color,
+                    dye_end_date=order.get("DYE_END_DATE"),
                 )
                 if _req_r:
                     required_machines_info = (_mc_r, _cap_r, _req_r, _feas_r, _gauge_r)
@@ -8602,6 +8608,7 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                             only_mc_group=_locked_mc2,
                             order_type=order_type,
                             sub_color=sub_color,
+                            dye_end_date=order.get("DYE_END_DATE"),
                         )
                         if _req_r:
                             required_machines_info = (_mc_r, _cap_r, _req_r, _feas_r, _gauge_r)
@@ -10551,7 +10558,7 @@ if not plan_df.empty and "MC_GROUP" in plan_df.columns:
 plan_df["CYLINDER_CHANGE"] = ""
 _cyl_trigger_keys = set()
 for (_ciw, _cii, _cimg) in _cylinder_change_for_item:
-    _cyl_trigger_keys.add((int(_ciw), _cii, str(_cimg).strip().upper()))
+    _cyl_trigger_keys.add((int(_ciw) + 1, _cii, str(_cimg).strip().upper()))
 for _ci, _cr in plan_df.iterrows():
     _ck_week = int(_cr.get("PLAN_WEEK") or 0)
     _ck_item = str(_cr.get("ITEM_CODE", "")).strip().upper()
@@ -11439,6 +11446,10 @@ _cylinder_change_df = pd.DataFrame(_cyl_rows) if _cyl_rows else pd.DataFrame(
     columns=["WEEK", "FACTORY", "MC_CAT", "GAUGE_FROM", "GAUGE_TO", "MC_CHANGED", "ITEM_CODE"]
 )
 
+if "S9_ROUTING" in plan_df.columns:
+    _other_cols = [c for c in plan_df.columns if c != "S9_ROUTING"]
+    plan_df = plan_df[_other_cols + ["S9_ROUTING"]]
+
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as _writer:
     plan_df.to_excel(_writer, sheet_name="PLAN", index=False)
     remaining_df.to_excel(_writer, sheet_name="REMAINING_JOBS", index=False)
@@ -11460,13 +11471,16 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as _writer:
         _plan_no_s9_df["CYLINDER_CHANGE"] = ""
         _cyl_keys_no_s9 = set()
         for (_ciw, _cii, _cimg) in _cylinder_change_for_item_no_s9:
-            _cyl_keys_no_s9.add((int(_ciw), _cii, str(_cimg).strip().upper()))
+            _cyl_keys_no_s9.add((int(_ciw) + 1, _cii, str(_cimg).strip().upper()))
         for _ci, _cr in _plan_no_s9_df.iterrows():
             _ck_w = int(_cr.get("PLAN_WEEK") or 0)
             _ck_i = str(_cr.get("ITEM_CODE", "")).strip().upper()
             _ck_m = str(_cr.get("MC_GROUP", "")).strip().upper()
             if (_ck_w, _ck_i, _ck_m) in _cyl_keys_no_s9:
                 _plan_no_s9_df.at[_ci, "CYLINDER_CHANGE"] = "Yes"
+    if "S9_ROUTING" in _plan_no_s9_df.columns:
+        _ns9_other = [c for c in _plan_no_s9_df.columns if c != "S9_ROUTING"]
+        _plan_no_s9_df = _plan_no_s9_df[_ns9_other + ["S9_ROUTING"]]
     _plan_no_s9_df.to_excel(_writer, sheet_name="PLAN_NO_S9", index=False)
 
 # ใส่สีให้ PLAN sheet: เหลือง=CYLINDER_CHANGE, แดง=S9_ROUTING

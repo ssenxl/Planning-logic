@@ -23,7 +23,25 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
-BASE_DIR = Path(__file__).parent
+# Force PyInstaller to bundle all dependencies used by pipeline scripts
+import configparser, re, io, math
+import urllib.request, urllib.parse
+import pandas, numpy, openpyxl
+from Calendar import load_calendar as _lc  # bundles Calendar module + its deps
+try:
+    import oracledb
+except ImportError:
+    pass
+try:
+    import xlrd
+except ImportError:
+    pass
+try:
+    import msal
+except ImportError:
+    pass
+
+BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 
 STEPS = [
     {
@@ -85,23 +103,35 @@ def run_step(step: dict, step_num: int, total: int) -> bool:
     separator("-")
 
     t0 = time.time()
-    result = subprocess.run(
-        [sys.executable, str(script)],
-        cwd=str(BASE_DIR),
-        # ส่ง stdout/stderr ตรงไปยัง console (ไม่ capture)
-        stdout=None,
-        stderr=None,
-    )
+    if getattr(sys, 'frozen', False):
+        import runpy, traceback as _tb
+        script_in_bundle = Path(sys._MEIPASS) / script.name
+        returncode = 0
+        try:
+            runpy.run_path(str(script_in_bundle), run_name="__main__")
+        except SystemExit as e:
+            returncode = 0 if (e.code is None or e.code == 0) else int(e.code)
+        except Exception:
+            _tb.print_exc()
+            returncode = 1
+    else:
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=str(BASE_DIR),
+            stdout=None,
+            stderr=None,
+        )
+        returncode = result.returncode
     elapsed = time.time() - t0
 
     separator("-")
-    if result.returncode == 0:
+    if returncode == 0:
         print(f"✅ {name} เสร็จสิ้น  (ใช้เวลา {elapsed:.1f} วินาที)")
     else:
-        print(f"❌ {name} ล้มเหลว  return code={result.returncode}  (ใช้เวลา {elapsed:.1f} วินาที)")
+        print(f"❌ {name} ล้มเหลว  return code={returncode}  (ใช้เวลา {elapsed:.1f} วินาที)")
     separator()
     print()
-    return result.returncode == 0
+    return returncode == 0
 
 
 def parse_args():

@@ -1,7 +1,14 @@
 import os
+import sys
+import configparser as _cp
 import pandas as pd
 import io
 from pathlib import Path
+
+_APP_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+_cfg = _cp.ConfigParser()
+_cfg.read(_APP_DIR / "config.ini", encoding="utf-8")
+_CALENDAR_LOCAL_PATH = _cfg.get("paths", "calendar", fallback="")
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
@@ -246,7 +253,7 @@ def load_calendar(file_path: Path | str, sheet_name: str = "Work day") -> pd.Dat
     """
 
     # ใช้ไฟล์ local เท่านั้น ไม่ใช้ SharePoint
-    source = r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\Calendar.xlsx"
+    source = _CALENDAR_LOCAL_PATH or r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\Calendar.xlsx"
 
     try:
         df = _read_calendar_any(source, sheet_name=sheet_name)

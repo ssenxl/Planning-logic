@@ -1,8 +1,11 @@
+import sys
 import pandas as pd
 import os
 import shutil
 import glob
 from datetime import datetime, timedelta
+
+_APP_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 
 
 def get_current_week():
@@ -137,7 +140,7 @@ def add_outstanding_from_booking(df_stock):
     print(f"Week ถัดไป 2: {current_year}-W{next_week_2:02d}")
     
     # หาไฟล์ Booking (relative path)
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = _APP_DIR
     booking_folder = os.path.join(script_dir, "Booking")
     booking_file = None
     
@@ -322,7 +325,7 @@ def download_target_stock_file():
     อ่านไฟล์ Target Stock จาก OneDrive SharePoint sync folder
     หรือ copy ไปยังโฟลเดอร์ Estimate_Core\Target_Stock.xlsx
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = _APP_DIR
     target_file = os.path.join(script_dir, "Estimate_Core", "Target_Stock.xlsx")
     
     # ตรวจสอบว่ามีไฟล์อยู่แล้วหรือไม่
@@ -428,7 +431,7 @@ def read_stock_data(target_item_codes=None):
     """
     
     # ค้นหาไฟล์ STOCK ในโฟลเดอร์ Stock (relative path)
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = _APP_DIR
     stock_folder = os.path.join(script_dir, "Stock")
     stock_file = None
     
@@ -541,7 +544,7 @@ if __name__ == "__main__":
     
     # Step 6: บันทึกผลลัพธ์
     if stock_data is not None:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        script_dir = _APP_DIR
         output_file = os.path.join(script_dir, "data_plan", "filtered_stock_data.xlsx")
         stock_data.to_excel(output_file, index=False)
         print(f"\n{'=' * 80}")
