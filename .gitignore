@@ -18,3 +18,9 @@ Order/
 Yarn_Master/
 data/
 data_plan/
+
+# sensitive: DB connection & ML training scripts
+Train.py
+View_Booking.py
+View_SC.py
+View_Stock.py
