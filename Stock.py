@@ -1,10 +1,12 @@
 import sys
+import configparser as _cp
 import pandas as pd
 import os
-import glob
 from pathlib import Path
 
 _APP_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+_cfg = _cp.ConfigParser()
+_cfg.read(_APP_DIR / "config.ini", encoding="utf-8")
 from datetime import datetime, timedelta
 
 
@@ -321,47 +323,13 @@ def add_outstanding_from_booking(df_stock):
 
 
 def download_target_stock_file():
-    r"""
-    อ่านไฟล์ Target Stock จาก OneDrive SharePoint sync folder
-    หรือ copy ไปยังโฟลเดอร์ Estimate_Core\Target_Stock.xlsx
-    """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    target_file = os.path.join(script_dir, "Estimate_Core", "Target_Stock.xlsx")
-    
-    # ตรวจสอบว่ามีไฟล์อยู่แล้วหรือไม่
-    if os.path.exists(target_file):
-        print(f"\n✓ พบไฟล์ Target Stock: {target_file}")
-        return target_file
-    
-    print("\n=== กำลังค้นหาไฟล์ Target Stock ===")
-    
-    # ค้นหาไฟล์จาก Downloads (เพราะ SharePoint ไม่ได้ sync กับ OneDrive)
-    search_patterns = [
-        r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\Target Stock MIN , MAX CORE GREIGE*.xlsx",
-        r"C:\Users\WICHARIT\Downloads\Target Stock MIN , MAX CORE GREIGE*.xlsx",
-        r"C:\Users\WICHARIT\OneDrive - Nan Yang Textile\SCM_Cloud\Share File\Knit Plan (AI)\Target Stock MIN , MAX CORE GREIGE.xlsx",
-        r"C:\Users\WICHARIT\OneDrive - Nan Yang Textile\Documents\Target Stock MIN , MAX CORE GREIGE*.xlsx",
-    ]
-    
-    source_file = None
-    for pattern in search_patterns:
-        files = glob.glob(pattern)
-        if files:
-            # เลือกไฟล์ล่าสุด (ถ้ามีหลายไฟล์)
-            source_file = max(files, key=os.path.getmtime)
-            print(f"✓ พบไฟล์: {source_file}")
-            break
-    
-    if source_file:
-        print(f"✓ อ่านตรงจาก: {source_file}")
-        return source_file
-    else:
-        print("✗ ไม่พบไฟล์ Target Stock")
-        print("\n⚠️  จะประมวลผล Stock ทั้งหมดโดยไม่ filter ตาม Target Stock")
-        print("\nหากต้องการ filter ตาม Target Stock:")
-        print("2. วางไฟล์ที่: C:\\vscode\\AI_plan\\Estimate_Core\\Target_Stock.xlsx")
-        print("3. รันโปรแกรมอีกครั้ง\n")
-        return None
+    target_path = Path(_cfg["paths"]["target_stock"])
+    if target_path.exists():
+        print(f"\n✓ พบไฟล์ Target Stock: {target_path}")
+        return str(target_path)
+    print(f"\n✗ ไม่พบไฟล์ Target Stock: {target_path}")
+    print("⚠️  กรุณาตรวจสอบ path ใน config.ini [paths] target_stock")
+    return None
 
 
 def read_target_item_codes(target_file=None):
