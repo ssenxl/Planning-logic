@@ -7888,6 +7888,7 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
         # ป้องกันการลดเครื่องเมื่อ FG หนึ่งจบ ทั้งที่ยังมี FG ถัดไปรอผลิต
         _total_qty_all_fg = get_total_pending_qty_for_item(item, sc_so_no, fg_week, orders_sorted)
         _qty_for_machine_calc = max(qty_left, _total_qty_all_fg)
+        _initial_qty_for_mc_calc = qty_left  # qty_left ตอนเริ่ม order — ใช้คำนวณ adjusted demand
         # 🔧 FIX: คำนวณ demand เฉพาะ SC ปัจจุบัน (ไม่รวม SC อื่นของ item เดียวกัน)
         # ใช้สำหรับ carry optimization เพื่อป้องกันการ hold เครื่องเกินจำเป็นจาก cross-SC demand
         _total_qty_same_sc = get_total_pending_qty_for_item(item, sc_so_no, fg_week, orders_sorted, same_sc_only=True)
@@ -9538,10 +9539,10 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                         continue
 
 
-                def _sim_total_fit_multi(total_mc):
+                def _sim_total_fit_multi(total_mc, qty_override=None):
                     if total_mc <= 0 or daily_capacity is None:
                         return False
-                    _q = float(_qty_for_machine_calc)
+                    _q = float(qty_override if qty_override is not None else _qty_for_machine_calc)
                     _wk = plan_week
                     _first = True
                     while _wk is not None and _q > 0:
@@ -9567,11 +9568,14 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                         _q -= _prod_wk
                         _wk = next_week(_wk)
                     return _q <= 0
+                # demand ที่เหลือจริง = qty_left ของ order นี้ + future orders
+                # (แก้ _qty_for_machine_calc ที่ stale เพราะตั้งตอนเริ่ม order ด้วย original qty)
+                _adjusted_qty_m = qty_left + max(0, _qty_for_machine_calc - _initial_qty_for_mc_calc)
                 _cur_tot_m = carryover_mc + new_mc
                 _min_tot_m = _cur_tot_m
                 if not _s9_active:
                     for _tt in range(1, _cur_tot_m):
-                        if _sim_total_fit_multi(_tt):
+                        if _sim_total_fit_multi(_tt, qty_override=_adjusted_qty_m):
                             _min_tot_m = _tt
                             break
                 if not _s9_active and _min_tot_m < _cur_tot_m:
@@ -9593,6 +9597,45 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                         prod_days_new = max(0.5, actual_working_days - item_setup_days)
                     else:
                         prod_days_new = max(0, actual_working_days - item_setup_days)
+                # ===== GRADUAL MACHINE BOOST =====
+                # หลัง reduction: ถ้าเครื่องยังไม่พอจบทัน latest target
+                # → เพิ่ม new_mc ได้อีก <= MAX_NEW_SETUP_MC ต่อ week (gradual build-up)
+                if not _s9_active and _latest_tgt_idx_m is not None:
+                    _post_red_mc = carryover_mc + new_mc
+                    if not _sim_total_fit_multi(_post_red_mc, qty_override=_adjusted_qty_m):
+                        _avail_pool = get_actual_mc_remain(
+                            mc_group, plan_week, gauge=_sel_gauge, item_code=item
+                        )
+                        _boost_cap = min(
+                            _post_red_mc + MAX_NEW_SETUP_MC,
+                            _avail_pool,
+                            _post_red_mc + _remaining_slots,
+                        )
+                        _boosted = False
+                        _bt = _post_red_mc + 1
+                        while _bt <= int(_boost_cap):
+                            if _sim_total_fit_multi(_bt, qty_override=_adjusted_qty_m):
+                                new_mc = _bt - carryover_mc
+                                available_machines = carryover_mc + new_mc
+                                _boosted = True
+                                break
+                            _bt += 1
+                        if not _boosted and int(_boost_cap) > _post_red_mc:
+                            new_mc = int(_boost_cap) - carryover_mc
+                            available_machines = carryover_mc + new_mc
+                            _boosted = True
+                        if _boosted and available_machines > _post_red_mc:
+                            print(
+                                f"[GRADUAL BOOST] {item} W{plan_week}: "
+                                f"{_post_red_mc}->{available_machines} MC "
+                                f"(target W{_latest_tgt_idx_m})"
+                            )
+                            if new_mc > 0 and actual_working_days < item_setup_days:
+                                prod_days_new = max(0, actual_working_days - 0.5)
+                            elif new_mc > 0:
+                                prod_days_new = max(0.5, actual_working_days - item_setup_days)
+                            else:
+                                prod_days_new = max(0, actual_working_days - item_setup_days)
             # ===== Optimize: ลดเครื่องให้น้อยสุดที่ยังผลิตพอครอบคลุม qty_left =====
             # เช่น week15 carry=3 แต่ qty_left น้อย → ใช้แค่ 1 เครื่องก็เสร็จใน week นี้
             # ใช้การจำลองผลิตจริง (รวม rev_weight rounding) เพื่อความแม่นยำ
