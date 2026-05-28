@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "PowerShell(Start-Process \"https://claude.ai/download\")",
-      "PowerShell(\\(Get-Content \"c:\\\\vscode\\\\AI_plan\\\\Planning.py\"\\).Count)"
+      "PowerShell(\\(Get-Content \"c:\\\\vscode\\\\AI_plan\\\\Planning.py\"\\).Count)",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import sys; sys.stdout.reconfigure\\(encoding='utf-8'\\); open\\(r'c:\\\\vscode\\\\AI_plan\\\\plan_log.txt', encoding='utf-8', errors='replace'\\).read\\(\\).count\\('FD4DRTPG'\\)\")",
+      "Bash(python -u -c ' *)",
+      "Bash(Select-String -Path \"C:\\\\Users\\\\WICHARIT\\\\.claude\\\\projects\\\\c--vscode-AI-plan\\\\dbb0c693-0c20-4d0f-976c-0f7923c23db7\\\\tool-results\\\\bpbeq58n4.txt\" -Pattern \"FD4DRTPG02.*W4[0-9]|GRADUAL BOOST.*FD4DRTPG02\")",
+      "Bash(Select-Object -First 40)",
+      "Bash(.venv\\\\Scripts\\\\pyinstaller.exe --clean KnitPlan.spec)",
+      "PowerShell(Get-Item \"c:\\\\vscode\\\\AI_plan\\\\dist\\\\KnitPlan\\\\KnitPlan.exe\" | Select-Object Name, @{N='Size\\(MB\\)';E={[math]::Round\\($_.Length/1MB,1\\)}}, LastWriteTime)"
     ]
   }
 }
