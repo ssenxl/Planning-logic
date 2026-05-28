@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(Start-Process \"https://claude.ai/download\")"
+      "PowerShell(Start-Process \"https://claude.ai/download\")",
+      "PowerShell(\\(Get-Content \"c:\\\\vscode\\\\AI_plan\\\\Planning.py\"\\).Count)"
     ]
   }
 }

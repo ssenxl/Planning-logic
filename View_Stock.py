@@ -1,7 +1,6 @@
 import sys
 import pandas as pd
 import os
-import shutil
 import glob
 from datetime import datetime, timedelta
 
@@ -353,21 +352,12 @@ def download_target_stock_file():
             break
     
     if source_file:
-        try:
-            # สร้าง folder ถ้ายังไม่มี
-            os.makedirs(os.path.dirname(target_file), exist_ok=True)
-            # Copy ไฟล์
-            shutil.copy2(source_file, target_file)
-            print(f"✓ Copy ไฟล์สำเร็จ: {target_file}")
-            return target_file
-        except Exception as e:
-            print(f"✗ เกิดข้อผิดพลาดในการ copy ไฟล์: {str(e)}")
-            return None
+        print(f"✓ อ่านตรงจาก: {source_file}")
+        return source_file
     else:
         print("✗ ไม่พบไฟล์ Target Stock")
         print("\n⚠️  จะประมวลผล Stock ทั้งหมดโดยไม่ filter ตาม Target Stock")
         print("\nหากต้องการ filter ตาม Target Stock:")
-        print("1. ดาวน์โหลดไฟล์จาก: https://nanyangtextilegroup.sharepoint.com/:f:/s/SCM_Cloud/IgDLFvXS2m8nTp2PlhdOFNLSATsBMvUfQMYZvdR-lXPpQDM")
         print("2. วางไฟล์ที่: C:\\vscode\\AI_plan\\Estimate_Core\\Target_Stock.xlsx")
         print("3. รันโปรแกรมอีกครั้ง\n")
         return None
