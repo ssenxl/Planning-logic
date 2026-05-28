@@ -9,7 +9,8 @@
       "Bash(Select-String -Path \"C:\\\\Users\\\\WICHARIT\\\\.claude\\\\projects\\\\c--vscode-AI-plan\\\\dbb0c693-0c20-4d0f-976c-0f7923c23db7\\\\tool-results\\\\bpbeq58n4.txt\" -Pattern \"FD4DRTPG02.*W4[0-9]|GRADUAL BOOST.*FD4DRTPG02\")",
       "Bash(Select-Object -First 40)",
       "Bash(.venv\\\\Scripts\\\\pyinstaller.exe --clean KnitPlan.spec)",
-      "PowerShell(Get-Item \"c:\\\\vscode\\\\AI_plan\\\\dist\\\\KnitPlan\\\\KnitPlan.exe\" | Select-Object Name, @{N='Size\\(MB\\)';E={[math]::Round\\($_.Length/1MB,1\\)}}, LastWriteTime)"
+      "PowerShell(Get-Item \"c:\\\\vscode\\\\AI_plan\\\\dist\\\\KnitPlan\\\\KnitPlan.exe\" | Select-Object Name, @{N='Size\\(MB\\)';E={[math]::Round\\($_.Length/1MB,1\\)}}, LastWriteTime)",
+      "Read(//c/vscode/AI_plan/**)"
     ]
   }
 }
