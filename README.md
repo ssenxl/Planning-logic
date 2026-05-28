@@ -25,7 +25,7 @@
 ## Data Flow
 
 ```
-Oracle DB (172.16.7.55:1521)
+Oracle DB (internal)
   ├── View_Booking.py ──→ Booking/view_booking.xlsx ─┐
   ├── View_Stock.py   ──→ Stock/view_stock.xlsx       │
   └── View_SC.py      ──→ Order/view_sc.xlsx ─────────┤
@@ -230,10 +230,8 @@ python Planning.py
 
 | ข้อมูล | ค่า |
 |---|---|
-| Host | `172.16.7.55` |
-| Port | `1521` |
 | Service | `NYTG` |
-| User/Pass | `$env:SF5_USER` / `$env:SF5_PASSWORD` (default: hctr/HCTR#23) |
+| User/Pass | `$env:SF5_USER` / `$env:SF5_PASSWORD` |
 | วิธีเชื่อมต่อ | ลอง 3 วิธีตามลำดับ: service_name → full DSN → Easy Connect SID |
 
 ---
