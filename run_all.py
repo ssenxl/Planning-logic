@@ -23,6 +23,14 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
+# บังคับ stdout/stderr เป็น UTF-8 กัน UnicodeEncodeError จากอิโมจิ (✅❌⛔)
+# บน Windows console ที่ใช้ code page cp874 (ไทย)
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except (AttributeError, ValueError):
+    pass
+
 # Force PyInstaller to bundle all dependencies used by pipeline scripts
 import configparser, re, io, math
 import urllib.request, urllib.parse

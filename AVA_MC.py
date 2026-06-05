@@ -41,16 +41,23 @@ def _get_item_cotton_poly(item_code: str) -> str:
     return ""
 
 
-def get_setup_days_for_item(material_content: str, yarn_used: str) -> int:
+_mc_setup_time_map: dict = {}  # populated after _master_mc_df is loaded below
+
+def get_setup_days_for_item(material_content: str, yarn_used: str, mc_group: str = "") -> int:
     """
-    คำนวณ setup days ตาม MATERIAL_CONTENT และ YARN_USED
+    คำนวณ setup days โดยดู MasterMC column "Set up time" ก่อน ถ้า blank ใช้ MATERIAL_CONTENT/YARN_USED
 
     Logic:
-    0. ถ้า MATERIAL_CONTENT เป็น COTTON → 3 วัน (ไม่สนใจ YARN_USED)
-    1. ถ้า MATERIAL_CONTENT เป็น POLY → 5 วัน
-    2. ถ้า MATERIAL_CONTENT เป็นอื่นๆ (CD, TC, CVC, CT, ฯลฯ) → เช็ค YARN_USED: DTY → 5 วัน
-    3. ถ้าไม่มีทั้งสองอย่าง → default 3 วัน
+    0. ถ้า mc_group มีค่าใน _mc_setup_time_map → ใช้ค่านั้น
+    1. ถ้า MATERIAL_CONTENT เป็น COTTON → 3 วัน (ไม่สนใจ YARN_USED)
+    2. ถ้า MATERIAL_CONTENT เป็น POLY → 5 วัน
+    3. ถ้า MATERIAL_CONTENT เป็นอื่นๆ (CD, TC, CVC, CT, ฯลฯ) → เช็ค YARN_USED: DTY → 5 วัน
+    4. ถ้าไม่มีทั้งสองอย่าง → default 3 วัน
     """
+    if mc_group:
+        _mc_u = str(mc_group).strip().upper()
+        if _mc_u in _mc_setup_time_map:
+            return _mc_setup_time_map[_mc_u]
     mat = str(material_content).strip().upper() if not pd.isna(material_content) else ""
     yarn = str(yarn_used).strip().upper() if not pd.isna(yarn_used) else ""
 
@@ -153,6 +160,17 @@ except Exception as _e_mmc:
     print(f"⚠️ โหลด MasterMC ไม่ได้ ({_e_mmc}) — ใช้ค่า default")
     _master_mc_df = pd.DataFrame(columns=["MC", "Guage", "Total MC", "Working Hours."])
 
+# MC → Setup time map: mc_upper → setup_days (จาก MasterMC column "Set up time")
+for _, _mrow in _master_mc_df.iterrows():
+    _mmc = str(_mrow.get("MC", "")).strip().upper()
+    _st = _mrow.get("Set up time", None)
+    if _mmc and _st is not None and str(_st).strip() not in ("", "nan", "NAN", "NaT", "None"):
+        try:
+            _mc_setup_time_map[_mmc] = int(float(_st))
+        except (ValueError, TypeError):
+            pass
+print(f"✅ MC→SetupTime map: {len(_mc_setup_time_map)} entries")
+
 def _norm_gauge_ava(gauge) -> str:
     """Normalize gauge: 22.0 → 22"""
     if gauge is None or (isinstance(gauge, float) and pd.isna(gauge)):
@@ -179,7 +197,7 @@ for _, _wh_row in _master_mc_df.iterrows():
 
 # =========================
 # WORKING DAYS MAP  (โหลดค่า Working Day จริงจาก MasterMC.xlsx)
-# key=(MC, Guage), value=วัน (int), default=6
+# key=(MC, Guage), value=วัน (float — รองรับทศนิยม เช่น 5.5), default=6
 # =========================
 WORKING_DAYS_MAP: dict = {}
 _WORKING_DAYS_MC_ONLY: dict = {}  # fallback key=MC อย่างเดียว
@@ -187,7 +205,7 @@ for _, _wd_row in _master_mc_df.iterrows():
     _wd_raw = _wd_row.get("Working Day", "")
     if pd.notna(_wd_raw) and str(_wd_raw).strip() not in ("", "-", "nan"):
         try:
-            _wd_val = int(float(str(_wd_raw).strip()))
+            _wd_val = float(str(_wd_raw).strip())
             _wd_mc = _wd_row["MC"]
             _wd_g = _norm_gauge_ava(_wd_row["Guage"])
             WORKING_DAYS_MAP[(_wd_mc, _wd_g)] = _wd_val
@@ -590,14 +608,14 @@ def _get_working_day_for_row(r):
 
     _is = _get_item_special_ava(r["ITEM_CODE"], r["MC_GROUP"], r["GUAGE"])
     if _is is not None:
-        return max(1, _is[0] - holiday_count)  # Item Special working_day หักวันหยุด
+        return float(max(1, _is[0] - holiday_count))  # Item Special working_day หักวันหยุด
 
     _g = _norm_gauge_ava(r["GUAGE"])
     mc_wd = WORKING_DAYS_MAP.get((r["MC_GROUP"], _g),
             _WORKING_DAYS_MC_ONLY.get(r["MC_GROUP"], 6))
-    return max(1, mc_wd - holiday_count)
+    return float(max(1, mc_wd - holiday_count))
 
-df["WORKING_DAY"] = df.apply(_get_working_day_for_row, axis=1)
+df["WORKING_DAY"] = df.apply(_get_working_day_for_row, axis=1, result_type="reduce")
 
 # =========================
 # SETUP DETECTION (เหมือน Planning.py: SETUP_GAP_WEEK = 3)
@@ -619,7 +637,8 @@ df["_is_new_setup"] = (df["_week_gap"] > SETUP_GAP_WEEK) | (df["_prev_week"].isn
 df["_setup_days"] = df.apply(
     lambda r: get_setup_days_for_item(
         r.get("MATERIAL_CONTENT", ""),
-        r.get("YARN-USED", "") or r.get("YARN_USED", "")
+        r.get("YARN-USED", "") or r.get("YARN_USED", ""),
+        mc_group=r.get("MC_GROUP", "")
     ), axis=1
 )
 
@@ -824,6 +843,9 @@ _desc_pool_total_s = df["DESC_POOL_TYPE"].map(
     lambda pk: _TOTAL_MC_BY_TYPE.get(pk, 0) if pk else 0
 )
 _type_special_remain = _desc_pool_total_s - df["_DESC_POOL_USE_TOTAL"].fillna(0)
+
+df["POOL_TYPE"] = df["POOL_TYPE"].fillna("").astype(str)
+df["DESC_POOL_TYPE"] = df["DESC_POOL_TYPE"].fillna("").astype(str)
 
 df["TOTAL_MC_REMAIN"] = np.where(
     df["POOL_TYPE"].str.endswith(":TYPE_SPECIAL", na=False),
