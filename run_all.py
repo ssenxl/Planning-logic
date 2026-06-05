@@ -220,8 +220,18 @@ def main():
     separator("=")
 
     if failed_steps:
+        input("\nกด Enter เพื่อปิดหน้าต่าง ...")
         sys.exit(1)
+    input("\n✅ เสร็จทั้งหมดแล้ว — กด Enter เพื่อปิดหน้าต่าง ...")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        input("\n❌ เกิดข้อผิดพลาด — กด Enter เพื่อปิดหน้าต่าง ...")
+        sys.exit(1)

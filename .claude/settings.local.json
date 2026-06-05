@@ -38,7 +38,8 @@
       "PowerShell(Push-Location \"C:\\\\vscode\\\\AI_plan\\\\dist\\\\KnitPlan\"; & \".\\\\KnitPlan.exe\" --from Calendar --skip View_Booking View_Stock View_SC Stock AVA_MC Order Planning 2>&1 | Select-Object -First 25; \"EXIT CODE: $LASTEXITCODE\"; Pop-Location)",
       "PowerShell(Push-Location \"C:\\\\vscode\\\\AI_plan\\\\dist\\\\KnitPlan\"; & \".\\\\KnitPlan.exe\" --from Calendar --skip View_Booking View_Stock View_SC Stock AVA_MC Order Planning 2>&1 | Select-Object -Last 20; \"EXIT CODE: $LASTEXITCODE\"; Pop-Location)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('Planning.py',encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(Select-Object -First 250)"
+      "Bash(Select-Object -First 250)",
+      "Bash(./.venv/Scripts/pyinstaller.exe KnitPlan.spec --noconfirm)"
     ]
   }
 }
