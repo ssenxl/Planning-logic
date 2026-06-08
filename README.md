@@ -2,7 +2,7 @@
 
 ## ภาพรวมของโปรเจกต์
 
-ระบบวางแผนการผลิตผ้าถัก (Knit Planning) ของ Nan Yang Textile พัฒนาด้วย Python
+ระบบวางแผนการผลิตผ้าถัก (Knit Planning) พัฒนาด้วย Python
 ทำงานเป็น **automated pipeline** ตั้งแต่ดึงข้อมูลจาก Oracle DB → คำนวณเครื่องจักร → วางแผนผลิตรายสัปดาห์ → Export ผลลัพธ์
 
 ---
