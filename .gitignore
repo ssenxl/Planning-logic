@@ -24,3 +24,17 @@ Train.py
 View_Booking.py
 View_SC.py
 View_Stock.py
+
+# release builds & debug
+KnitPlan_Release.zip
+KnitPlan_Release/
+_debug_week.py
+build/
+dist/
+
+# log files
+plan_err.txt
+plan_log.txt
+
+# Claude internal
+.claude/
