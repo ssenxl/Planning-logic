@@ -48,6 +48,16 @@ try:
     import msal
 except ImportError:
     pass
+try:
+    import win32com.client
+except ImportError:
+    if not getattr(sys, 'frozen', False):
+        print("📦 ติดตั้ง pywin32 สำหรับสร้าง PivotTable...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pywin32"])
+        try:
+            subprocess.check_call([sys.executable, "-m", "pywin32_postinstall", "-install"])
+        except Exception:
+            pass
 
 BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 

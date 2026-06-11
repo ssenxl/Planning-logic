@@ -32,15 +32,18 @@ copy /y "run.bat" "dist\KnitPlan\run.bat" >nul
 xcopy /e /i /y "data" "dist\KnitPlan\data" >nul
 xcopy /e /i /y "Estimate_Core" "dist\KnitPlan\Estimate_Core" >nul
 
-echo [3/3] Creating output folders...
+echo [3/4] Creating output folders...
 if not exist "dist\KnitPlan\Booking"   mkdir "dist\KnitPlan\Booking"
 if not exist "dist\KnitPlan\Stock"     mkdir "dist\KnitPlan\Stock"
 if not exist "dist\KnitPlan\Order"     mkdir "dist\KnitPlan\Order"
 if not exist "dist\KnitPlan\data_plan" mkdir "dist\KnitPlan\data_plan"
 
+echo [4/4] Copying to KnitPlan_Release...
+xcopy /e /i /y "dist\KnitPlan" "KnitPlan_Release" >nul
+
 echo.
 echo ============================================================
-echo   Build complete!  Output: dist\KnitPlan\
+echo   Build complete!  Output: KnitPlan_Release\
 echo ============================================================
 echo.
 pause
