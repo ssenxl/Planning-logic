@@ -78,15 +78,6 @@ python run_all.py --ignore-errors
 | `CYLINDER_CHANGE` | สรุปการเปลี่ยน Gauge cylinder รายสัปดาห์ |
 | `PIVOT_PLAN` | PivotTable (PLAN_WEEK × ITEM_CODE) |
 
----
-
-## Business Logic หลัก
-
-- **Week** — เริ่มวันศุกร์ สิ้นสุดวันพฤหัสบดี
-- **Setup Days** — COTTON = 3 วัน, POLY/DTY/CD/TC = 5 วัน; ข้ามถ้า item เดิมรันภายใน 3 สัปดาห์
-- **S9 Routing** — งานที่เครื่องปกติไม่พอ → route ไป COMKN (จ้างทอ)
-- **20/24 Rule** — MC group ที่ทำงาน 20 ชั่วโมง/วัน คูณ 20/24 ในการคำนวณ
-- **Cylinder Change** — ตรวจจับการเปลี่ยน Gauge อัตโนมัติ
 
 ---
 
