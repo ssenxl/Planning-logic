@@ -33,6 +33,7 @@ build/
 dist/
 build.bat
 config.ini
+KnitPlan.spec
 
 # log files
 plan_err.txt
