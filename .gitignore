@@ -32,6 +32,7 @@ _debug_week.py
 build/
 dist/
 build.bat
+run.bat
 config.ini
 KnitPlan.spec
 predict.py
