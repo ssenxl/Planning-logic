@@ -32,6 +32,7 @@ _debug_week.py
 build/
 dist/
 build.bat
+config.ini
 
 # log files
 plan_err.txt
