@@ -44,3 +44,4 @@ plan_log.txt
 # Claude internal
 .claude/
 CLAUDE.md
+ITEM_Cap.py
