@@ -34,6 +34,7 @@ dist/
 build.bat
 config.ini
 KnitPlan.spec
+predict.py
 
 # log files
 plan_err.txt
