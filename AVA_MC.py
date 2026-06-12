@@ -1,3 +1,4 @@
+import os
 import re
 import pandas as pd
 import numpy as np
@@ -27,7 +28,7 @@ def get_working_days_in_week(week):
 # =========================
 SETUP_DAYS = 5  # default setup days
 BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
-_cfg = _cp.ConfigParser()
+_cfg = _cp.ConfigParser(interpolation=None)  # ปิด interpolation ให้ใช้ %USERPROFILE% ใน path ได้
 if not _cfg.read(BASE_DIR / "config.ini", encoding="utf-8"):
     raise FileNotFoundError(f"ไม่พบ config.ini ที่ {BASE_DIR / 'config.ini'} — กรุณาสร้างไฟล์ config.ini ก่อนรัน")
 
@@ -73,7 +74,12 @@ def get_setup_days_for_item(material_content: str, yarn_used: str, mc_group: str
         return 3
     return 3
 BOOKING_DIR = BASE_DIR / "Booking"
-MASTER_MC_FILE = Path(_cfg["paths"]["master_mc"])
+MASTER_MC_FILE = Path(os.path.expandvars(_cfg["paths"]["master_mc"]))
+if not MASTER_MC_FILE.exists():
+    raise FileNotFoundError(
+        f"ไม่พบ MasterMC.xlsx ที่ {MASTER_MC_FILE}\n"
+        f"กรุณาแก้ path ใน config.ini หัวข้อ [paths] master_mc ให้ตรงกับเครื่องของคุณ"
+    )
 OUTPUT_DIR = BASE_DIR / "data_plan"
 OUTPUT_FILE = OUTPUT_DIR / "booking_final_ready25.xlsx"
 
@@ -140,7 +146,7 @@ def load_capability_groups(file_path: str) -> pd.DataFrame:
 # =========================
 # LOAD MASTER MC FROM FILE
 # =========================
-_MASTER_MC_PATH = Path(r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\MasterMC.xlsx")
+_MASTER_MC_PATH = MASTER_MC_FILE  # path จาก config.ini [paths] master_mc
 
 def _load_master_mc(path: Path) -> pd.DataFrame:
     df = pd.read_excel(path)

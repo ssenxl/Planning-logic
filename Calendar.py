@@ -6,9 +6,9 @@ import io
 from pathlib import Path
 
 _APP_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
-_cfg = _cp.ConfigParser()
+_cfg = _cp.ConfigParser(interpolation=None)  # ปิด interpolation ให้ใช้ %USERPROFILE% ใน path ได้
 _cfg.read(_APP_DIR / "config.ini", encoding="utf-8")
-_CALENDAR_LOCAL_PATH = _cfg.get("paths", "calendar", fallback="")
+_CALENDAR_LOCAL_PATH = os.path.expandvars(_cfg.get("paths", "calendar", fallback=""))
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
@@ -135,17 +135,6 @@ def _read_calendar_any(source: Path | str, sheet_name: str) -> pd.DataFrame:
     raise RuntimeError("Cannot parse calendar source as Excel/CSV/HTML")
 
 
-def _build_fallback_calendar() -> pd.DataFrame:
-    today = pd.Timestamp.today().normalize()
-    start = pd.Timestamp(year=today.year, month=1, day=1)
-    end = pd.Timestamp(year=today.year + 1, month=12, day=31)
-    d = pd.date_range(start=start, end=end, freq="D")
-    out = pd.DataFrame({"DATE": d})
-    # fallback rule: Mon-Thu working, Fri-Sun holiday
-    out["status"] = out["DATE"].dt.dayofweek.map(lambda x: 1 if x <= 3 else 0)
-    return out
-
-
 def _get_sharepoint_token(sharepoint_host: str) -> str | None:
     """
     ขอ access token จาก Microsoft ด้วย Device Code Flow (รองรับ MFA)
@@ -253,15 +242,20 @@ def load_calendar(file_path: Path | str, sheet_name: str = "Work day") -> pd.Dat
     """
 
     # ใช้ไฟล์ local เท่านั้น ไม่ใช้ SharePoint
-    source = _CALENDAR_LOCAL_PATH or r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\Calendar.xlsx"
+    source = _CALENDAR_LOCAL_PATH
+    if not source:
+        raise FileNotFoundError(
+            f"ไม่ได้ตั้งค่า path ของ Calendar.xlsx\n"
+            f"กรุณาตั้งค่าใน config.ini หัวข้อ [paths] calendar (ที่ {_APP_DIR / 'config.ini'})"
+        )
 
     try:
         df = _read_calendar_any(source, sheet_name=sheet_name)
     except Exception as e:
-        print(f"⚠️ อ่าน Calendar source ไม่ได้ ({e}) — ใช้ fallback calendar อัตโนมัติ")
-        df = _build_fallback_calendar()
-        date_col = "DATE"
-        status_col = "status"
+        raise FileNotFoundError(
+            f"อ่าน Calendar ไม่ได้จาก {source} ({e})\n"
+            f"กรุณาแก้ path ใน config.ini หัวข้อ [paths] calendar ให้ตรงกับเครื่องของคุณ"
+        ) from e
 
     # clean column names
     df.columns = df.columns.str.strip()
@@ -270,10 +264,10 @@ def load_calendar(file_path: Path | str, sheet_name: str = "Work day") -> pd.Dat
         date_col = _pick_date_col(df)
         status_col = _pick_status_col(df)
     except Exception as e:
-        print(f"⚠️ เดาคอลัมน์ DATE/status ไม่ได้ ({e}) — ใช้ fallback calendar อัตโนมัติ")
-        df = _build_fallback_calendar()
-        date_col = "DATE"
-        status_col = "status"
+        raise ValueError(
+            f"ไฟล์ Calendar ({source}) ไม่มีคอลัมน์ DATE/status ที่อ่านได้ ({e})\n"
+            f"กรุณาตรวจสอบรูปแบบไฟล์ Calendar.xlsx"
+        ) from e
 
     # standard datetime
     df["DATE"] = pd.to_datetime(df[date_col], errors="coerce")
@@ -343,8 +337,7 @@ if __name__ == "__main__":
     # =========================
     # Run only for validation
     # =========================
-    CALENDAR_FILE = r"C:\Users\WICHARIT\Nan Yang Textile\SCM_Cloud - Knit Plan (AI)\Calendar.xlsx"
-    cal_df = load_calendar(CALENDAR_FILE, sheet_name="Sheet1")
+    cal_df = load_calendar(_CALENDAR_LOCAL_PATH, sheet_name="Sheet1")
     cal_week_df = calendar_week_map(cal_df)
 
     print("=== DAILY CALENDAR ===")

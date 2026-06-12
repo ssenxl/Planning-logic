@@ -1,4 +1,5 @@
 ﻿import argparse
+import os
 import pandas as pd
 import io
 import math
@@ -12,14 +13,18 @@ from Calendar import load_calendar, calendar_week_map
 # Set UTF-8 encoding for Windows console
 
 if sys.platform == "win32":
-    import codecs
-    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
-    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
+    # ห้าม detach buffer — ตอนรันเป็น exe ทุก step อยู่ใน process เดียวกัน
+    # ถ้า detach แล้ว input() ของ run_all จะพังหลัง Planning จบ
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass
 # =========================
 # CONFIG
 # =========================
 BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
-_cfg = _cp.ConfigParser()
+_cfg = _cp.ConfigParser(interpolation=None)  # ปิด interpolation ให้ใช้ %USERPROFILE% ใน path ได้
 if not _cfg.read(BASE_DIR / "config.ini", encoding="utf-8"):
     raise FileNotFoundError(f"ไม่พบ config.ini ที่ {BASE_DIR / 'config.ini'} — กรุณาสร้างไฟล์ config.ini ก่อนรัน")
 TODAY = pd.Timestamp.today().normalize()
@@ -69,7 +74,7 @@ LOAD_BALANCING_THRESHOLD = 0.2  # เกณฑ์ที่ใช้พิจา�
 # กลุ่ม MC ที่ใช้เครื่องร่วมกัน — ต้องตรงกับ AVA_MC.py
 # =========================
 # โหลด SHARED_POOL_MAP แบบ dynamic จาก MasterMC
-_MASTER_MC_PATH = _cfg["paths"]["master_mc"]
+_MASTER_MC_PATH = os.path.expandvars(_cfg["paths"]["master_mc"])
 
 
 
@@ -4132,11 +4137,12 @@ def calculate_progressive_reduction(
 
     target_week_index = fg_week  # TARGET_KNIT
 
-    
+
 
     # สร้าง list ของ weeks จาก start_week ถึง TARGET_KNIT โดยเด็ดขาด
+    # target_week_index เป็น None ได้ (RDD นอกช่วง calendar) → ข้าม loop ให้คืน None ตาม logic เดิม
 
-    while current_week is not None and week_index(current_week) <= target_week_index:
+    while current_week is not None and target_week_index is not None and week_index(current_week) <= target_week_index:
 
         weeks_until_target.append(current_week)
 
@@ -4424,9 +4430,18 @@ def calculate_required_machines(
 
       6mc×3wk: wk1=6×4×163=3912, wk2=1×7×163=1141, wk3=5×7×163=5705 → setup_waste=18
 
-      2mc×3wk: wk1=2×4×163=1304, wk2=1×7×163=1141, wk3=2×7×163=2282 → setup_waste=6 
+      2mc×3wk: wk1=2×4×163=1304, wk2=1×7×163=1141, wk3=2×7×163=2282 → setup_waste=6
 
     """
+
+    # fg_week (RDD index) เป็น None ได้เมื่อ RDD อยู่นอกช่วง calendar
+    # → ใช้ start_week + 3 เป็น target แทน (เร่งจบ เหมือนกรณี past RDD)
+    if fg_week is None:
+        _sw_idx_norm = week_index(start_week)
+        if _sw_idx_norm is None:
+            return None, None, None, None, None
+        fg_week = _sw_idx_norm + 3
+        print(f"[DEBUG CALC] {item_code}: fg_week=None (RDD นอกช่วง calendar) → ใช้ start+3 = {fg_week}")
 
     # หา MC_GROUP ที่สามารถผลิต item นี้ได้
 
@@ -4485,14 +4500,15 @@ def calculate_required_machines(
     
 
     # สร้าง list ของ weeks จาก start_week ถึง TARGET_KNIT โดยเด็ดขาด
+    # target_week_index เป็น None ได้ (RDD นอกช่วง calendar) → ข้าม loop ให้เข้า branch past RDD ด้านล่าง
 
-    while current_week is not None and week_index(current_week) <= target_week_index:
+    while current_week is not None and target_week_index is not None and week_index(current_week) <= target_week_index:
 
         weeks_until_target.append(current_week)
 
         current_week = next_week(current_week)
 
-    
+
 
     # ถ้า target อยู่ในอดีต (past RDD) → ใช้ weeks จาก start_week ถึง plan_week+3 เพื่อให้รีบเสร็จ
 

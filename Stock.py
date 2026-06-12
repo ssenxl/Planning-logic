@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 _APP_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
-_cfg = _cp.ConfigParser()
+_cfg = _cp.ConfigParser(interpolation=None)  # ปิด interpolation ให้ใช้ %USERPROFILE% ใน path ได้
 _cfg.read(_APP_DIR / "config.ini", encoding="utf-8")
 from datetime import datetime, timedelta
 
@@ -323,7 +323,7 @@ def add_outstanding_from_booking(df_stock):
 
 
 def download_target_stock_file():
-    target_path = Path(_cfg["paths"]["target_stock"])
+    target_path = Path(os.path.expandvars(_cfg["paths"]["target_stock"]))
     if target_path.exists():
         print(f"\n✓ พบไฟล์ Target Stock: {target_path}")
         return str(target_path)

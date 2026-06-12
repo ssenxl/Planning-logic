@@ -152,6 +152,14 @@ def run_step(step: dict, step_num: int, total: int) -> bool:
     return returncode == 0
 
 
+def _pause_before_exit(prompt: str):
+    """รอ user กด Enter ก่อนปิดหน้าต่าง — ห้าม crash แม้ stdin/stdout ใช้ไม่ได้ (scheduled task ฯลฯ)"""
+    try:
+        input(prompt)
+    except (EOFError, ValueError, RuntimeError, OSError):
+        pass
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Run all planning pipeline steps")
     parser.add_argument(
@@ -230,9 +238,9 @@ def main():
     separator("=")
 
     if failed_steps:
-        input("\nกด Enter เพื่อปิดหน้าต่าง ...")
+        _pause_before_exit("\nกด Enter เพื่อปิดหน้าต่าง ...")
         sys.exit(1)
-    input("\n✅ เสร็จทั้งหมดแล้ว — กด Enter เพื่อปิดหน้าต่าง ...")
+    _pause_before_exit("\n✅ เสร็จทั้งหมดแล้ว — กด Enter เพื่อปิดหน้าต่าง ...")
 
 
 if __name__ == "__main__":
@@ -243,5 +251,5 @@ if __name__ == "__main__":
     except Exception:
         import traceback
         traceback.print_exc()
-        input("\n❌ เกิดข้อผิดพลาด — กด Enter เพื่อปิดหน้าต่าง ...")
+        _pause_before_exit("\n❌ เกิดข้อผิดพลาด — กด Enter เพื่อปิดหน้าต่าง ...")
         sys.exit(1)
