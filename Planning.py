@@ -3168,7 +3168,9 @@ _reservoir_df = pd.DataFrame(_reservoir_order_rows) if _reservoir_order_rows els
 
 FACTORY_TYPE_MAP = {}
 
-FACTORY_WORKING_DAYS_MAP = {}
+FACTORY_WORKING_DAYS_MAP = {}  # key=(mc_group, gauge_normalized), value=วัน
+
+_FACTORY_WORKING_DAYS_MC_ONLY = {}  # fallback key=mc_group (first row wins)
 
 MC_WEEK32_DAYS_MAP = {}  # mc_group → วันทำงาน week 32 (REMARK blank=8, ไม่ blank=10)
 
@@ -3202,19 +3204,35 @@ for _, row in master_mc.iterrows():
 
     _wd_raw = row.get("Working Day", "")
 
+    _wd_gauge = _normalize_gauge(row.get("Guage", ""))
+
     if pd.notna(_wd_raw) and str(_wd_raw).strip() not in ("", "-", "nan"):
 
         try:
 
-            FACTORY_WORKING_DAYS_MAP[main_mc_group] = float(str(_wd_raw).strip())
+            _wd_val = float(str(_wd_raw).strip())
+
+            FACTORY_WORKING_DAYS_MAP[(main_mc_group, _wd_gauge)] = _wd_val
+
+            if main_mc_group not in _FACTORY_WORKING_DAYS_MC_ONLY:
+
+                _FACTORY_WORKING_DAYS_MC_ONLY[main_mc_group] = _wd_val
 
         except (ValueError, TypeError):
 
-            FACTORY_WORKING_DAYS_MAP[main_mc_group] = 6
+            FACTORY_WORKING_DAYS_MAP[(main_mc_group, _wd_gauge)] = 6
+
+            if main_mc_group not in _FACTORY_WORKING_DAYS_MC_ONLY:
+
+                _FACTORY_WORKING_DAYS_MC_ONLY[main_mc_group] = 6
 
     else:
 
-        FACTORY_WORKING_DAYS_MAP[main_mc_group] = 6  # default
+        FACTORY_WORKING_DAYS_MAP[(main_mc_group, _wd_gauge)] = 6  # default
+
+        if main_mc_group not in _FACTORY_WORKING_DAYS_MC_ONLY:
+
+            _FACTORY_WORKING_DAYS_MC_ONLY[main_mc_group] = 6
 
     # อ่าน REMARK สำหรับ week 32: blank → 8 วัน, ไม่ blank (เช่น "10 Days") → 10 วัน
 
@@ -3372,9 +3390,17 @@ def get_working_days_by_factory(mc_group, available_machines_count, week=None, i
 
 
 
-    # หาวันทำงานจาก FACTORY_WORKING_DAYS_MAP (MasterMC)
+    # หาวันทำงานจาก FACTORY_WORKING_DAYS_MAP (MasterMC) — lookup ด้วย (mc, gauge) ก่อน ถ้าไม่เจอ fallback MC อย่างเดียว
 
-    working_days = FACTORY_WORKING_DAYS_MAP.get(mc_group, 6)  # default = 6 วัน
+    _g = _normalize_gauge(gauge) if gauge else ""
+
+    working_days = FACTORY_WORKING_DAYS_MAP.get(
+
+        (mc_group, _g),
+
+        _FACTORY_WORKING_DAYS_MC_ONLY.get(mc_group, 6)
+
+    )
 
     return working_days
 
