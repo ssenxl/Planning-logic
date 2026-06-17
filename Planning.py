@@ -6848,6 +6848,9 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
     _carry_cyl_pending = {}
     _current_order_rdd_idx = None
     _s9_weekly_usage = {}
+    # ล้างสี YD ค้างจาก pass ก่อน (กัน color-change setup ผิดข้าม pass)
+    # last_sub_color ไม่ได้ pre-load จาก booking จึงล้างทิ้งได้ปลอดภัย (ต่างจาก last_production/machines_in_use)
+    last_sub_color.clear()
 
     weekly_new_plan_usage = {}  # {week: {mc_group: new_plan_machines}}
 
@@ -7859,8 +7862,9 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                         1 < _bk_warm_gap <= SETUP_GAP_WEEK
                         and _bk_mc_running > 0
                     ):
-                        _bk_pull_idx = _bk_last_idx + 1
-                        if _bk_pull_idx < len(calendar_week):
+                        # ❗ floor: ห้ามดึงกลับเร็วกว่า TODAY+2 (สัปดาห์ที่ผลิตจริงได้)
+                        _bk_pull_idx = max(_bk_last_idx + 1, TODAY_IDX + 2)
+                        if _bk_pull_idx < len(calendar_week) and _bk_pull_idx < _bk_pull_plan_idx:
                             _bk_pull_week = int(calendar_week.iloc[_bk_pull_idx]["WEEK"])
                             if _bk_pull_week >= TODAY_WEEK:
                                 print(
@@ -8498,7 +8502,8 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
             elif qty_left > 0 and _fill_last_week is not None and not _earliest_backshift_done:
                 _fl_idx = week_index(_fill_last_week)
                 _pw_idx = week_index(plan_week)
-                if _fl_idx is not None and _pw_idx is not None and _fl_idx < _pw_idx:
+                # ❗ floor: ห้าม backshift ย้อนเร็วกว่า TODAY+2 (สัปดาห์ที่ผลิตจริงได้)
+                if _fl_idx is not None and _pw_idx is not None and _fl_idx < _pw_idx and _fl_idx >= TODAY_IDX + 2:
                     print(
                         f"[DEBUG BACKSHIFT] {item}: cross-SC filled W{_fill_last_week} while plan_week=W{plan_week} -> backshift to W{_fill_last_week}"
                     )

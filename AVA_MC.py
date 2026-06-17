@@ -207,6 +207,7 @@ for _, _wh_row in _master_mc_df.iterrows():
 # =========================
 WORKING_DAYS_MAP: dict = {}
 _WORKING_DAYS_MC_ONLY: dict = {}  # fallback key=MC อย่างเดียว
+MC_WEEK32_DAYS_MAP: dict = {}  # mc → วันทำงาน week 32 (REMARK blank=8, ไม่ blank=10) — ให้ตรงกับ Planning.py
 for _, _wd_row in _master_mc_df.iterrows():
     _wd_raw = _wd_row.get("Working Day", "")
     if pd.notna(_wd_raw) and str(_wd_raw).strip() not in ("", "-", "nan"):
@@ -219,6 +220,14 @@ for _, _wd_row in _master_mc_df.iterrows():
                 _WORKING_DAYS_MC_ONLY[_wd_mc] = _wd_val
         except (ValueError, TypeError):
             pass
+    # REMARK สำหรับ week 32 (ให้ตรงกับ Planning.py): blank → 8 วัน, ไม่ blank (เช่น "10 Days") → 10 วัน
+    # ข้าม OUTSOURCE และใช้ค่าจากแถวแรกของแต่ละ MC (REMARK อยู่แถว merge แรก)
+    if str(_wd_row.get("Factory", "")).strip().upper() != "OUTSOURCE":
+        _w32_mc = str(_wd_row.get("MC", "")).strip().upper()
+        if _w32_mc and _w32_mc not in MC_WEEK32_DAYS_MAP:
+            _remark_raw = _wd_row.get("REMARK", "")
+            _remark_blank = pd.isna(_remark_raw) or str(_remark_raw).strip().lower() in ("", "nan", "-")
+            MC_WEEK32_DAYS_MAP[_w32_mc] = 8 if _remark_blank else 10
 
 # =========================
 # ITEM SPECIAL: per-(Item, MC, Guage) override for Working day and Working hour
@@ -609,7 +618,15 @@ df = df.groupby(["MC_GROUP", "GUAGE", "ITEM_CODE", "WEEK"], as_index=False).agg(
 # WORKING DAY
 # =========================
 def _get_working_day_for_row(r):
-    cal_wd = get_working_days_in_week(int(r["WEEK"]))
+    _week = int(r["WEEK"])
+    # เงื่อนไขพิเศษ week 17/32 — override ทุกอย่าง ไม่หัก holiday (ให้ตรงกับ Planning.py)
+    if _week == 17:
+        return 8.0  # week 17 ทุก group ทำงาน 8 วัน
+    if _week == 32:
+        # REMARK ใน MasterMC: blank=8 วัน, ไม่ blank=10 วัน
+        return float(MC_WEEK32_DAYS_MAP.get(r["MC_GROUP"], 8))
+
+    cal_wd = get_working_days_in_week(_week)
     holiday_count = max(0, 6 - cal_wd)  # วันหยุดพิเศษ (อาทิตย์หยุดปกติอยู่แล้ว → base=6)
 
     _is = _get_item_special_ava(r["ITEM_CODE"], r["MC_GROUP"], r["GUAGE"])
@@ -958,14 +975,182 @@ summary = (
 )
 
 # =========================
+# AVAILABILITY SUMMARY: WEEK 25-35 (แยกรายสัปดาห์ เรียงไปทางขวา)
+# =========================
+from datetime import date as _date, timedelta as _td
+# สัปดาห์ปัจจุบัน (ศุกร์–พฤหัส = ISO week ของ วันที่+3) ถึง +10 = รวม 11 สัปดาห์
+_AVA_CUR_WEEK = (_date.today() + _td(days=3)).isocalendar()[1]
+AVA_WK_START = _AVA_CUR_WEEK
+AVA_WK_END = _AVA_CUR_WEEK + 10
+AVA_SHEET = f"AVA_WK{AVA_WK_START}-{AVA_WK_END}"
+_ava_all_weeks = set(summary["WEEK"].unique())
+ava_weeks = [w for w in range(AVA_WK_START, AVA_WK_END + 1) if w in _ava_all_weeks]
+
+# map หมวดที่ต้องรวมแสดง: SYN-30 / SYN-28 → DOUBLE-30
+_AVA_CAT_MAP = {"SYN-30": "DOUBLE-30", "SYN-28": "DOUBLE-30"}
+def _ava_cat_disp(_s):
+    # MC_CAT ที่ใช้แสดง/จัดกลุ่ม (upper + รวม SYN เข้า DOUBLE-30)
+    return _s.astype(str).str.strip().str.upper().replace(_AVA_CAT_MAP)
+def _ava_catkey(_s):
+    # key match ระหว่าง df (SINGLE) กับ summary/MasterMC (SINGEL)
+    return _s.str.replace("SINGEL", "SINGLE", regex=False)
+
+# summary (MC_CAT แบบ display) สำหรับ Total mc / MC_USE
+_sm = summary[summary["WEEK"].isin(ava_weeks)].copy()
+_sm["MC_CAT"] = _ava_cat_disp(_sm["MC_CAT"])
+# row index ร่วม = MC_CAT(display) + GUAGE
+_ava_idx = pd.MultiIndex.from_frame(
+    _sm[["MC_CAT", "GUAGE"]].drop_duplicates().sort_values(["MC_CAT", "GUAGE"])
+)
+
+# KP_Cat = ผลรวม KP_WEIGHT ต่อ MC_CAT(display) + GUAGE ต่อ WEEK (จาก df / DETAIL)
+_kpdf = df[["MC_CAT", "GUAGE", "WEEK", "KP_WEIGHT"]].copy()
+_kpdf["MC_CAT"] = _ava_cat_disp(_kpdf["MC_CAT"])
+_kp_all = (
+    _kpdf.groupby(["MC_CAT", "GUAGE", "WEEK"], as_index=False)["KP_WEIGHT"].sum()
+    .rename(columns={"KP_WEIGHT": "KP_Cat"})
+)
+_kp_all["_CATKEY"] = _ava_catkey(_kp_all["MC_CAT"])
+_kp_all["_GKEY"] = _kp_all["GUAGE"].astype(str).str.strip()
+_ava_blocks = []
+for _wk in ava_weeks:
+    _src = _sm[_sm["WEEK"] == _wk]
+    # per MC_CAT+GUAGE ของสัปดาห์นั้น (SYN รวมเข้า DOUBLE-30 แล้ว)
+    _g = _src.groupby(["MC_CAT", "GUAGE"], as_index=False).agg(
+        **{"Total mc": ("TOTAL_MC", "sum"), "_MC_USE": ("MC_USE_CEIL", "sum")}
+    )
+    _g["_CATKEY"] = _ava_catkey(_g["MC_CAT"])
+    _g["_GKEY"] = _g["GUAGE"].astype(str).str.strip()
+    # MC_USE_Cat = จำนวนเครื่องที่ใช้ ราย CAT+GUAGE (= MC_USE ของแถวนั้น)
+    _g = _g.rename(columns={"_MC_USE": "MC_USE_Cat"})
+    # KP_Cat = Σ KP_WEIGHT ราย MC_CAT + GUAGE
+    _kpw = _kp_all[_kp_all["WEEK"] == _wk][["_CATKEY", "_GKEY", "KP_Cat"]]
+    _m = _g.merge(_kpw, on=["_CATKEY", "_GKEY"], how="left")
+    _m["KP_Cat"] = _m["KP_Cat"].fillna(0)
+    # Dif/%ava คิดราย gauge: Total mc − MC_USE_Cat
+    _m["Dif"] = _m["Total mc"] - _m["MC_USE_Cat"]
+    _m["%ava"] = (_m["Dif"] / _m["Total mc"]).where(_m["Total mc"] != 0)
+    _blk = (
+        _m.set_index(["MC_CAT", "GUAGE"])[["Total mc", "KP_Cat", "MC_USE_Cat", "Dif", "%ava"]]
+        .reindex(_ava_idx)
+    )
+    _blk.columns = pd.MultiIndex.from_product([[f"WEEK {_wk}"], _blk.columns])
+    _ava_blocks.append(_blk)
+ava_data = (
+    pd.concat(_ava_blocks, axis=1)
+    if _ava_blocks
+    else pd.DataFrame(index=_ava_idx)
+)
+
+# ---------- แทรกแถว subtotal แยกกลุ่ม DOUBLE / SINGEL ----------
+def _ava_group(_cat):
+    _c = str(_cat).strip().upper().replace("SINGEL", "SINGLE")
+    if _c.startswith("DOUBLE"):
+        return "DOUBLE"
+    if _c.startswith("SINGLE"):
+        return "SINGLE"
+    return "OTHER"
+
+def _ava_subtotal(_members):
+    _sub = ava_data.loc[_members]
+    _vals = []
+    for _col in ava_data.columns:
+        _w, _metric = _col
+        if _metric == "%ava":
+            _st = _sub[(_w, "Total mc")].sum()
+            _d = _sub[(_w, "Dif")].sum()
+            _vals.append((_d / _st) if _st else None)
+        else:
+            _vals.append(_sub[_col].sum())
+    return pd.Series(_vals, index=ava_data.columns)
+
+_ord_idx, _ord_rows, _sub_pos = [], [], []
+_cur_g, _cur_mem = None, []
+for _idx in ava_data.index:
+    _g2 = _ava_group(_idx[0])
+    if _cur_g is None:
+        _cur_g = _g2
+    if _g2 != _cur_g:
+        _ord_idx.append((f"{_cur_g} Total", ""))
+        _ord_rows.append(_ava_subtotal(_cur_mem))
+        _sub_pos.append(len(_ord_idx) - 1)
+        _cur_g, _cur_mem = _g2, []
+    _ord_idx.append(_idx)
+    _ord_rows.append(ava_data.loc[_idx])
+    _cur_mem.append(_idx)
+if _cur_mem:
+    _ord_idx.append((f"{_cur_g} Total", ""))
+    _ord_rows.append(_ava_subtotal(_cur_mem))
+    _sub_pos.append(len(_ord_idx) - 1)
+
+if _ord_rows:
+    ava_wide = pd.DataFrame(_ord_rows)
+    ava_wide.index = pd.MultiIndex.from_tuples(_ord_idx, names=["MC_CAT", "GUAGE"])
+    ava_wide.columns = ava_data.columns
+else:
+    ava_wide = ava_data
+# แถว subtotal (1-based excel row): ข้อมูลเริ่มแถว 4
+_ava_sub_excel_rows = [4 + _p for _p in _sub_pos]
+
+# =========================
 # SAVE
 # =========================
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
     df.to_excel(writer, sheet_name="DETAIL", index=False)
     summary.to_excel(writer, sheet_name="SUMMARY_MC_REMAIN", index=False)
+    ava_wide.to_excel(writer, sheet_name=AVA_SHEET)
+    # freeze คอลัมน์ A-B (MC_CAT, GUAGE) + แถวหัวตาราง ให้ค้างเวลาเลื่อนดู week ทางขวา
+    _ws = writer.sheets[AVA_SHEET]
+    _ws.freeze_panes = "C4"
+
+    # ---------- จัดรูปแบบชีท AVA ----------
+    from openpyxl.styles import Font, Border, Side, PatternFill
+    _n_rows = len(ava_wide)
+    _n_weeks = len(ava_weeks)
+    _first_row = 4                       # แถวข้อมูลแรก (1-2 หัว, 3 ชื่อ index)
+    _last_row = 3 + _n_rows
+    _NUM_FMT = "#,##0"                   # ไม่มีทศนิยม + ลูกน้ำ
+    _PCT_FMT = "0%"                      # % ไม่มีทศนิยม
+    _bold = Font(bold=True)
+    _rb = Side(style="medium")
+    _sub_fill = PatternFill("solid", fgColor="FFD9E1F2")
+    _sub_set = set(_ava_sub_excel_rows)
+
+    # 4) number format + 3) %ava เป็น % และ <=20% สีแดง + bold แถว subtotal
+    for _r in range(_first_row, _last_row + 1):
+        _is_sub = _r in _sub_set
+        for _wi in range(_n_weeks):
+            _base = 3 + _wi * 5
+            for _c in range(_base, _base + 4):       # Total mc, KP_Cat, MC_USE_Cat, Dif
+                _cell = _ws.cell(row=_r, column=_c)
+                _cell.number_format = _NUM_FMT
+                if _is_sub:
+                    _cell.font = _bold
+            _pa = _ws.cell(row=_r, column=_base + 4)  # %ava
+            _pa.number_format = _PCT_FMT
+            _low = isinstance(_pa.value, (int, float)) and _pa.value <= 0.20
+            if _low or _is_sub:
+                _pa.font = Font(bold=_is_sub, color=("FFFF0000" if _low else "FF000000"))
+
+    # แถว subtotal: ตัวหนา + พื้นสี
+    for _r in _sub_set:
+        for _c in range(1, 3 + _n_weeks * 5):
+            _cell = _ws.cell(row=_r, column=_c)
+            _cell.fill = _sub_fill
+            if _c <= 2:
+                _cell.font = _bold
+
+    # 2) เส้นขอบขวาปิดท้ายทุก week (คอลัมน์ %ava) ตลอดทั้งตาราง
+    for _wi in range(_n_weeks):
+        _bcol = 3 + _wi * 5 + 4
+        for _r in range(1, _last_row + 1):
+            _cell = _ws.cell(row=_r, column=_bcol)
+            _e = _cell.border
+            _cell.border = Border(left=_e.left, top=_e.top, bottom=_e.bottom, right=_rb)
 
 print("✅ AVA MC FINAL COMPLETE (COLLAR REMOVED)")
 print("Saved:", OUTPUT_FILE)
 print("DETAIL rows:", len(df))
 print("SUMMARY rows:", len(summary))
+print(f"{AVA_SHEET} rows:", len(ava_wide), "weeks:", ava_weeks)
