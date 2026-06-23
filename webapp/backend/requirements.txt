@@ -1,0 +1,6 @@
+# webapp backend deps (เพิ่มจาก pipeline เดิม)
+fastapi
+uvicorn[standard]
+apscheduler
+pydantic
+python-multipart

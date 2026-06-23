@@ -1,0 +1,17 @@
+# รวม dependency ของ pipeline + webapp สำหรับ Docker image (Linux)
+# pipeline
+# numpy/pandas pin: VM CPU ไม่รองรับ x86-64-v2 → ต้องใช้ numpy 1.26.x (build SSE2) ไม่ใช่ 2.x
+numpy==1.26.4
+pandas==2.2.3
+openpyxl
+xlrd==1.2.0
+oracledb
+msal
+# webapp
+fastapi
+uvicorn[standard]
+apscheduler
+pydantic
+python-multipart
+# timezone data (ให้ APScheduler หา Asia/Bangkok เจอบน slim image)
+tzdata

@@ -1,0 +1,31 @@
+# Knit Plan — stack แยกอิสระจาก webchat
+# project name: knitplan  (docker compose -p knitplan ...)
+# เข้าใช้งาน: http://docker-webchat:8080
+
+services:
+  knitplan:
+    image: knitplan-app:latest
+    container_name: knitplan-app
+    build:
+      context: ..
+      dockerfile: webapp/Dockerfile
+    env_file:
+      - /home/scm/knitplan/env/.env
+    environment:
+      TZ: Asia/Bangkok
+      KNITPLAN_SETTINGS: /data/knitplan/config/settings.json
+    volumes:
+      - /home/scm/knitplan/masters:/data/knitplan/masters   # ไฟล์ Master (แก้ผ่านเว็บ)
+      - /home/scm/knitplan/output:/app/data_plan            # ผลลัพธ์ production_plan
+      - /home/scm/knitplan/logs:/app/webapp/logs            # log การรัน
+      - /home/scm/knitplan/config:/data/knitplan/config     # settings.json (เวลา schedule)
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    mem_limit: 6g
+    networks:
+      - knitplan-net
+
+networks:
+  knitplan-net:
+    driver: bridge
