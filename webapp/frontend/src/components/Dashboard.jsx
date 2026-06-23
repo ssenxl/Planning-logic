@@ -13,6 +13,40 @@ function fmt(iso) {
   return d.toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+function Progress({ status }) {
+  const running = status.running
+  const rc = status.returncode
+  const total = status.total_steps
+  const num = status.step_num || 0
+  const pct = running ? (status.progress ?? 0) : rc === 0 ? 100 : (status.progress ?? 0)
+  const state = running ? 'run' : rc === 0 ? 'ok' : rc == null ? 'idle' : 'fail'
+
+  if (!status.started_at && !running) {
+    return <div className="prog-idle">กดปุ่มสั่งรันทางซ้ายเพื่อเริ่ม แล้วดูความคืบหน้าที่นี่</div>
+  }
+  return (
+    <div className={'prog ' + state}>
+      <div className="prog-top">
+        <span className="prog-label">
+          {running
+            ? (total ? `ขั้นที่ ${num}/${total}` : 'กำลังเริ่ม...')
+            : rc === 0 ? '✅ สำเร็จทั้งหมด'
+            : `❌ ล้มเหลวที่ขั้น ${num}/${total || '?'}`}
+        </span>
+        <span className="prog-pct">{pct}%</span>
+      </div>
+      <div className="prog-track">
+        <div className="prog-fill" style={{ width: pct + '%' }} />
+      </div>
+      <div className="prog-desc">
+        {running ? (status.step_desc || 'กำลังประมวลผล...')
+          : rc === 0 ? 'เสร็จเรียบร้อย ดูไฟล์ผลลัพธ์ได้ที่แท็บ "ผลลัพธ์"'
+          : 'ดูรายละเอียดข้อผิดพลาดได้ที่ log ด้านล่าง'}
+      </div>
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const [status, setStatus] = useState({})
   const [logs, setLogs] = useState([])
@@ -103,10 +137,14 @@ export default function Dashboard() {
       </div>
 
       <div className="card logcard">
-        <h2>Log สด</h2>
-        <pre className="logbox" ref={logBox}>
-          {logs.length ? logs.join('\n') : 'ยังไม่มี log — กดปุ่มสั่งรันทางซ้าย'}
-        </pre>
+        <h2>ความคืบหน้า</h2>
+        <Progress status={status} />
+        <details className="logdetails">
+          <summary>ดู log ละเอียด (สำหรับตรวจสอบ)</summary>
+          <pre className="logbox" ref={logBox}>
+            {logs.length ? logs.join('\n') : 'ยังไม่มี log — กดปุ่มสั่งรันทางซ้าย'}
+          </pre>
+        </details>
       </div>
     </div>
   )

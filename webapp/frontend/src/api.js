@@ -30,4 +30,10 @@ export const api = {
   // outputs
   outputs: () => req('GET', '/api/outputs'),
   outputsBooking: () => req('GET', '/api/outputs/booking'),
+  // database (ดูไฟล์ข้อมูลในโปรเจกต์ read-only)
+  database: () => req('GET', '/api/database'),
+  databaseSheet: (file, sheet) =>
+    req('GET', `/api/database/sheet?file=${encodeURIComponent(file)}` +
+      (sheet ? `&sheet=${encodeURIComponent(sheet)}` : '')),
+  databaseDownloadUrl: (file) => `/api/database/download?file=${encodeURIComponent(file)}`,
 }

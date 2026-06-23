@@ -59,7 +59,7 @@ export default function Outputs() {
 
       <div className="card">
         <div className="editbar">
-          <h2>ไฟล์ Booking (booking_final → SharePoint: booking_final_auto.xlsx)</h2>
+          <h2>ไฟล์ Booking </h2>
         </div>
         {!booking.length && <div className="hint">ยังไม่มีไฟล์ booking</div>}
         {booking.length > 0 && <FileTable files={booking} />}

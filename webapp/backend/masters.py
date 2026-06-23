@@ -43,9 +43,11 @@ def _resolve(name: str) -> Path:
 
 
 def read_sheet(name: str, sheet: str) -> dict:
-    """อ่านชีท → {columns:[...], rows:[[...]]}  (แถวแรก = header)"""
+    """อ่านชีท → {columns:[...], rows:[[...]]}  (แถวแรก = header)
+    data_only=True: คืน "ค่าที่คำนวณแล้ว" ของเซลล์สูตร (ไม่ใช่ข้อความสูตร =...)
+    เพื่อให้ grid โชว์ตัวเลขจริง และบน server ไม่พึ่ง Excel"""
     path = _resolve(name)
-    wb = load_workbook(path, read_only=True, data_only=False)
+    wb = load_workbook(path, read_only=True, data_only=True)
     if sheet not in wb.sheetnames:
         wb.close()
         raise KeyError(f"ไม่พบชีท '{sheet}' ใน {name}")
@@ -89,9 +91,106 @@ def _coerce(v):
     return s
 
 
+def _norm_hdr(s) -> str:
+    return re.sub(r"\s+", " ", str(s).strip()).upper()
+
+
+def _to_num(v):
+    """แปลงเป็น float ถ้าได้ ไม่งั้นคืน None"""
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).strip())
+    except ValueError:
+        return None
+
+
+def _clean_num(x):
+    """ทำให้เลขจำนวนเต็มเป็น int (กัน 2500.0)"""
+    if isinstance(x, float) and x.is_integer():
+        return int(x)
+    return x
+
+
+def _recompute_target_stock(columns: list, rows: list) -> list:
+    """คำนวณคอลัมน์สูตรของ Target_Stock ใหม่จากคอลัมน์ดิบ (จับด้วย "ชื่อหัวคอลัมน์")
+    เพื่อให้ไฟล์เก็บ "ค่าตัวเลขจริง" ไม่พึ่ง Excel cache → pandas บน server อ่านได้ถูกต้อง
+      Match core   = Item code & Team Name
+      TARGET SCM   = TARGET/MONTH / 4 * 2
+      STOCK MIN    = TARGET/MONTH / 4
+      STOCK MAX    = IF Team=RTS: (Type1=CG ? TARGET/MONTH : TARGET SCM*1.5) else TARGET SCM*1.5
+      Stock 5 Week = STOCK MIN * 5
+    คำนวณเฉพาะคอลัมน์ที่มีอยู่ (รองรับการเพิ่ม/ลบ/เปลี่ยนชื่อคอลัมน์)"""
+    idx = {_norm_hdr(c): i for i, c in enumerate(columns)}
+    item_i = idx.get("ITEM CODE")
+    team_i = idx.get("TEAM NAME")
+    type1_i = idx.get("TYPE 1")
+    target_i = idx.get("TARGET/MONTH")
+    match_i = idx.get("MATCH CORE")
+    scm_i = idx.get("TARGET SCM")
+    min_i = idx.get("STOCK MIN")
+    max_i = idx.get("STOCK MAX")
+    week_i = idx.get("STOCK 5 WEEK")
+
+    def get(r, i):
+        return r[i] if (i is not None and i < len(r)) else None
+
+    out = []
+    for row in rows:
+        r = list(row)
+        target = _to_num(get(r, target_i))
+
+        # Match core = Item code & Team Name (ต่อข้อความ)
+        if match_i is not None and (item_i is not None or team_i is not None):
+            a = "" if get(r, item_i) is None else str(get(r, item_i))
+            b = "" if get(r, team_i) is None else str(get(r, team_i))
+            r[match_i] = a + b
+
+        # TARGET SCM = TARGET/MONTH / 4 * 2
+        scm = None
+        if scm_i is not None:
+            if target is not None:
+                scm = target / 4 * 2
+                r[scm_i] = _clean_num(scm)
+            else:
+                scm = _to_num(get(r, scm_i))
+        else:
+            scm = (target / 4 * 2) if target is not None else None
+
+        # STOCK MIN = TARGET/MONTH / 4
+        if min_i is not None and target is not None:
+            r[min_i] = _clean_num(target / 4)
+
+        # STOCK MAX
+        if max_i is not None:
+            team = str(get(r, team_i)).strip().upper() if get(r, team_i) is not None else ""
+            t1 = str(get(r, type1_i)).strip().upper() if get(r, type1_i) is not None else ""
+            if team == "RTS" and t1 == "CG":
+                mx = target
+            else:
+                mx = (scm * 1.5) if scm is not None else None
+            if mx is not None:
+                r[max_i] = _clean_num(mx)
+
+        # Stock 5 Week = STOCK MIN * 5
+        if week_i is not None:
+            mn = (target / 4) if target is not None else _to_num(get(r, min_i))
+            if mn is not None:
+                r[week_i] = _clean_num(mn * 5)
+
+        out.append(r)
+    return out
+
+
 def write_sheet(name: str, sheet: str, columns: list, rows: list) -> dict:
     """เขียนชีทกลับ (แก้เฉพาะชีทนี้ ชีทอื่นคงเดิม) + สำรอง .bak"""
     path = _resolve(name)
+
+    # Target_Stock: คำนวณคอลัมน์สูตรใหม่ก่อนเขียน (เก็บค่าจริง ใช้บน server ได้)
+    if name == "Target_Stock":
+        rows = _recompute_target_stock(columns, rows)
 
     # สำรองไฟล์เดิม
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")

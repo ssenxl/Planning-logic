@@ -11,9 +11,14 @@ echo "==> เตรียมโฟลเดอร์ที่ $ROOT"
 mkdir -p "$ROOT"/{src,masters,output,logs,config,env}
 
 echo "==> แตกซอร์สลง $SRC"
-rm -rf "$SRC"/webapp "$SRC"/*.py 2>/dev/null || true
+# คืนสิทธิ์เขียน (ของเดิมบางโฟลเดอร์เป็น read-only) แล้วล้างทิ้งทั้งหมดก่อนแตกใหม่
+chmod -R u+w "$SRC" 2>/dev/null || true
+rm -rf "$SRC"
 mkdir -p "$SRC"
-tar -xzf "$TGZ" -C "$SRC"
+# --delay-directory-restore: tarball พก dir mode read-only (555) มาบางโฟลเดอร์
+# เลื่อนการตั้งสิทธิ์ dir ไปท้ายสุด ไม่งั้น mkdir ลูกข้างในไม่ได้ แล้วคืนสิทธิ์เขียนให้ทั้งหมด
+tar --delay-directory-restore -xzf "$TGZ" -C "$SRC"
+chmod -R u+w "$SRC"
 
 # ---- .env (Oracle creds) : ดึงจาก webchat .env ถ้ายังไม่มี ----
 ENV_FILE=$ROOT/env/.env

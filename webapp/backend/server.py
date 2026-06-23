@@ -17,6 +17,7 @@ from pydantic import BaseModel
 import config
 import runner
 import masters
+import database
 import scheduler
 
 FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
@@ -134,6 +135,32 @@ def api_output_download(fname: str):
     if not f.exists() or f.parent != config.OUTPUT_DIR:
         raise HTTPException(status_code=404, detail="ไม่พบไฟล์")
     return FileResponse(str(f), filename=fname,
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ---------------- Database (ดูไฟล์ข้อมูลในโปรเจกต์ read-only) ----------------
+@app.get("/api/database")
+def api_database():
+    return database.list_datasets()
+
+
+@app.get("/api/database/sheet")
+def api_database_sheet(file: str, sheet: str = None):
+    try:
+        return database.read_grid(file, sheet)
+    except (KeyError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/database/download")
+def api_database_download(file: str):
+    try:
+        p = database._resolve(file)
+    except (KeyError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return FileResponse(str(p), filename=p.name,
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 

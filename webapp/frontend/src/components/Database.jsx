@@ -1,15 +1,19 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { api } from '../api.js'
-
-// ชีทที่ pipeline ใช้จริง — แสดง hint ให้ user
-const USED_SHEETS = {
-  Calendar: ['Sheet1'],
-}
 
 const norm = (v) => (v === '' || v == null) ? '' : String(v)
 const label = (v) => v === '' ? '(ว่าง)' : v
 
-// ---- popup ติ๊กเลือกค่าแบบ Excel ----
+function fmtSize(b) {
+  if (b < 1024) return b + ' B'
+  if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB'
+  return (b / 1024 / 1024).toFixed(1) + ' MB'
+}
+function fmtTime(ts) {
+  return new Date(ts * 1000).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+// ---- popup ติ๊กเลือกค่าแบบ Excel (เหมือนหน้าแก้ Master) ----
 function ColumnFilter({ values, selected, pos, onApply, onClose }) {
   const [draft, setDraft] = useState(() => selected ? new Set(selected) : new Set(values))
   const [q, setQ] = useState('')
@@ -31,7 +35,6 @@ function ColumnFilter({ values, selected, pos, onApply, onClose }) {
     })
   }
   function apply() {
-    // เลือกครบทุกค่า = ไม่กรอง
     onApply(draft.size === values.length ? null : draft)
   }
 
@@ -64,78 +67,55 @@ function ColumnFilter({ values, selected, pos, onApply, onClose }) {
   )
 }
 
-export default function Masters() {
-  const [files, setFiles] = useState([])
-  const [sel, setSel] = useState(null)
-  const [grid, setGrid] = useState(null)      // ข้อมูลเต็ม (source of truth)
+export default function Database() {
+  const [groups, setGroups] = useState([])
+  const [sel, setSel] = useState(null)        // { id, name }
+  const [grid, setGrid] = useState(null)      // { sheet, sheets, columns, rows, total, truncated }
   const [loading, setLoading] = useState(false)
-  const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
-  const [dirty, setDirty] = useState(false)
   const [search, setSearch] = useState('')
   const [filters, setFilters] = useState({})  // { colIndex: Set(ค่าที่เลือก) }
-  const [openCol, setOpenCol] = useState(null) // { ci, top, left }
+  const [openCol, setOpenCol] = useState(null)
 
-  useEffect(() => { api.masters().then(setFiles).catch(e => setMsg('โหลดรายการไม่ได้: ' + e.message)) }, [])
+  async function loadList() {
+    setMsg('')
+    try { setGroups(await api.database()) }
+    catch (e) { setMsg('โหลดรายการไม่ได้: ' + e.message) }
+  }
+  useEffect(() => { loadList() }, [])
 
-  async function openSheet(name, sheet) {
-    if (dirty && !confirm('มีการแก้ที่ยังไม่บันทึก จะทิ้งและเปิดชีทใหม่ไหม?')) return
-    setLoading(true); setMsg(''); setGrid(null); setSel({ name, sheet })
+  async function openFile(file, sheet) {
+    setLoading(true); setMsg(''); setGrid(null)
+    setSel({ id: file.id, name: file.name })
     setSearch(''); setFilters({}); setOpenCol(null)
     try {
-      const d = await api.sheet(name, sheet)
-      setGrid(d); setDirty(false)
+      const d = await api.databaseSheet(file.id, sheet)
+      setGrid(d)
+    } catch (e) { setMsg('อ่านไฟล์ไม่ได้: ' + e.message) }
+    finally { setLoading(false) }
+  }
+
+  async function changeSheet(sheet) {
+    if (!sel) return
+    setLoading(true); setMsg(''); setSearch(''); setFilters({}); setOpenCol(null)
+    try {
+      const d = await api.databaseSheet(sel.id, sheet)
+      setGrid(d)
     } catch (e) { setMsg('อ่านชีทไม่ได้: ' + e.message) }
     finally { setLoading(false) }
   }
 
-  function setCell(ri, ci, val) {
-    setGrid(g => { const rows = g.rows.map(r => r.slice()); rows[ri][ci] = val; return { ...g, rows } })
-    setDirty(true)
-  }
-  function addRow() {
-    setSearch(''); setFilters({})
-    setGrid(g => ({ ...g, rows: [...g.rows, g.columns.map(() => '')] }))
-    setDirty(true)
-  }
-  function delRow(ri) {
-    setGrid(g => ({ ...g, rows: g.rows.filter((_, i) => i !== ri) }))
-    setDirty(true)
-  }
-  function renameCol(ci, val) {
-    setGrid(g => { const cols = g.columns.slice(); cols[ci] = val; return { ...g, columns: cols } })
-    setDirty(true)
-  }
-  function addCol() {
-    const nm = (prompt('ชื่อคอลัมน์ใหม่:', 'คอลัมน์ใหม่') || '').trim()
-    if (!nm) return
-    setSearch(''); setFilters({}); setOpenCol(null)
-    setGrid(g => ({ ...g, columns: [...g.columns, nm], rows: g.rows.map(r => [...r, '']) }))
-    setDirty(true)
-  }
-  function delCol(ci) {
-    if (!confirm(`ลบคอลัมน์ "${grid.columns[ci]}" และข้อมูลในคอลัมน์นี้ทั้งหมด?`)) return
-    setSearch(''); setFilters({}); setOpenCol(null)
-    setGrid(g => ({
-      ...g,
-      columns: g.columns.filter((_, i) => i !== ci),
-      rows: g.rows.map(r => r.filter((_, i) => i !== ci)),
-    }))
-    setDirty(true)
+  async function refresh() {
+    await loadList()
+    if (sel && grid) {
+      setLoading(true)
+      try { setGrid(await api.databaseSheet(sel.id, grid.sheet)) }
+      catch (e) { setMsg('รีเฟรชไม่ได้: ' + e.message) }
+      finally { setLoading(false) }
+    }
   }
 
-  async function save() {
-    if (!grid || !sel) return
-    setSaving(true); setMsg('')
-    try {
-      const r = await api.saveSheet(sel.name, sel.sheet, grid.columns, grid.rows)
-      setMsg(`บันทึกแล้ว (${r.rows} แถว) — สำรองไฟล์เดิมเป็น ${r.backup}`)
-      setDirty(false)
-    } catch (e) { setMsg('บันทึกไม่ได้: ' + e.message) }
-    finally { setSaving(false) }
-  }
-
-  // ค่าที่เลือกได้ของคอลัมน์ที่เปิด popup — คิดจากแถวที่ผ่าน "ตัวกรองอื่น" + ค้นหา (cascading แบบ Excel)
+  // ค่าที่เลือกได้ของคอลัมน์ที่เปิด popup (cascading จากตัวกรองอื่น + ค้นหา)
   const openColValues = useMemo(() => {
     if (!grid || !openCol) return []
     const ci = openCol.ci
@@ -152,7 +132,6 @@ export default function Masters() {
     return Array.from(set).sort((a, b) => label(a).localeCompare(label(b), 'th', { numeric: true }))
   }, [grid, filters, search, openCol])
 
-  // แถวที่ผ่าน filter — เก็บ index จริง
   const visible = useMemo(() => {
     if (!grid) return []
     const s = search.trim().toLowerCase()
@@ -188,18 +167,21 @@ export default function Masters() {
   return (
     <div className="masters">
       <aside className="filelist">
-        <h2>ไฟล์ Master</h2>
-        {files.map(f => (
-          <div key={f.name} className="filegroup">
-            <div className="filename">{f.name} {!f.exists && <span className="warn">ไม่พบไฟล์</span>}</div>
-            {f.error && <div className="warn small">{f.error}</div>}
-            {f.sheets.map(s => {
-              const used = USED_SHEETS[f.name]?.includes(s)
-              const active = sel && sel.name === f.name && sel.sheet === s
+        <div className="editbar" style={{ padding: '0 0 8px' }}>
+          <h2>ไฟล์ข้อมูล</h2>
+          <button onClick={refresh}>รีเฟรช</button>
+        </div>
+        {groups.map(g => (
+          <div key={g.id} className="filegroup">
+            <div className="filename">{g.label}</div>
+            {!g.files.length && <div className="hint small">ไม่มีไฟล์</div>}
+            {g.files.map(f => {
+              const active = sel && sel.id === f.id
               return (
-                <button key={s} className={'sheetbtn' + (active ? ' active' : '')}
-                  onClick={() => openSheet(f.name, s)}>
-                  {s} {used && <span className="usedtag">ใช้รันแผน</span>}
+                <button key={f.id} className={'sheetbtn' + (active ? ' active' : '')}
+                  title={`${fmtSize(f.size)} • แก้ไข ${fmtTime(f.mtime)}`}
+                  onClick={() => openFile(f)}>
+                  {f.name}
                 </button>
               )
             })}
@@ -208,17 +190,18 @@ export default function Masters() {
       </aside>
 
       <section className="editor">
-        {!sel && <div className="hint">เลือกชีทจากด้านซ้ายเพื่อแก้ไข</div>}
+        {!sel && <div className="hint">เลือกไฟล์จากด้านซ้ายเพื่อดูข้อมูล</div>}
         {sel && (
           <>
             <div className="editbar">
-              <h2>{sel.name} / {sel.sheet} {dirty && <span className="dot">●</span>}</h2>
+              <h2>{sel.name}</h2>
               <div className="actions">
-                <button onClick={addRow} disabled={!grid}>+ เพิ่มแถว</button>
-                <button onClick={addCol} disabled={!grid}>+ เพิ่มคอลัมน์</button>
-                <button className="primary" onClick={save} disabled={!grid || saving || !dirty}>
-                  {saving ? 'กำลังบันทึก...' : 'บันทึก'}
-                </button>
+                {grid && grid.sheets && grid.sheets.length > 1 && (
+                  <select value={grid.sheet} onChange={e => changeSheet(e.target.value)}>
+                    {grid.sheets.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                )}
+                <a className="dl" href={api.databaseDownloadUrl(sel.id)}>⬇ ดาวน์โหลด</a>
               </div>
             </div>
 
@@ -233,15 +216,15 @@ export default function Masters() {
               </div>
             )}
 
-            {sel.name === 'Target_Stock' && (
+            {grid && grid.truncated && (
               <div className="msg note">
-                ℹ️ คอลัมน์ <b>Match core, TARGET SCM, STOCK MIN, STOCK MAX, Stock 5 Week</b> คำนวณอัตโนมัติจาก <b>TARGET/MONTH</b> ตอนกดบันทึก — แก้ TARGET/MONTH แล้วค่าที่เหลือจะอัปเดตเอง
+                ℹ️ ไฟล์มี {grid.total.toLocaleString()} แถว — แสดงเฉพาะ {grid.rows.length.toLocaleString()} แถวแรกเพื่อความเร็ว กด<b>ดาวน์โหลด</b>เพื่อดูข้อมูลครบทุกแถว
               </div>
             )}
             {msg && <div className="msg">{msg}</div>}
             {loading && <div className="hint">กำลังโหลด...</div>}
 
-            {grid && (
+            {grid && !loading && (
               <div className="gridwrap">
                 <table className="grid">
                   <thead>
@@ -250,38 +233,28 @@ export default function Masters() {
                       {grid.columns.map((c, ci) => (
                         <th key={ci}>
                           <div className="thcell">
-                            <input className="thinput" value={c}
-                              title="คลิกเพื่อแก้ชื่อคอลัมน์"
-                              onChange={e => renameCol(ci, e.target.value)} />
+                            <span className="thlabel" title={c}>{c}</span>
                             <button
                               className={'funnel' + (filters[ci] ? ' on' : '')}
                               title="กรองคอลัมน์นี้"
                               onClick={e => openColMenu(e, ci)}>▾</button>
-                            <button className="coldel" title="ลบคอลัมน์นี้"
-                              onClick={() => delCol(ci)}>✕</button>
                           </div>
                         </th>
                       ))}
-                      <th className="rownum"></th>
                     </tr>
                   </thead>
                   <tbody>
                     {visible.map(({ row, idx }) => (
                       <tr key={idx}>
                         <td className="rownum">{idx + 1}</td>
-                        {row.map((cell, ci) => (
-                          <td key={ci}>
-                            <input value={cell ?? ''} onChange={e => setCell(idx, ci, e.target.value)} />
-                          </td>
+                        {grid.columns.map((_, ci) => (
+                          <td key={ci} className="rocell">{norm(row[ci])}</td>
                         ))}
-                        <td className="rownum">
-                          <button className="del" title="ลบแถว" onClick={() => delRow(idx)}>✕</button>
-                        </td>
                       </tr>
                     ))}
                     {!visible.length && (
                       <tr><td className="rownum"></td>
-                        <td colSpan={grid.columns.length + 1} className="hint">ไม่มีแถวตรงตัวกรอง</td>
+                        <td colSpan={grid.columns.length} className="hint">ไม่มีแถวตรงตัวกรอง</td>
                       </tr>
                     )}
                   </tbody>
