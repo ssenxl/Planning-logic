@@ -27,6 +27,7 @@ View_Stock.py
 
 # release builds & debug
 KnitPlan_Release.zip
+KnitPlan_Release*.zip
 KnitPlan_Release/
 _debug_week.py
 build/

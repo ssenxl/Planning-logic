@@ -51,7 +51,7 @@ except ImportError:
 try:
     import win32com.client
 except ImportError:
-    if not getattr(sys, 'frozen', False):
+    if not getattr(sys, 'frozen', False) and sys.platform == 'win32':
         print("📦 ติดตั้ง pywin32 สำหรับสร้าง PivotTable...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pywin32"])
         try:

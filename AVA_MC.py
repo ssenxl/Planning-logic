@@ -978,13 +978,27 @@ summary = (
 # AVAILABILITY SUMMARY: WEEK 25-35 (แยกรายสัปดาห์ เรียงไปทางขวา)
 # =========================
 from datetime import date as _date, timedelta as _td
-# สัปดาห์ปัจจุบัน (ศุกร์–พฤหัส = ISO week ของ วันที่+3) ถึง +10 = รวม 11 สัปดาห์
+# สัปดาห์ปัจจุบัน (ศุกร์–พฤหัส = ISO week ของ วันที่+3) → ย้อนหลัง 5 สัปดาห์ ไปข้างหน้าจนหมด
 _AVA_CUR_WEEK = (_date.today() + _td(days=3)).isocalendar()[1]
-AVA_WK_START = _AVA_CUR_WEEK
-AVA_WK_END = _AVA_CUR_WEEK + 10
-AVA_SHEET = f"AVA_WK{AVA_WK_START}-{AVA_WK_END}"
 _ava_all_weeks = set(summary["WEEK"].unique())
-ava_weeks = [w for w in range(AVA_WK_START, AVA_WK_END + 1) if w in _ava_all_weeks]
+
+def _ava_week_delta(_w):
+    # ระยะห่าง(สัปดาห์)จากสัปดาห์ปัจจุบัน รองรับข้ามปี (ISO week วน 1..52)
+    _d = int(_w) - _AVA_CUR_WEEK
+    if _d > 26:
+        _d -= 52
+    elif _d < -26:
+        _d += 52
+    return _d
+
+# ย้อนหลัง 5 สัปดาห์ (รวมข้ามปี) → ไปข้างหน้าจนหมด, ตัด week 99
+ava_weeks = sorted(
+    (w for w in _ava_all_weeks if w != 99 and _ava_week_delta(w) >= -5),
+    key=_ava_week_delta,
+)
+AVA_WK_START = ava_weeks[0]  if ava_weeks else _AVA_CUR_WEEK
+AVA_WK_END   = ava_weeks[-1] if ava_weeks else _AVA_CUR_WEEK
+AVA_SHEET = "AVA_MC"
 
 # map หมวดที่ต้องรวมแสดง: SYN-30 / SYN-28 → DOUBLE-30
 _AVA_CAT_MAP = {"SYN-30": "DOUBLE-30", "SYN-28": "DOUBLE-30"}
