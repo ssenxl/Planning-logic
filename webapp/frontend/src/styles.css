@@ -76,7 +76,44 @@ button { transition: all .16s ease; }
   box-shadow: 0 0 14px 1px rgba(165, 180, 252, .85), 0 0 4px rgba(199, 210, 254, .9);
 }
 
+/* ปุ่มออกจากระบบ (ชิดขวาของ topbar) */
+.logout-btn {
+  margin-left: auto; background: rgba(255, 255, 255, .10); border: 1px solid rgba(197, 196, 238, .35);
+  color: #e6e6fb; cursor: pointer; padding: 8px 15px; border-radius: 9px;
+  font-size: 13.5px; font-weight: 600;
+}
+.logout-btn .ico { margin-right: 6px; }
+.logout-btn:hover { background: rgba(255, 255, 255, .18); color: #fff; border-color: rgba(255, 255, 255, .5); }
+
 .content { padding: 24px; flex: 1; max-width: 1500px; width: 100%; margin: 0 auto; }
+
+/* ---------------- หน้า Login ---------------- */
+.login-page {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.login-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
+  box-shadow: var(--shadow-lg); padding: 38px 34px; width: 100%; max-width: 380px;
+  display: flex; flex-direction: column; align-items: stretch;
+}
+.login-logo {
+  align-self: center; display: inline-flex; background: linear-gradient(120deg, #312e81, #4338ca);
+  border-radius: 16px; padding: 12px; box-shadow: 0 8px 22px rgba(40, 35, 110, .35);
+}
+.login-logo svg { width: 38px; height: 38px; display: block; color: #fff; }
+.login-card h1 { margin: 18px 0 2px; text-align: center; font-size: 24px; font-weight: 800; letter-spacing: .3px; }
+.login-sub { margin: 0 0 22px; text-align: center; color: var(--muted); font-size: 13px; }
+.login-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.login-field span { font-size: 13px; font-weight: 600; color: var(--ink); }
+.login-field input {
+  padding: 11px 14px; border: 1px solid var(--line); border-radius: 10px; font-size: 14px; background: #fafbff;
+}
+.login-field input:focus { outline: none; border-color: var(--pri); background: #fff; box-shadow: 0 0 0 4px var(--pri-ring); }
+.login-err {
+  background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c;
+  padding: 9px 13px; border-radius: 9px; font-size: 13px; margin-bottom: 14px; text-align: center;
+}
+.login-btn { width: 100%; padding: 12px; font-size: 15px; margin-top: 4px; }
 
 /* cards */
 .card {

@@ -2,3 +2,7 @@ frontend/node_modules/
 frontend/dist/
 backend/__pycache__/
 logs/
+
+# auth: ห้าม commit รหัสผ่าน user และ secret key
+backend/users.json
+backend/auth_secret.txt

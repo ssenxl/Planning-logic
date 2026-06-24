@@ -31,7 +31,7 @@ function Progress({ status }) {
           {running
             ? (total ? `ขั้นที่ ${num}/${total}` : 'กำลังเริ่ม...')
             : rc === 0 ? '✅ สำเร็จทั้งหมด'
-            : `❌ ล้มเหลวที่ขั้น ${num}/${total || '?'}`}
+              : `❌ ล้มเหลวที่ขั้น ${num}/${total || '?'}`}
         </span>
         <span className="prog-pct">{pct}%</span>
       </div>
@@ -41,7 +41,7 @@ function Progress({ status }) {
       <div className="prog-desc">
         {running ? (status.step_desc || 'กำลังประมวลผล...')
           : rc === 0 ? 'เสร็จเรียบร้อย ดูไฟล์ผลลัพธ์ได้ที่แท็บ "ผลลัพธ์"'
-          : 'ดูรายละเอียดข้อผิดพลาดได้ที่ log ด้านล่าง'}
+            : 'ดูรายละเอียดข้อผิดพลาดได้ที่ log ด้านล่าง'}
       </div>
     </div>
   )
@@ -62,13 +62,13 @@ export default function Dashboard() {
         offset.current = r.next_offset
         setLogs(prev => [...prev, ...r.lines])
       }
-    } catch {}
+    } catch { }
   }
   async function pollStatus() {
-    try { setStatus(await api.runStatus()) } catch {}
+    try { setStatus(await api.runStatus()) } catch { }
   }
   async function loadSched() {
-    try { setSched(await api.schedule()) } catch {}
+    try { setSched(await api.schedule()) } catch { }
   }
 
   useEffect(() => {
@@ -113,7 +113,7 @@ export default function Dashboard() {
           <h3>สถานะ</h3>
           <div className={'badge ' + (running ? 'run' : rc === 0 ? 'ok' : rc == null ? 'idle' : 'fail')}>
             {running ? 'กำลังรัน: ' + (status.label || '') :
-             rc === 0 ? 'สำเร็จ' : rc == null ? 'ว่าง' : 'ล้มเหลว (rc=' + rc + ')'}
+              rc === 0 ? 'สำเร็จ' : rc == null ? 'ว่าง' : 'ล้มเหลว (rc=' + rc + ')'}
           </div>
           <table className="kv">
             <tbody>

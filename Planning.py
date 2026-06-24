@@ -32,7 +32,14 @@ DATA_PLAN_DIR = BASE_DIR / "data_plan"
 DATA_DIR = BASE_DIR / "data"
 ITEMCORE_DIR = DATA_DIR / "Itemcore"
 ORDER_FILE = DATA_PLAN_DIR / "order_ready.xlsx"
-MC_REMAIN_FILE = DATA_PLAN_DIR / "booking_final_ready25.xlsx"
+def _latest_booking_final():
+    """หาไฟล์ booking_final_ready ที่ใหม่สุด (ชื่อมีวันที่ พ.ศ.) ; fallback ชื่อเก่า"""
+    cands = sorted(DATA_PLAN_DIR.glob("booking_final_ready_*.xlsx"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    if cands:
+        return cands[0]
+    return DATA_PLAN_DIR / "booking_final_ready25.xlsx"  # backward-compat
+MC_REMAIN_FILE = _latest_booking_final()
 ITEMCORE_FILE = ITEMCORE_DIR / "Itemcore.xlsx"
 CALENDAR_FILE = "https://nanyangtextilegroup.sharepoint.com/:x:/s/SCM_Cloud/IQCXP4jH73zhQozDNvw1XF8OAY5m4p-UFv35Tcpza6v8mJo?e=43ffCc"
 BOOKING_DIR = BASE_DIR / "Booking"

@@ -81,7 +81,9 @@ if not MASTER_MC_FILE.exists():
         f"กรุณาแก้ path ใน config.ini หัวข้อ [paths] master_mc ให้ตรงกับเครื่องของคุณ"
     )
 OUTPUT_DIR = BASE_DIR / "data_plan"
-OUTPUT_FILE = OUTPUT_DIR / "booking_final_ready25.xlsx"
+from datetime import date as _date_today
+_d = _date_today.today()
+OUTPUT_FILE = OUTPUT_DIR / f"booking_final_ready_{_d.day}-{_d.month}-{_d.year+543}.xlsx"
 
 EXCLUDE_MC_GROUP = [
     "CL-NP",

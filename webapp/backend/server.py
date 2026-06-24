@@ -8,9 +8,9 @@ server.py — FastAPI app
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -19,6 +19,7 @@ import runner
 import masters
 import database
 import scheduler
+import auth
 
 FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 
@@ -34,7 +35,46 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
 
-api = FastAPI()  # sub-app ไม่จำเป็น แต่ใช้ router ตรงๆ ง่ายกว่า
+
+# ---------------- Auth ----------------
+# path ที่เข้าได้โดยไม่ต้อง login
+AUTH_OPEN_PATHS = {"/api/login", "/api/health"}
+
+
+def _is_download_path(path: str) -> bool:
+    """endpoint ดาวน์โหลดไฟล์ — เปิดให้โหลดได้โดยไม่ต้องมี token
+    (ใช้ลิงก์ <a href> โหลดตรงได้ทุกเมื่อ); ไม่รวม /api/outputs/booking ที่เป็น list"""
+    if path == "/api/database/download":
+        return True
+    if path.startswith("/api/outputs/") and path != "/api/outputs/booking":
+        return True
+    return False
+
+
+@app.middleware("http")
+async def auth_guard(request: Request, call_next):
+    path = request.url.path
+    # ป้องกันเฉพาะ /api/* (ยกเว้น path ที่เปิดไว้ + endpoint ดาวน์โหลด); preflight OPTIONS ปล่อยผ่าน
+    if path.startswith("/api/") and path not in AUTH_OPEN_PATHS \
+            and not _is_download_path(path) \
+            and request.method != "OPTIONS":
+        header = request.headers.get("authorization", "")
+        token = header[7:] if header.lower().startswith("bearer ") else ""
+        if not auth.check_token(token):
+            return JSONResponse(status_code=401, content={"detail": "ยังไม่ได้เข้าสู่ระบบ หรือเซสชันหมดอายุ"})
+    return await call_next(request)
+
+
+class LoginReq(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/login")
+def api_login(req: LoginReq):
+    if not auth.verify_login(req.username, req.password):
+        raise HTTPException(status_code=401, detail="ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
+    return {"token": auth.make_token(req.username), "username": req.username}
 
 
 # ---------------- Run / Pipeline ----------------
@@ -121,7 +161,7 @@ def api_outputs_booking():
     """ไฟล์ booking_final (ที่อัปโหลดขึ้น SharePoint เป็น booking_final_auto.xlsx)"""
     out = []
     if config.OUTPUT_DIR.exists():
-        for f in sorted(config.OUTPUT_DIR.glob("booking_final_ready25.xlsx"),
+        for f in sorted(config.OUTPUT_DIR.glob("booking_final_ready_*.xlsx"),
                         key=lambda p: p.stat().st_mtime, reverse=True):
             st = f.stat()
             out.append({"name": f.name, "size": st.st_size,

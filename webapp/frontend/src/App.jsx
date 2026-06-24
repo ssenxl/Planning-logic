@@ -1,9 +1,11 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import Dashboard from './components/Dashboard.jsx'
 import Masters from './components/Masters.jsx'
 import Database from './components/Database.jsx'
 import Schedule from './components/Schedule.jsx'
 import Outputs from './components/Outputs.jsx'
+import Login from './components/Login.jsx'
+import { auth, setOnUnauthorized } from './api.js'
 
 const TABS = [
   { id: 'dashboard', label: 'แดชบอร์ด', icon: '▶' },
@@ -15,6 +17,22 @@ const TABS = [
 
 export default function App() {
   const [tab, setTab] = useState('dashboard')
+  const [authed, setAuthed] = useState(() => !!auth.get())
+
+  // เมื่อ token หมดอายุ (API คืน 401) → เด้งกลับหน้า login
+  useEffect(() => {
+    setOnUnauthorized(() => setAuthed(false))
+  }, [])
+
+  function logout() {
+    auth.clear()
+    setAuthed(false)
+  }
+
+  if (!authed) {
+    return <Login onLogin={() => setAuthed(true)} />
+  }
+
   return (
     <div className="app">
       <header className="topbar">
@@ -50,6 +68,9 @@ export default function App() {
             </button>
           ))}
         </nav>
+        <button className="logout-btn" onClick={logout} title="ออกจากระบบ">
+          <span className="ico">⎋</span>ออกจากระบบ
+        </button>
       </header>
       <main className="content">
         {tab === 'dashboard' && <Dashboard />}
