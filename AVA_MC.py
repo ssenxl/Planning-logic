@@ -700,7 +700,25 @@ df["_mc_use_ceil_pass1"] = df["_mc_use_ceil_pass1"].fillna(0).astype(int)
 # carry machines = เครื่องที่รันจริงใน prev week (FINAL)
 # new machines   = INITIAL ปัจจุบัน - FINAL prev (ส่วนที่เพิ่มขึ้นจริง)
 # =========================
-df["_prev_mc_use_ceil"] = df.groupby("_carry_key")["_mc_use_ceil_pass1"].shift(1)
+# carry-over machines = เครื่องจาก "สัปดาห์ล่าสุดที่ยังรันจริง (pass1 > 0)" ที่ยังอยู่ใน SETUP_GAP_WEEK
+# เดิมใช้ shift(1) มองแค่สัปดาห์ติดกัน → ถ้ามีสัปดาห์ KP=0 คั่นกลาง เครื่องที่กลับมารัน (rerun)
+# จะถูกนับเป็น "เครื่องใหม่" ผิด ทำให้โดน setup penalty ซ้ำและพองจำนวนเครื่องเกินจริง
+# (เช่น item รัน week 25 → ว่าง 26,27 → กลับมา week 28 ควร carry 2 เครื่องเดิม ไม่ใช่ setup ใหม่)
+def _carry_prev_active_ceil(g):
+    prev_vals = []
+    last_week = None
+    last_ceil = 0
+    for wk, c in zip(g["WEEK"].tolist(), g["_mc_use_ceil_pass1"].tolist()):
+        if last_week is not None and (wk - last_week) <= SETUP_GAP_WEEK:
+            prev_vals.append(last_ceil)   # ยังอยู่ใน gap → carry เครื่องจากสัปดาห์ active ล่าสุด
+        else:
+            prev_vals.append(np.nan)      # นอก gap / ครั้งแรก → ไม่มี carry (= setup ใหม่)
+        if c > 0:                          # อัปเดต active week เฉพาะสัปดาห์ที่มีเครื่องรันจริง
+            last_week = wk
+            last_ceil = c
+    return pd.Series(prev_vals, index=g.index)
+
+df["_prev_mc_use_ceil"] = df.groupby("_carry_key", group_keys=False).apply(_carry_prev_active_ceil)
 df["_mc_increase"] = np.maximum(
     df["MC_USE_CEIL"] - df["_prev_mc_use_ceil"].fillna(0), 0
 ).astype(int)
