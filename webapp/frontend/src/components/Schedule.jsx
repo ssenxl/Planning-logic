@@ -2,8 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { api } from '../api.js'
 
 const JOBS = [
-  { id: 'db_pull', label: 'ดึงข้อมูลจาก DB', desc: 'Calendar → Booking → Stock → SC' },
-  { id: 'plan', label: 'รันแผนการผลิต', desc: 'AVA_MC → Order → Planning' },
+  { id: 'full', label: 'รันทั้ง Pipeline', desc: 'ดึง DB + รันแผนทั้งหมด (Calendar → Booking → Stock → SC → AVA_MC → Order → Planning)' },
 ]
 
 function fmt(iso) {

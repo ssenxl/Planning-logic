@@ -1,13 +1,8 @@
 {
   "schedule": {
-    "db_pull": {
+    "full": {
       "enabled": true,
       "hour": 6,
-      "minute": 0
-    },
-    "plan": {
-      "enabled": true,
-      "hour": 7,
       "minute": 0
     }
   }

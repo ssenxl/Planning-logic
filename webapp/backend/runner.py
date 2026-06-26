@@ -46,9 +46,13 @@ _state = {
     "step_name": None,
     "step_desc": None,     # คำอธิบาย step ปัจจุบัน
     "progress": 0,         # % ความคืบหน้า (0-100)
+    "cancelled": False,    # ผู้ใช้กดหยุดรอบนี้หรือไม่
 }
 _log_lines: list[str] = []
 _log_lock = threading.Lock()
+
+_proc = None             # subprocess ของ run_all.py ที่กำลังรัน (None = ไม่มี)
+_proc_lock = threading.Lock()
 
 
 def get_status() -> dict:
@@ -60,10 +64,21 @@ def get_status() -> dict:
 
 def get_logs(offset: int = 0) -> dict:
     with _log_lock:
+        if offset > len(_log_lines):
+            # buffer ถูกล้างเพราะรอบใหม่เริ่ม (offset ของ client ค้างจากรอบก่อน) → resync ทั้ง buffer
+            lines = _log_lines[:]
+            return {
+                "lines": lines,
+                "next_offset": len(lines),
+                "reset": True,
+                "running": _state["running"],
+                "returncode": _state["returncode"],
+            }
         lines = _log_lines[offset:]
         return {
             "lines": lines,
             "next_offset": offset + len(lines),
+            "reset": False,
             "running": _state["running"],
             "returncode": _state["returncode"],
         }
@@ -115,7 +130,7 @@ def _run(mode: str, trigger: str):
             "finished_at": None, "returncode": None,
             "trigger": trigger, "log_file": log_path.name,
             "total_steps": None, "step_num": 0, "step_name": None,
-            "step_desc": None, "progress": 0,
+            "step_desc": None, "progress": 0, "cancelled": False,
         })
 
     _append(f"=== เริ่ม [{MODE_LABELS.get(mode, mode)}] ({trigger}) {started.strftime('%Y-%m-%d %H:%M:%S')} ===")
@@ -126,9 +141,17 @@ def _run(mode: str, trigger: str):
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
 
+    global _proc
     returncode = 1
     try:
         with open(log_path, "w", encoding="utf-8") as lf:
+            popen_kw = {}
+            if sys.platform == "win32":
+                # ตั้งกลุ่ม process ใหม่ → kill ทั้ง tree ด้วย taskkill /T ได้
+                popen_kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                # POSIX (Docker/Linux): session ใหม่ → kill ทั้ง group ด้วย os.killpg ได้
+                popen_kw["start_new_session"] = True
             proc = subprocess.Popen(
                 [sys.executable, str(REPO_DIR / "run_all.py"), *args],
                 cwd=str(REPO_DIR),
@@ -139,7 +162,10 @@ def _run(mode: str, trigger: str):
                 errors="replace",
                 bufsize=1,
                 env=env,
+                **popen_kw,
             )
+            with _proc_lock:
+                _proc = proc
             for line in proc.stdout:
                 _append(line)
                 _parse_progress(line)
@@ -150,10 +176,17 @@ def _run(mode: str, trigger: str):
     except Exception as e:
         _append(f"❌ runner error: {e}")
         returncode = 1
+    finally:
+        with _proc_lock:
+            _proc = None
 
     finished = datetime.now()
     elapsed = (finished - started).total_seconds()
-    _append(f"=== จบ returncode={returncode} ใช้เวลา {elapsed:.1f}s ===")
+    cancelled = _state.get("cancelled", False)
+    if cancelled:
+        _append(f"=== ⛔ ยกเลิกโดยผู้ใช้ ใช้เวลา {elapsed:.1f}s ===")
+    else:
+        _append(f"=== จบ returncode={returncode} ใช้เวลา {elapsed:.1f}s ===")
 
     with _log_lock:
         _state.update({
@@ -161,7 +194,7 @@ def _run(mode: str, trigger: str):
             "finished_at": finished.isoformat(timespec="seconds"),
             "returncode": returncode,
         })
-        if returncode == 0:
+        if returncode == 0 and not cancelled:
             _state["progress"] = 100   # สำเร็จครบ → เต็มหลอด
     _lock.release()
 
@@ -175,3 +208,36 @@ def start_run(mode: str, trigger: str = "manual") -> dict:
     t = threading.Thread(target=_run, args=(mode, trigger), daemon=True)
     t.start()
     return {"ok": True, "message": f"เริ่ม {MODE_LABELS.get(mode, mode)} แล้ว"}
+
+
+def stop_run() -> dict:
+    """สั่งหยุดงานที่กำลังรัน — kill ทั้ง process tree (run_all.py + step ลูก)
+    คืน {ok, message}. ถ้าไม่มีงานรันอยู่คืน ok=False"""
+    with _proc_lock:
+        proc = _proc
+    if proc is None or not _state.get("running"):
+        return {"ok": False, "message": "ไม่มีงานกำลังรันอยู่"}
+
+    # ตั้ง flag ก่อน kill เพื่อให้รอบนี้รายงานว่าเป็นการยกเลิก ไม่ใช่ล้มเหลว
+    with _log_lock:
+        _state["cancelled"] = True
+    _append("=== ⛔ ผู้ใช้สั่งหยุด — กำลังปิด process... ===")
+
+    try:
+        if sys.platform == "win32":
+            # /T = รวม child ทั้ง tree (step script ที่ run_all.py spawn), /F = บังคับ
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        else:
+            # POSIX (Docker/Linux): kill ทั้ง process group → รวม step ลูกที่ run_all.py spawn
+            import os, signal
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    except Exception as e:
+        return {"ok": False, "message": f"หยุดไม่สำเร็จ: {e}"}
+
+    return {"ok": True, "message": "ส่งคำสั่งหยุดแล้ว"}

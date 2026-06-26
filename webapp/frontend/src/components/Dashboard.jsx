@@ -16,10 +16,11 @@ function fmt(iso) {
 function Progress({ status }) {
   const running = status.running
   const rc = status.returncode
+  const cancelled = status.cancelled
   const total = status.total_steps
   const num = status.step_num || 0
   const pct = running ? (status.progress ?? 0) : rc === 0 ? 100 : (status.progress ?? 0)
-  const state = running ? 'run' : rc === 0 ? 'ok' : rc == null ? 'idle' : 'fail'
+  const state = running ? 'run' : cancelled ? 'fail' : rc === 0 ? 'ok' : rc == null ? 'idle' : 'fail'
 
   if (!status.started_at && !running) {
     return <div className="prog-idle">กดปุ่มสั่งรันทางซ้ายเพื่อเริ่ม แล้วดูความคืบหน้าที่นี่</div>
@@ -30,8 +31,9 @@ function Progress({ status }) {
         <span className="prog-label">
           {running
             ? (total ? `ขั้นที่ ${num}/${total}` : 'กำลังเริ่ม...')
-            : rc === 0 ? '✅ สำเร็จทั้งหมด'
-              : `❌ ล้มเหลวที่ขั้น ${num}/${total || '?'}`}
+            : cancelled ? `⛔ ยกเลิกที่ขั้น ${num}/${total || '?'}`
+              : rc === 0 ? '✅ สำเร็จทั้งหมด'
+                : `❌ ล้มเหลวที่ขั้น ${num}/${total || '?'}`}
         </span>
         <span className="prog-pct">{pct}%</span>
       </div>
@@ -40,8 +42,9 @@ function Progress({ status }) {
       </div>
       <div className="prog-desc">
         {running ? (status.step_desc || 'กำลังประมวลผล...')
-          : rc === 0 ? 'เสร็จเรียบร้อย ดูไฟล์ผลลัพธ์ได้ที่แท็บ "ผลลัพธ์"'
-            : 'ดูรายละเอียดข้อผิดพลาดได้ที่ log ด้านล่าง'}
+          : cancelled ? 'ผู้ใช้สั่งหยุดการรันรอบนี้'
+            : rc === 0 ? 'เสร็จเรียบร้อย ดูไฟล์ผลลัพธ์ได้ที่แท็บ "ผลลัพธ์"'
+              : 'ดูรายละเอียดข้อผิดพลาดได้ที่ log ด้านล่าง'}
       </div>
     </div>
   )
@@ -58,9 +61,12 @@ export default function Dashboard() {
   async function pollLogs() {
     try {
       const r = await api.runLogs(offset.current)
-      if (r.lines.length) {
+      if (r.reset) {
         offset.current = r.next_offset
-        setLogs(prev => [...prev, ...r.lines])
+        setLogs(r.lines)                        // รอบใหม่ → แทนที่ log ทั้งหมด
+      } else if (r.lines.length) {
+        offset.current = r.next_offset
+        setLogs(prev => [...prev, ...r.lines])   // ต่อท้ายตามปกติ
       }
     } catch { }
   }
@@ -92,28 +98,46 @@ export default function Dashboard() {
     } catch (e) { setMsg('ผิดพลาด: ' + e.message) }
   }
 
+  async function stop() {
+    if (!window.confirm('ยืนยันหยุดการรัน? งานที่กำลังทำอยู่จะถูกยกเลิกทันที')) return
+    setMsg('')
+    try {
+      const r = await api.runStop()
+      setMsg(r.message)
+      setTimeout(() => { pollStatus(); pollLogs() }, 300)
+    } catch (e) { setMsg('ผิดพลาด: ' + e.message) }
+  }
+
   const running = status.running
   const rc = status.returncode
+  const cancelled = status.cancelled
 
   return (
     <div className="grid2">
       <div className="card">
         <h2>สั่งรัน</h2>
         <div className="run-btns">
-          {MODES.map(m => (
-            <button key={m.id} className={'runbtn ' + m.cls}
-              disabled={running} onClick={() => run(m.id)}>
-              <b>{m.label}</b><small>{m.desc}</small>
+          {running ? (
+            <button className="runbtn stop" onClick={stop}>
+              <b>⛔ หยุดรัน</b><small>ยกเลิกงานที่กำลังทำอยู่ทันที</small>
             </button>
-          ))}
+          ) : (
+            MODES.map(m => (
+              <button key={m.id} className={'runbtn ' + m.cls}
+                onClick={() => run(m.id)}>
+                <b>{m.label}</b><small>{m.desc}</small>
+              </button>
+            ))
+          )}
         </div>
         {msg && <div className="msg">{msg}</div>}
 
         <div className="status">
           <h3>สถานะ</h3>
-          <div className={'badge ' + (running ? 'run' : rc === 0 ? 'ok' : rc == null ? 'idle' : 'fail')}>
+          <div className={'badge ' + (running ? 'run' : cancelled ? 'fail' : rc === 0 ? 'ok' : rc == null ? 'idle' : 'fail')}>
             {running ? 'กำลังรัน: ' + (status.label || '') :
-              rc === 0 ? 'สำเร็จ' : rc == null ? 'ว่าง' : 'ล้มเหลว (rc=' + rc + ')'}
+              cancelled ? '⛔ ยกเลิกแล้ว' :
+                rc === 0 ? 'สำเร็จ' : rc == null ? 'ว่าง' : 'ล้มเหลว (rc=' + rc + ')'}
           </div>
           <table className="kv">
             <tbody>
@@ -129,8 +153,7 @@ export default function Dashboard() {
           <h3>กำหนดการอัตโนมัติถัดไป</h3>
           <table className="kv">
             <tbody>
-              <tr><td>ดึง DB</td><td>{sched.db_pull?.enabled ? fmt(sched.db_pull?.next_run) : 'ปิดอยู่'}</td></tr>
-              <tr><td>รันแผน</td><td>{sched.plan?.enabled ? fmt(sched.plan?.next_run) : 'ปิดอยู่'}</td></tr>
+              <tr><td>รันทั้ง Pipeline</td><td>{sched.full?.enabled ? fmt(sched.full?.next_run) : 'ปิดอยู่'}</td></tr>
             </tbody>
           </table>
         </div>

@@ -46,8 +46,7 @@ def master_files() -> dict:
 # ---------- settings.json (ตั้งเวลา schedule) ----------
 DEFAULT_SETTINGS = {
     "schedule": {
-        "db_pull": {"enabled": True, "hour": 6, "minute": 0},
-        "plan": {"enabled": True, "hour": 7, "minute": 0},
+        "full": {"enabled": True, "hour": 6, "minute": 0},
     }
 }
 

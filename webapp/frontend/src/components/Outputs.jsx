@@ -10,7 +10,7 @@ function fmtTime(ts) {
   return new Date(ts * 1000).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-function FileTable({ files }) {
+function FileTable({ files, onDelete }) {
   return (
     <table className="grid outputs">
       <thead>
@@ -22,7 +22,10 @@ function FileTable({ files }) {
             <td>{f.name}</td>
             <td>{fmtSize(f.size)}</td>
             <td>{fmtTime(f.mtime)}</td>
-            <td><a className="dl" href={`/api/outputs/${encodeURIComponent(f.name)}`}>ดาวน์โหลด</a></td>
+            <td className="rowact">
+              <a className="dl" href={`/api/outputs/${encodeURIComponent(f.name)}`}>ดาวน์โหลด</a>
+              <button className="del" onClick={() => onDelete(f.name)}>ลบ</button>
+            </td>
           </tr>
         ))}
       </tbody>
@@ -45,6 +48,16 @@ export default function Outputs() {
   }
   useEffect(() => { load() }, [])
 
+  async function del(name) {
+    if (!window.confirm(`ลบไฟล์ "${name}" ?\nการลบเป็นการถาวร เรียกคืนไม่ได้`)) return
+    setMsg('')
+    try {
+      await api.deleteOutput(name)
+      setMsg(`ลบ ${name} แล้ว`)
+      load()
+    } catch (e) { setMsg('ลบไม่ได้: ' + e.message) }
+  }
+
   return (
     <>
       <div className="card">
@@ -54,7 +67,7 @@ export default function Outputs() {
         </div>
         {msg && <div className="msg">{msg}</div>}
         {!files.length && <div className="hint">ยังไม่มีไฟล์ผลลัพธ์</div>}
-        {files.length > 0 && <FileTable files={files} />}
+        {files.length > 0 && <FileTable files={files} onDelete={del} />}
       </div>
 
       <div className="card">
@@ -62,7 +75,7 @@ export default function Outputs() {
           <h2>ไฟล์ Booking </h2>
         </div>
         {!booking.length && <div className="hint">ยังไม่มีไฟล์ booking</div>}
-        {booking.length > 0 && <FileTable files={booking} />}
+        {booking.length > 0 && <FileTable files={booking} onDelete={del} />}
       </div>
     </>
   )

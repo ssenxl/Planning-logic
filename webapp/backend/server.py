@@ -54,9 +54,11 @@ def _is_download_path(path: str) -> bool:
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path
-    # ป้องกันเฉพาะ /api/* (ยกเว้น path ที่เปิดไว้ + endpoint ดาวน์โหลด); preflight OPTIONS ปล่อยผ่าน
+    # endpoint ดาวน์โหลดเปิดเฉพาะ GET เท่านั้น — method อื่น (เช่น DELETE) ยังต้อง login
+    is_download = _is_download_path(path) and request.method == "GET"
+    # ป้องกันเฉพาะ /api/* (ยกเว้น path ที่เปิดไว้ + ดาวน์โหลด GET); preflight OPTIONS ปล่อยผ่าน
     if path.startswith("/api/") and path not in AUTH_OPEN_PATHS \
-            and not _is_download_path(path) \
+            and not is_download \
             and request.method != "OPTIONS":
         header = request.headers.get("authorization", "")
         token = header[7:] if header.lower().startswith("bearer ") else ""
@@ -85,6 +87,11 @@ class RunReq(BaseModel):
 @app.post("/api/run")
 def api_run(req: RunReq):
     return runner.start_run(req.mode, trigger="manual")
+
+
+@app.post("/api/run/stop")
+def api_run_stop():
+    return runner.stop_run()
 
 
 @app.get("/api/run/status")
@@ -176,6 +183,18 @@ def api_output_download(fname: str):
         raise HTTPException(status_code=404, detail="ไม่พบไฟล์")
     return FileResponse(str(f), filename=fname,
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.delete("/api/outputs/{fname}")
+def api_output_delete(fname: str):
+    f = config.OUTPUT_DIR / fname
+    if not f.exists() or f.parent != config.OUTPUT_DIR:
+        raise HTTPException(status_code=404, detail="ไม่พบไฟล์")
+    try:
+        f.unlink()
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"ลบไม่ได้: {e}")
+    return {"ok": True, "deleted": fname}
 
 
 # ---------------- Database (ดูไฟล์ข้อมูลในโปรเจกต์ read-only) ----------------

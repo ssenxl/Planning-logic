@@ -143,6 +143,12 @@ button { transition: all .16s ease; }
 .runbtn.primary small { color: #dfe0ff; }
 .runbtn.primary:hover:not(:disabled) { box-shadow: 0 10px 24px rgba(79, 70, 229, .42); transform: translateY(-1px); }
 .runbtn:disabled { opacity: .5; cursor: not-allowed; }
+.runbtn.stop {
+  background: linear-gradient(120deg, #dc2626 0%, #ef4444 100%); color: #fff; border-color: transparent;
+  box-shadow: 0 6px 18px rgba(220, 38, 38, .32);
+}
+.runbtn.stop small { color: #ffe0e0; }
+.runbtn.stop:hover:not(:disabled) { box-shadow: 0 10px 24px rgba(220, 38, 38, .42); transform: translateY(-1px); }
 
 /* status */
 .badge {
@@ -364,6 +370,13 @@ table.grid.outputs th { padding: 11px 14px; }
   border: 1px solid var(--line); padding: 5px 12px; border-radius: 8px; display: inline-block;
 }
 .dl:hover { background: var(--pri-soft); border-color: var(--pri); }
+.rowact { display: flex; gap: 8px; align-items: center; }
+.del {
+  color: #c0392b; font-weight: 700; font-size: 13px;
+  border: 1px solid var(--line); padding: 5px 12px; border-radius: 8px;
+  background: #fff; cursor: pointer;
+}
+.del:hover { background: #fdecea; border-color: #c0392b; }
 
 /* schedule */
 .schedcard { max-width: 780px; }

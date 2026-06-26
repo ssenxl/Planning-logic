@@ -37,6 +37,7 @@ export const api = {
   login: (username, password) => req('POST', '/api/login', { username, password }),
   // run
   run: (mode) => req('POST', '/api/run', { mode }),
+  runStop: () => req('POST', '/api/run/stop'),
   runStatus: () => req('GET', '/api/run/status'),
   runLogs: (offset) => req('GET', `/api/run/logs?offset=${offset}`),
   // masters
@@ -50,6 +51,7 @@ export const api = {
   // outputs
   outputs: () => req('GET', '/api/outputs'),
   outputsBooking: () => req('GET', '/api/outputs/booking'),
+  deleteOutput: (name) => req('DELETE', '/api/outputs/' + encodeURIComponent(name)),
   // database (ดูไฟล์ข้อมูลในโปรเจกต์ read-only)
   database: () => req('GET', '/api/database'),
   databaseSheet: (file, sheet) =>
