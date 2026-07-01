@@ -360,16 +360,23 @@ TOTAL_MC_MAP = {
 }
 
 # TOTAL_MC รวมตาม Type_1 + Guage (จาก MasterMC)
-TOTAL_MC_MAP_TYPE1 = {}
-for _, _row in _master_mc_df.iterrows():
-    _t1 = str(_row.get("MC_CAT", "")).strip()
-    _g = str(_row.get("Guage", "")).strip()
-    _total = _row.get("Total MC")
-    if _t1 and _g and pd.notna(_total) and str(_total).strip() not in ("", "-"):
-        try:
-            TOTAL_MC_MAP_TYPE1[(_t1, _g)] = TOTAL_MC_MAP_TYPE1.get((_t1, _g), 0) + int(_total)
-        except (ValueError, TypeError):
-            pass
+# แก้บั๊ก sum ซ้ำซ้อน กรณี MC_CAT/GUAGE เดียวกันมีหลายแถวในไฟล์ และบังคับแปลง Total MC เป็นตัวเลข
+_mc_cat_g_sum = (
+    _master_mc_df.dropna(subset=["MC_CAT", "Guage", "Total MC"])
+    .copy()
+)
+_mc_cat_g_sum["Total MC"] = pd.to_numeric(_mc_cat_g_sum["Total MC"], errors='coerce')
+_mc_cat_g_sum = (
+    _mc_cat_g_sum.dropna(subset=["Total MC"])
+    .groupby(["MC_CAT", "Guage"], as_index=False)["Total MC"]
+    .sum()
+)
+TOTAL_MC_MAP_TYPE1 = {
+    (str(row["MC_CAT"]).strip(), str(row["Guage"]).strip()): int(row["Total MC"])
+    for _, row in _mc_cat_g_sum.iterrows()
+}
+
+
 
 # =========================
 # SHARED POOL — รวมเครื่องตาม Type ใน MasterMC
@@ -1029,37 +1036,70 @@ def _ava_catkey(_s):
     # key match ระหว่าง df (SINGLE) กับ summary/MasterMC (SINGEL)
     return _s.str.replace("SINGEL", "SINGLE", regex=False)
 
-# summary (MC_CAT แบบ display) สำหรับ Total mc / MC_USE
-_sm = summary[summary["WEEK"].isin(ava_weeks)].copy()
-_sm["MC_CAT"] = _ava_cat_disp(_sm["MC_CAT"])
-# row index ร่วม = MC_CAT(display) + GUAGE
-_ava_idx = pd.MultiIndex.from_frame(
-    _sm[["MC_CAT", "GUAGE"]].drop_duplicates().sort_values(["MC_CAT", "GUAGE"])
+# AVA ใช้ Total mc ตรงจาก MasterMC โดยตรง
+# เพื่อไม่ให้โดนบวกซ้ำจาก SUMMARY ที่มีทั้ง normal pool / special pool / non-pool พร้อมกัน
+_ava_master = _master_mc_df[["MC_CAT", "Guage", "Total MC"]].copy()
+_ava_master["MC_CAT"] = _ava_cat_disp(_ava_master["MC_CAT"])
+_ava_master["GUAGE"] = _ava_master["Guage"].map(_norm_gauge_ava)
+_ava_master["Total mc"] = pd.to_numeric(_ava_master["Total MC"], errors="coerce").fillna(0)
+_ava_master_tot = (
+    _ava_master.groupby(["MC_CAT", "GUAGE"], as_index=False)["Total mc"]
+    .sum()
 )
+_ava_master_tot["_CATKEY"] = _ava_catkey(_ava_master_tot["MC_CAT"])
+_ava_master_tot["_GKEY"] = _ava_master_tot["GUAGE"].astype(str).str.strip()
 
-# KP_Cat = ผลรวม KP_WEIGHT ต่อ MC_CAT(display) + GUAGE ต่อ WEEK (จาก df / DETAIL)
+# MC_USE_Cat = ผลรวมจำนวนเครื่องที่ใช้จริง ต่อ MC_CAT(display) + GUAGE ต่อ WEEK (จาก DETAIL)
+_udf = df[["MC_CAT", "GUAGE", "WEEK", "MC_USE_CEIL"]].copy()
+_udf["MC_CAT"] = _ava_cat_disp(_udf["MC_CAT"])
+_udf["GUAGE"] = _udf["GUAGE"].map(_norm_gauge_ava)
+_use_all = (
+    _udf.groupby(["MC_CAT", "GUAGE", "WEEK"], as_index=False)["MC_USE_CEIL"]
+    .sum()
+    .rename(columns={"MC_USE_CEIL": "MC_USE_Cat"})
+)
+_use_all["_CATKEY"] = _ava_catkey(_use_all["MC_CAT"])
+_use_all["_GKEY"] = _use_all["GUAGE"].astype(str).str.strip()
+
+# KP_Cat = ผลรวม KP_WEIGHT ต่อ MC_CAT(display) + GUAGE ต่อ WEEK (จาก DETAIL)
 _kpdf = df[["MC_CAT", "GUAGE", "WEEK", "KP_WEIGHT"]].copy()
 _kpdf["MC_CAT"] = _ava_cat_disp(_kpdf["MC_CAT"])
+_kpdf["GUAGE"] = _kpdf["GUAGE"].map(_norm_gauge_ava)
 _kp_all = (
     _kpdf.groupby(["MC_CAT", "GUAGE", "WEEK"], as_index=False)["KP_WEIGHT"].sum()
     .rename(columns={"KP_WEIGHT": "KP_Cat"})
 )
 _kp_all["_CATKEY"] = _ava_catkey(_kp_all["MC_CAT"])
 _kp_all["_GKEY"] = _kp_all["GUAGE"].astype(str).str.strip()
+
+# row index ร่วม = union ของ MasterMC และข้อมูลจริงใน booking
+_ava_idx_df = pd.concat(
+    [
+        _ava_master_tot[["MC_CAT", "GUAGE"]],
+        _use_all[["MC_CAT", "GUAGE"]],
+        _kp_all[["MC_CAT", "GUAGE"]],
+    ],
+    ignore_index=True,
+).drop_duplicates().sort_values(["MC_CAT", "GUAGE"])
+_ava_idx = pd.MultiIndex.from_frame(_ava_idx_df)
+
+_ava_base = _ava_idx_df.copy()
+_ava_base["_CATKEY"] = _ava_catkey(_ava_base["MC_CAT"])
+_ava_base["_GKEY"] = _ava_base["GUAGE"].astype(str).str.strip()
+_ava_base = _ava_base.merge(
+    _ava_master_tot[["_CATKEY", "_GKEY", "Total mc"]],
+    on=["_CATKEY", "_GKEY"],
+    how="left"
+)
+_ava_base["Total mc"] = _ava_base["Total mc"].fillna(0)
+
 _ava_blocks = []
 for _wk in ava_weeks:
-    _src = _sm[_sm["WEEK"] == _wk]
-    # per MC_CAT+GUAGE ของสัปดาห์นั้น (SYN รวมเข้า DOUBLE-30 แล้ว)
-    _g = _src.groupby(["MC_CAT", "GUAGE"], as_index=False).agg(
-        **{"Total mc": ("TOTAL_MC", "sum"), "_MC_USE": ("MC_USE_CEIL", "sum")}
-    )
-    _g["_CATKEY"] = _ava_catkey(_g["MC_CAT"])
-    _g["_GKEY"] = _g["GUAGE"].astype(str).str.strip()
-    # MC_USE_Cat = จำนวนเครื่องที่ใช้ ราย CAT+GUAGE (= MC_USE ของแถวนั้น)
-    _g = _g.rename(columns={"_MC_USE": "MC_USE_Cat"})
-    # KP_Cat = Σ KP_WEIGHT ราย MC_CAT + GUAGE
+    _usew = _use_all[_use_all["WEEK"] == _wk][["_CATKEY", "_GKEY", "MC_USE_Cat"]]
     _kpw = _kp_all[_kp_all["WEEK"] == _wk][["_CATKEY", "_GKEY", "KP_Cat"]]
-    _m = _g.merge(_kpw, on=["_CATKEY", "_GKEY"], how="left")
+    _m = _ava_base.merge(_usew, on=["_CATKEY", "_GKEY"], how="left")
+    _m = _m.merge(_kpw, on=["_CATKEY", "_GKEY"], how="left")
+    _m["MC_USE_Cat"] = _m["MC_USE_Cat"].fillna(0)
     _m["KP_Cat"] = _m["KP_Cat"].fillna(0)
     # Dif/%ava คิดราย gauge: Total mc − MC_USE_Cat
     _m["Dif"] = _m["Total mc"] - _m["MC_USE_Cat"]
@@ -1070,6 +1110,7 @@ for _wk in ava_weeks:
     )
     _blk.columns = pd.MultiIndex.from_product([[f"WEEK {_wk}"], _blk.columns])
     _ava_blocks.append(_blk)
+
 ava_data = (
     pd.concat(_ava_blocks, axis=1)
     if _ava_blocks

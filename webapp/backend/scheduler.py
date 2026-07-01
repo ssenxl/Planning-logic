@@ -15,8 +15,8 @@ _scheduler: BackgroundScheduler | None = None
 JOB_MODE = {"full": "full"}
 
 # ---------- cleanup: ลบไฟล์เก่าเกินกำหนด ----------
-LOG_RETENTION_DAYS = 30
-OUTPUT_RETENTION_DAYS = 30
+LOG_RETENTION_DAYS = 14
+OUTPUT_RETENTION_DAYS = 14
 # ลบเฉพาะไฟล์ output ที่ "มีวันที่" (กองสะสม) — ไม่แตะไฟล์ทำงานที่ถูกเขียนทับทุกรอบ
 _OUTPUT_PATTERNS = ("production_plan_*.xlsx", "booking_final_ready_*.xlsx")
 
