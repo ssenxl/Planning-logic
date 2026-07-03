@@ -488,7 +488,10 @@ for (_tdr_fac, _tdr_type), _tdr_val in _TYPE_DESC_RULES.items():
 for (_ms_fac, _ms_cat, _ms_mc, _ms_g), _ms_vals in _MC_SPECIAL_LOOKUP.items():
     _ms_fac_pfx = f"{_ms_fac}|" if _ms_fac else ""
     _ms_normal_pk = f"{_ms_fac_pfx}{_ms_cat}:{_ms_g}"
-    _ms_sub_base = f"{_ms_fac_pfx}{_ms_mc}:{_ms_g}" if _ms_mc else f"{_ms_fac_pfx}{_ms_cat}:{_ms_g}"
+    # sub-pool ใช้ชื่อระดับ CAT เสมอ (พูลเดียวรวม ไม่แตกตาม MC ที่คั่น comma)
+    # เดิมใช้ชื่อตาม MC เช่น "PHET|SKPTA,SKPLE:36" → ตอน match ราย MC (SKPLE/SKPTA) ไม่เจอ
+    # ทำให้ FD4 (POLY) ตกไปพูลปกติ ไม่ได้ลงเครื่อง POLY ที่กันไว้
+    _ms_sub_base = _ms_normal_pk
     if _ms_vals["COTTON"] > 0:
         _TOTAL_MC_BY_TYPE[f"{_ms_sub_base}:COTTON"] = _ms_vals["COTTON"]
         if _ms_normal_pk in _TOTAL_MC_BY_TYPE:
@@ -773,17 +776,24 @@ def _get_pool_type_for_row(r):
     fac_pfx = f"{fac_u}|" if fac_u else ""
 
     # 1. MC Special: POLY/COTTON split ตาม ITEM_CODE prefix (priority สูงสุด)
-    ms_key_specific = (fac_u, t1, mc_u, g_norm)
-    ms_key_general  = (fac_u, t1, "", g_norm)
-    if ms_key_specific in _MC_SPECIAL_LOOKUP:
-        ms_entry = _MC_SPECIAL_LOOKUP[ms_key_specific]
-        sub_base = f"{fac_pfx}{mc_u}:{g_norm}"
-    elif ms_key_general in _MC_SPECIAL_LOOKUP:
-        ms_entry = _MC_SPECIAL_LOOKUP[ms_key_general]
-        sub_base = f"{fac_pfx}{t1}:{g_norm}"
-    else:
-        ms_entry = None
-        sub_base = ""
+    # จับคู่ MC แบบ membership: ช่อง MC ใน MC Special อาจมีหลายค่าคั่น comma (เช่น "SKPTA,SKPLE")
+    # ถ้าเว้นว่าง = ใช้กับทุก MC ใน (Factory, MC_CAT, Gauge) นั้น
+    # sub-pool เป็นพูลเดียวระดับ CAT ("PHET|SINGLE-32:36") ตรงกับตอนสร้าง sub-pool ด้านบน
+    ms_entry = None
+    ms_entry_general = None
+    for (_k_fac, _k_cat, _k_mc, _k_g), _k_val in _MC_SPECIAL_LOOKUP.items():
+        if _k_fac != fac_u or _k_cat != t1 or _k_g != g_norm:
+            continue
+        _members = [m.strip() for m in str(_k_mc).split(",") if m.strip()]
+        if _members:
+            if mc_u in _members:
+                ms_entry = _k_val
+                break
+        else:
+            ms_entry_general = _k_val
+    if ms_entry is None:
+        ms_entry = ms_entry_general
+    sub_base = f"{fac_pfx}{t1}:{g_norm}"
     if ms_entry:
         item_type = _get_item_cotton_poly(r.get("ITEM_CODE", ""))
         if item_type == "COTTON" and ms_entry["COTTON"] > 0:
@@ -1001,6 +1011,39 @@ summary = (
     else pd.DataFrame(columns=["FACTORY", "MC_CAT", "GUAGE", "TOTAL_MC", "WEEK", "MC_USE_CEIL", "TOTAL_MC_REMAIN"])
 )
 
+# 🔧 กันนับเครื่องซ้ำ: แถว non-pool (FACTORY="") ดึง TOTAL_MC = grand-total ต่อ MC_CAT+GUAGE
+#    ซึ่งเป็นเครื่องชุดเดียวกับที่นับใน pool row ไปแล้ว → ถ้ามี pool row ของ (MC_CAT,GUAGE,WEEK)
+#    เดียวกันอยู่แล้ว ให้ตัดแถว non-pool ทิ้ง (ไม่งั้น consumer ที่บวกรวม เช่น get_actual_mc_remain
+#    และหน้าเว็บ จะได้เครื่องว่างเกินจริง)
+if not summary.empty and "FACTORY" in summary.columns:
+    def _cg_key(r):  # normalize เพื่อกัน format เกจ int/str/ช่องว่างไม่ตรงกัน
+        return (str(r["MC_CAT"]).strip().upper(), _norm_gauge_ava(r["GUAGE"]), str(r["WEEK"]).strip())
+    _facn = summary["FACTORY"].astype(str).str.strip()
+    _pool_keys = set(summary.loc[_facn != ""].apply(_cg_key, axis=1)) if (_facn != "").any() else set()
+    _dup_np = summary.apply(
+        lambda r: str(r["FACTORY"]).strip() == "" and _cg_key(r) in _pool_keys,
+        axis=1,
+    )
+    if _dup_np.any():
+        print(f"🔧 ตัดแถว non-pool ซ้ำซ้อน {int(_dup_np.sum())} แถว (มี pool row แล้ว)")
+        summary = summary[~_dup_np].reset_index(drop=True)
+
+# เครื่องที่กันไว้ (POLY/COTTON) ต่อ MC_CAT+GUAGE — ให้หน้าเว็บโชว์แยกว่าเครื่องไม่ได้หาย
+# (เครื่องกลุ่มนี้อยู่ใน sub-pool ใช้แทนงานปกติไม่ได้ จึงไม่รวมใน TOTAL_MC ปกติ)
+_rsv_acc: dict = {}
+for (_rf, _rcat, _rmc, _rg), _rv in _MC_SPECIAL_LOOKUP.items():
+    _slot = _rsv_acc.setdefault((_rf, _rcat, _rg), {"POLY": 0, "COTTON": 0})
+    _slot["POLY"] += int(_rv.get("POLY", 0) or 0)
+    _slot["COTTON"] += int(_rv.get("COTTON", 0) or 0)
+reserved_summary = (
+    pd.DataFrame(
+        [{"FACTORY": _k[0], "MC_CAT": _k[1], "GUAGE": _k[2], "POLY": _v["POLY"], "COTTON": _v["COTTON"]}
+         for _k, _v in _rsv_acc.items()]
+    )
+    if _rsv_acc
+    else pd.DataFrame(columns=["FACTORY", "MC_CAT", "GUAGE", "POLY", "COTTON"])
+)
+
 # =========================
 # AVAILABILITY SUMMARY: WEEK 25-35 (แยกรายสัปดาห์ เรียงไปทางขวา)
 # =========================
@@ -1174,6 +1217,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
     df.to_excel(writer, sheet_name="DETAIL", index=False)
     summary.to_excel(writer, sheet_name="SUMMARY_MC_REMAIN", index=False)
+    reserved_summary.to_excel(writer, sheet_name="MC_RESERVED", index=False)
     ava_wide.to_excel(writer, sheet_name=AVA_SHEET)
     # freeze คอลัมน์ A-B (MC_CAT, GUAGE) + แถวหัวตาราง ให้ค้างเวลาเลื่อนดู week ทางขวา
     _ws = writer.sheets[AVA_SHEET]
