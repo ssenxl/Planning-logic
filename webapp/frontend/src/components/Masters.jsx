@@ -1,67 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api.js'
+import { ColumnFilter, columnFilterData, filterRows } from './ColumnFilter.jsx'
 
 // ชีทที่ pipeline ใช้จริง — แสดง hint ให้ user
 const USED_SHEETS = {
   Calendar: ['Sheet1'],
-}
-
-const norm = (v) => (v === '' || v == null) ? '' : String(v)
-const label = (v) => v === '' ? '(ว่าง)' : v
-
-// ---- popup ติ๊กเลือกค่าแบบ Excel ----
-function ColumnFilter({ values, selected, pos, onApply, onClose }) {
-  const [draft, setDraft] = useState(() => selected ? new Set(selected) : new Set(values))
-  const [q, setQ] = useState('')
-  const shown = useMemo(
-    () => values.filter(v => label(v).toLowerCase().includes(q.trim().toLowerCase())),
-    [values, q]
-  )
-  const allShownChecked = shown.length > 0 && shown.every(v => draft.has(v))
-
-  function toggle(v) {
-    setDraft(d => { const n = new Set(d); n.has(v) ? n.delete(v) : n.add(v); return n })
-  }
-  function toggleAll() {
-    setDraft(d => {
-      const n = new Set(d)
-      if (allShownChecked) shown.forEach(v => n.delete(v))
-      else shown.forEach(v => n.add(v))
-      return n
-    })
-  }
-  function apply() {
-    // เลือกครบทุกค่า = ไม่กรอง
-    onApply(draft.size === values.length ? null : draft)
-  }
-
-  return (
-    <>
-      <div className="filterbackdrop" onClick={onClose} />
-      <div className="filterpop" style={{ top: pos.top, left: pos.left }}>
-        <input className="popsearch" autoFocus placeholder="ค้นหาค่า..."
-          value={q} onChange={e => setQ(e.target.value)} />
-        <label className="popitem all">
-          <input type="checkbox" checked={allShownChecked} onChange={toggleAll} />
-          <b>(เลือกทั้งหมด)</b>
-        </label>
-        <div className="poplist">
-          {shown.map((v, i) => (
-            <label key={i} className="popitem">
-              <input type="checkbox" checked={draft.has(v)} onChange={() => toggle(v)} />
-              <span>{label(v)}</span>
-            </label>
-          ))}
-          {!shown.length && <div className="hint small">ไม่พบค่า</div>}
-        </div>
-        <div className="popbtns">
-          <button onClick={() => onApply(null)}>ล้าง</button>
-          <button onClick={onClose}>ยกเลิก</button>
-          <button className="primary" onClick={apply}>ตกลง</button>
-        </div>
-      </div>
-    </>
-  )
 }
 
 export default function Masters() {
@@ -135,45 +78,21 @@ export default function Masters() {
     finally { setSaving(false) }
   }
 
-  // ค่าที่เลือกได้ของคอลัมน์ที่เปิด popup — คิดจากแถวที่ผ่าน "ตัวกรองอื่น" + ค้นหา (cascading แบบ Excel)
-  const openColValues = useMemo(() => {
-    if (!grid || !openCol) return []
-    const ci = openCol.ci
-    const s = search.trim().toLowerCase()
-    const others = Object.keys(filters).map(Number).filter(c => c !== ci)
-    const set = new Set()
-    for (const row of grid.rows) {
-      if (s && !row.some(c => String(c ?? '').toLowerCase().includes(s))) continue
-      let ok = true
-      for (const c of others) { if (!filters[c].has(norm(row[c]))) { ok = false; break } }
-      if (!ok) continue
-      set.add(norm(row[ci]))
-    }
-    return Array.from(set).sort((a, b) => label(a).localeCompare(label(b), 'th', { numeric: true }))
+  // ค่าที่เลือกได้ของคอลัมน์ที่เปิด popup (cascading แบบ Excel) + โดเมนเต็มของคอลัมน์
+  const colData = useMemo(() => {
+    if (!grid || !openCol) return null
+    return columnFilterData(grid, filters, search, openCol.ci)
   }, [grid, filters, search, openCol])
 
   // แถวที่ผ่าน filter — เก็บ index จริง
-  const visible = useMemo(() => {
-    if (!grid) return []
-    const s = search.trim().toLowerCase()
-    const fcols = Object.keys(filters).map(Number)
-    return grid.rows
-      .map((row, idx) => ({ row, idx }))
-      .filter(({ row }) => {
-        if (s && !row.some(c => String(c ?? '').toLowerCase().includes(s))) return false
-        for (const ci of fcols) {
-          if (!filters[ci].has(norm(row[ci]))) return false
-        }
-        return true
-      })
-  }, [grid, search, filters])
+  const visible = useMemo(() => grid ? filterRows(grid, search, filters) : [], [grid, search, filters])
 
   const hasFilter = search.trim() || Object.keys(filters).length
 
   function openColMenu(e, ci) {
     e.stopPropagation()
     const r = e.currentTarget.getBoundingClientRect()
-    setOpenCol({ ci, top: r.bottom + 2, left: Math.max(8, r.right - 240) })
+    setOpenCol({ ci, anchor: { top: r.top, bottom: r.bottom, left: r.left, right: r.right } })
   }
   function applyFilter(ci, set) {
     setFilters(f => {
@@ -289,12 +208,13 @@ export default function Masters() {
               </div>
             )}
 
-            {openCol && (
+            {openCol && colData && (
               <ColumnFilter
                 key={openCol.ci}
-                values={openColValues}
+                available={colData.available}
+                domain={colData.domain}
                 selected={filters[openCol.ci]}
-                pos={openCol}
+                anchor={openCol.anchor}
                 onApply={set => applyFilter(openCol.ci, set)}
                 onClose={() => setOpenCol(null)}
               />

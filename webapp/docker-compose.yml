@@ -19,6 +19,10 @@ services:
       - /home/scm/knitplan/output:/app/data_plan            # ผลลัพธ์ production_plan
       - /home/scm/knitplan/logs:/app/webapp/logs            # log การรัน
       - /home/scm/knitplan/config:/data/knitplan/config     # settings.json (เวลา schedule)
+      - /home/scm/knitplan/stock:/app/Stock                 # ไฟล์ Stock ที่ดึงมา
+      - /home/scm/knitplan/booking:/app/Booking             # ไฟล์ Booking ที่ดึงมา
+      - /home/scm/knitplan/order:/app/Order                 # ไฟล์ Order (SC) ที่ดึงมา
+      - /home/scm/knitplan/datamining:/app/Datamining       # ไฟล์ Datamining ที่ดึงมา
     ports:
       - "8080:8080"
     restart: unless-stopped

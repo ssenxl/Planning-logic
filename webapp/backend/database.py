@@ -15,11 +15,13 @@ REPO_DIR = config.REPO_DIR
 STOCK_DIR = REPO_DIR / "Stock"
 BOOKING_DIR = REPO_DIR / "Booking"
 ORDER_DIR = REPO_DIR / "Order"
+DATAMINING_DIR = REPO_DIR / "Datamining"
+
 
 # จำนวนแถวสูงสุดที่ส่งไปแสดงบน grid (ดาวน์โหลดได้เต็มไฟล์เสมอ)
 ROW_CAP = 5000
 
-# นิยามกลุ่มไฟล์ที่จะแสดง — เฉพาะข้อมูลดิบที่ดึงจาก Oracle DB (Stock / Booking / SC)
+# นิยามกลุ่มไฟล์ที่จะแสดง — ข้อมูลที่ pipeline ใช้งานจริง (Stock / Booking / SC / Datamining)
 #   match: ฟังก์ชันคัดชื่อไฟล์ (รับ filename → bool)
 GROUPS = [
     {"id": "stock", "label": "Stock", "dir": STOCK_DIR,
@@ -28,7 +30,10 @@ GROUPS = [
      "match": lambda n: n.lower().endswith((".xlsx", ".xls"))},
     {"id": "sc", "label": "SC", "dir": ORDER_DIR,
      "match": lambda n: n.lower().endswith((".xlsx", ".xls"))},
+    {"id": "datamining", "label": "Datamining", "dir": DATAMINING_DIR,
+     "match": lambda n: n.lower().endswith((".xlsx", ".xls"))},
 ]
+
 
 
 def _groups_map() -> dict:

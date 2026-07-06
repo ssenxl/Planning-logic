@@ -26,7 +26,7 @@ async function req(method, url, body) {
   }
   if (!r.ok) {
     let msg = `HTTP ${r.status}`
-    try { const j = await r.json(); msg = j.detail || msg } catch {}
+    try { const j = await r.json(); msg = j.detail || msg } catch { }
     throw new Error(msg)
   }
   return r.json()
@@ -58,4 +58,47 @@ export const api = {
     req('GET', `/api/database/sheet?file=${encodeURIComponent(file)}` +
       (sheet ? `&sheet=${encodeURIComponent(sheet)}` : '')),
   databaseDownloadUrl: (file) => `/api/database/download?file=${encodeURIComponent(file)}`,
+  // map item (ผลลัพธ์การเชื่อม Datamining ↔ Booking)
+  mapItemFiles: () => req('GET', '/api/map-item'),
+  mapItemSheet: (file, sheet) =>
+    req('GET', `/api/map-item/sheet?file=${encodeURIComponent(file)}` +
+      (sheet ? `&sheet=${encodeURIComponent(sheet)}` : '')),
+  mapItemDownloadUrl: (file) => `/api/map-item/download?file=${encodeURIComponent(file)}`,
+  // plan (แผนผลิตล่าสุด — แก้ไข + export กลับ Excel)
+  planLatest: () => req('GET', '/api/plan'),
+  planSheet: (sheet) => req('GET', '/api/plan/sheet' + (sheet ? `?sheet=${encodeURIComponent(sheet)}` : '')),
+  planSave: (sheet, columns, rows) => req('PUT', '/api/plan/sheet', { sheet, columns, rows }),
+  planLoad: () => req('GET', '/api/plan/load'),
+  planAva: () => req('GET', '/api/plan/ava'),
+  planDownloadUrl: () => '/api/plan/download',
+  // order color (Datamining → Booking ระดับ ITEM Color — แก้ไข + export)
+  orderColorLatest: () => req('GET', '/api/order-color'),
+  orderColorSheet: (sheet) => req('GET', '/api/order-color/sheet' + (sheet ? `?sheet=${encodeURIComponent(sheet)}` : '')),
+  orderColorSave: (sheet, columns, rows) => req('PUT', '/api/order-color/sheet', { sheet, columns, rows }),
+  orderColorDownloadUrl: () => '/api/order-color/download',
+  orderColorAdvise: () => req('POST', '/api/order-color/advise'),
+  orderColorCatHistory: () => req('GET', '/api/order-color/cat-history'),
+  orderColorPlan: () => req('GET', '/api/order-color/plan'),
+  orderColorBookingGantt: () => req('GET', '/api/order-color/booking-gantt'),
+  orderColorBookingAva: () => req('GET', '/api/order-color/booking-ava'),
+  orderColorBookingLoad: () => req('GET', '/api/order-color/booking-load'),
+  orderColorAdviseMoves: (payload) => req('POST', '/api/order-color/advise-moves', payload),
+  // export what-if plan → ดาวน์โหลด blob เป็น Excel
+  orderColorPlanExport: async (columns, rows) => {
+    const token = auth.get()
+    const r = await fetch('/api/order-color/plan/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ columns, rows }),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    const blob = await r.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = 'order_color_plan.xlsx'
+    document.body.appendChild(a); a.click(); a.remove()
+    URL.revokeObjectURL(url)
+  },
+  // จ้างทอ (AI) — แนะนำ item ที่คุ้มค่าจะ outsource
+  outsourceAdvise: () => req('POST', '/api/outsource/advise'),
 }

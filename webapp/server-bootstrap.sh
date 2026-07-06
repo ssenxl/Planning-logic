@@ -8,7 +8,7 @@ SRC=$ROOT/src
 TGZ=/home/scm/knitplan_src.tgz
 
 echo "==> เตรียมโฟลเดอร์ที่ $ROOT"
-mkdir -p "$ROOT"/{src,masters,output,logs,config,env}
+mkdir -p "$ROOT"/{src,masters,output,logs,config,env,stock,booking,order,datamining}
 
 echo "==> แตกซอร์สลง $SRC"
 # คืนสิทธิ์เขียน (ของเดิมบางโฟลเดอร์เป็น read-only) แล้วล้างทิ้งทั้งหมดก่อนแตกใหม่
@@ -20,20 +20,33 @@ mkdir -p "$SRC"
 tar --delay-directory-restore -xzf "$TGZ" -C "$SRC"
 chmod -R u+w "$SRC"
 
-# ---- .env (Oracle creds) : ดึงจาก webchat .env ถ้ายังไม่มี ----
+# ---- .env (Oracle creds) : knitplan ใช้บัญชี hctr เฉพาะของตัวเอง ----
+# หมายเหตุ: ห้ามดึงจาก webchat .env — webchat ต่อ Oracle คนละบัญชี/คนละ DB
+#          เอามาใช้กับ NYTG จะโดน ORA-01017 (view booking/stock ไม่ได้)
+#          รหัสนี้ตรงกับ default ใน View_*.py ที่พิสูจน์แล้วว่า view ได้บน local
 ENV_FILE=$ROOT/env/.env
 if [ ! -f "$ENV_FILE" ]; then
-  echo "==> สร้าง $ENV_FILE จาก Oracle creds ของ webchat"
-  OU=$(grep -E '^ORACLE_USER=' /opt/webchat/env/.env | head -1 | cut -d= -f2- || true)
-  OP=$(grep -E '^ORACLE_PASSWORD=' /opt/webchat/env/.env | head -1 | cut -d= -f2- || true)
+  echo "==> สร้าง $ENV_FILE (Oracle creds = hctr)"
   {
     echo "# Knit Plan env (auto-generated)"
-    echo "SF5_USER=${OU:-hctr}"
-    echo "SF5_PASSWORD=${OP:-HCTR#23}"
+    echo "SF5_USER=hctr"
+    echo "SF5_PASSWORD=HCTR#23"
   } > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
 else
   echo "==> ใช้ $ENV_FILE เดิม (ไม่ทับ)"
+fi
+
+# ---- merge OPENAI_* จาก webapp/.env ที่ ship มากับ tarball (ฟีเจอร์จ้างทอ AI) ----
+# webapp/.env เป็น gitignore แต่ deploy.ps1 pack ขึ้น server ด้วย → ใช้เป็นแหล่ง key
+# docker-compose อ่าน env จาก $ENV_FILE ไม่ใช่ src/webapp/.env จึงต้อง merge เข้ามา
+SRC_ENV=$SRC/webapp/.env
+if [ -f "$SRC_ENV" ] && grep -qE '^OPENAI_(API_KEY|MODEL|BASE_URL)=' "$SRC_ENV"; then
+  grep -vE '^OPENAI_(API_KEY|MODEL|BASE_URL)=' "$ENV_FILE" > "$ENV_FILE.tmp" || true
+  grep -E  '^OPENAI_(API_KEY|MODEL|BASE_URL)=' "$SRC_ENV" >> "$ENV_FILE.tmp"
+  mv "$ENV_FILE.tmp" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  echo "==> merge OPENAI_* จาก $SRC_ENV เข้า $ENV_FILE แล้ว"
 fi
 
 # ---- build + up (project แยก: knitplan) ----

@@ -22,14 +22,34 @@ _RE_DONE = re.compile(r"✅\s+(\S+)\s+เสร็จสิ้น")
 # โหมดรัน → argument ของ run_all.py
 MODES = {
     "full": [],
-    "db":   ["--from", "Calendar", "--skip", "AVA_MC", "Order", "Planning"],
+    "db":   ["--skip", "Calendar", "Stock", "AVA_MC", "Order", "Planning"],
     "plan": ["--from", "AVA_MC"],
+    "map-item": [],
+    "stock": [],
+    "booking": [],
+    "sc": [],
+    "datamining": [],
 }
 MODE_LABELS = {
     "full": "รันทั้ง Pipeline",
     "db":   "ดึงข้อมูลจาก DB",
     "plan": "รันแผนการผลิต",
+    "map-item": "รัน Map Item",
+    "stock": "ดึง Stock",
+    "booking": "ดึง Booking",
+    "sc": "ดึง SC",
+    "datamining": "ดึง Datamining",
 }
+
+# โหมดที่รัน script เดี่ยวตรงๆ (ไม่ผ่าน run_all.py)
+SINGLE_SCRIPTS = {
+    "map-item": "MapItem.py",
+    "stock": "View_Stock.py",
+    "booking": "View_Booking.py",
+    "sc": "View_SC.py",
+    "datamining": "View_Datamining.py",
+}
+
 
 _lock = threading.Lock()
 _state = {
@@ -135,9 +155,10 @@ def _run(mode: str, trigger: str):
 
     _append(f"=== เริ่ม [{MODE_LABELS.get(mode, mode)}] ({trigger}) {started.strftime('%Y-%m-%d %H:%M:%S')} ===")
 
-    env = None
+        
     import os
     env = dict(os.environ)
+
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
 
@@ -152,8 +173,12 @@ def _run(mode: str, trigger: str):
             else:
                 # POSIX (Docker/Linux): session ใหม่ → kill ทั้ง group ด้วย os.killpg ได้
                 popen_kw["start_new_session"] = True
+
+            cmd = [sys.executable, str(REPO_DIR / SINGLE_SCRIPTS[mode])] \
+                if mode in SINGLE_SCRIPTS \
+                else [sys.executable, str(REPO_DIR / "run_all.py"), *args]
             proc = subprocess.Popen(
-                [sys.executable, str(REPO_DIR / "run_all.py"), *args],
+                cmd,
                 cwd=str(REPO_DIR),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -164,13 +189,17 @@ def _run(mode: str, trigger: str):
                 env=env,
                 **popen_kw,
             )
+
             with _proc_lock:
                 _proc = proc
-            for line in proc.stdout:
-                _append(line)
-                _parse_progress(line)
-                lf.write(line)
-                lf.flush()
+
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    _append(line)
+                    _parse_progress(line)
+                    lf.write(line)
+                    lf.flush()
+
             proc.wait()
             returncode = proc.returncode
     except Exception as e:
@@ -179,6 +208,7 @@ def _run(mode: str, trigger: str):
     finally:
         with _proc_lock:
             _proc = None
+
 
     finished = datetime.now()
     elapsed = (finished - started).total_seconds()

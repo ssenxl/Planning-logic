@@ -6,3 +6,6 @@ logs/
 # auth: ห้าม commit รหัสผ่าน user และ secret key
 backend/users.json
 backend/auth_secret.txt
+
+# secret: Azure OpenAI key ฯลฯ (เก็บนอก git เสมอ)
+.env

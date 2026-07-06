@@ -20,6 +20,11 @@ import masters
 import database
 import scheduler
 import auth
+import map_item_view
+import plan_view
+import order_color_view
+import order_color_advisor
+import outsource_advisor
 
 FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 
@@ -45,6 +50,12 @@ def _is_download_path(path: str) -> bool:
     """endpoint ดาวน์โหลดไฟล์ — เปิดให้โหลดได้โดยไม่ต้องมี token
     (ใช้ลิงก์ <a href> โหลดตรงได้ทุกเมื่อ); ไม่รวม /api/outputs/booking ที่เป็น list"""
     if path == "/api/database/download":
+        return True
+    if path == "/api/map-item/download":
+        return True
+    if path == "/api/plan/download":
+        return True
+    if path == "/api/order-color/download":
         return True
     if path.startswith("/api/outputs/") and path != "/api/outputs/booking":
         return True
@@ -223,6 +234,241 @@ def api_database_download(file: str):
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+# ---------------- Map Item (ผลลัพธ์ Datamining ↔ Booking) ----------------
+@app.get("/api/map-item")
+def api_map_item():
+    return map_item_view.list_files()
+
+
+@app.get("/api/map-item/sheet")
+def api_map_item_sheet(file: str, sheet: str = None):
+    try:
+        return map_item_view.read_grid(file, sheet)
+    except (KeyError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/map-item/download")
+def api_map_item_download(file: str):
+    try:
+        p = map_item_view._resolve(file)
+    except (KeyError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return FileResponse(str(p), filename=p.name,
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ---------------- Plan (แผนผลิตล่าสุด — แก้ไข + export) ----------------
+@app.get("/api/plan")
+def api_plan():
+    return plan_view.latest_meta()
+
+
+@app.get("/api/plan/sheet")
+def api_plan_sheet(sheet: str = None):
+    try:
+        return plan_view.read_grid(sheet)
+    except (KeyError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class PlanSaveReq(BaseModel):
+    sheet: str
+    columns: list
+    rows: list
+
+
+@app.put("/api/plan/sheet")
+def api_plan_save(req: PlanSaveReq):
+    try:
+        return plan_view.write_grid(req.sheet, req.columns, req.rows)
+    except (KeyError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/plan/load")
+def api_plan_load():
+    return plan_view.load_by_week()
+
+
+@app.get("/api/plan/ava")
+def api_plan_ava():
+    return plan_view.ava_by_week()
+
+
+@app.get("/api/plan/download")
+def api_plan_download():
+    p = plan_view.latest_path()
+    if p is None:
+        raise HTTPException(status_code=404, detail="ยังไม่มีไฟล์แผนผลิต")
+    return FileResponse(str(p), filename=p.name,
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ---------------- Order Color (Datamining → Booking — แก้ไข + export) ----------------
+@app.get("/api/order-color")
+def api_order_color():
+    return order_color_view.latest_meta()
+
+
+@app.get("/api/order-color/sheet")
+def api_order_color_sheet(sheet: str = None):
+    try:
+        return order_color_view.read_grid(sheet)
+    except (KeyError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class OrderColorSaveReq(BaseModel):
+    sheet: str
+    columns: list
+    rows: list
+
+
+@app.put("/api/order-color/sheet")
+def api_order_color_save(req: OrderColorSaveReq):
+    try:
+        return order_color_view.write_grid(req.sheet, req.columns, req.rows)
+    except (KeyError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/order-color/download")
+def api_order_color_download():
+    p = order_color_view.latest_path()
+    if p is None:
+        raise HTTPException(status_code=404, detail="ยังไม่มีไฟล์ Order Color")
+    return FileResponse(str(p), filename=p.name,
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.post("/api/order-color/advise")
+def api_order_color_advise():
+    try:
+        return order_color_advisor.analyze()
+    except (FileNotFoundError, KeyError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/order-color/plan")
+def api_order_color_plan():
+    """grid แผน what-if (แผนจริง + แทรก item สี) สำหรับเรนเดอร์ Gantt"""
+    try:
+        return order_color_advisor.build_plan()
+    except (FileNotFoundError, KeyError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/order-color/cat-history")
+def api_order_color_cat_history():
+    """default view — booking รายสัปดาห์จัดกลุ่มตาม CAT (เฉพาะ CAT ที่มี item สี)"""
+    try:
+        return order_color_advisor.cat_history()
+    except (FileNotFoundError, KeyError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/order-color/booking-gantt")
+def api_order_color_booking_gantt():
+    """Gantt จาก booking DETAIL (ทุก item ต่อสัปดาห์) สำหรับ PlanGantt"""
+    try:
+        return order_color_advisor.build_booking_gantt()
+    except (FileNotFoundError, KeyError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/order-color/booking-load")
+def api_order_color_booking_load():
+    """โควตา setup job ต่อสัปดาห์ (สำหรับ Gantt booking — job คิด live จาก NEW_MC)"""
+    try:
+        return order_color_advisor.booking_load()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/order-color/booking-ava")
+def api_order_color_booking_ava():
+    """เครื่องว่างต่อสัปดาห์แบบสอดคล้อง booking (planBase = used)"""
+    try:
+        return order_color_advisor.booking_ava()
+    except (FileNotFoundError, KeyError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ColorMovesReq(BaseModel):
+    cat: str = ""
+    gauge: str = ""
+    items: list = []
+    setup_load: dict = {}
+
+
+@app.post("/api/order-color/advise-moves")
+def api_order_color_advise_moves(req: ColorMovesReq):
+    """AI จัดอันดับ + อธิบายผลกระทบการดึงงานสีเข้ามาแทนงานไม่มีสี (กลุ่ม CAT×เกจ ที่เลือก)"""
+    try:
+        return order_color_advisor.advise_color_moves(req.model_dump())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class OrderColorExportReq(BaseModel):
+    columns: list
+    rows: list
+
+
+@app.post("/api/order-color/plan/export")
+def api_order_color_plan_export(req: OrderColorExportReq):
+    """แปลง grid what-if (ที่ user จัดแล้ว) → ไฟล์ Excel ให้ดาวน์โหลด"""
+    import io
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "PLAN_ORDER_COLOR"
+    ws.append([str(c) for c in req.columns])
+    for r in req.rows:
+        ws.append(list(r))
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    from fastapi import Response
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="order_color_plan.xlsx"'},
+    )
+
+
+# ---------------- Outsource Advisor (จ้างทอ AI) ----------------
+@app.post("/api/outsource/advise")
+def api_outsource_advise():
+    try:
+        return outsource_advisor.advise()
+    except (FileNotFoundError, KeyError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/health")
 def api_health():
     return {"ok": True}
@@ -238,4 +484,8 @@ if FRONTEND_DIST.exists():
         candidate = FRONTEND_DIST / full_path
         if full_path and candidate.exists() and candidate.is_file():
             return FileResponse(str(candidate))
-        return FileResponse(str(FRONTEND_DIST / "index.html"))
+        # index.html ห้าม cache — ให้เบราว์เซอร์ดึง bundle เวอร์ชันล่าสุดทุกครั้ง
+        return FileResponse(
+            str(FRONTEND_DIST / "index.html"),
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )

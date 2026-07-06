@@ -2,14 +2,15 @@
 Run All Pipeline
 ================
 รัน script ทั้งหมดตามลำดับ:
-  1. Calendar.py     – ตรวจสอบ Calendar
-  2. View_Booking.py – ดึงข้อมูล Booking จาก Oracle DB
-  3. View_Stock.py   – ดึงข้อมูล Stock จาก Oracle DB
-  4. View_SC.py      – ดึงข้อมูล SC Pending จาก Oracle DB
-  5. Stock.py        – ประมวลผลข้อมูล Stock
-  6. AVA_MC.py       – คำนวณ Machine Availability
-  7. Order.py        – เตรียม Order data
-  8. Planning.py     – รัน Planning หลัก
+  1. Calendar.py        – ตรวจสอบ Calendar
+  2. View_Booking.py    – ดึงข้อมูล Booking จาก Oracle DB
+  3. View_Stock.py      – ดึงข้อมูล Stock จาก Oracle DB
+  4. View_SC.py         – ดึงข้อมูล SC Pending จาก Oracle DB
+  5. View_Datamining.py – ดึงข้อมูล Datamining จาก Oracle DB
+  6. Stock.py           – ประมวลผลข้อมูล Stock
+  7. AVA_MC.py          – คำนวณ Machine Availability
+  8. Order.py           – เตรียม Order data
+  9. Planning.py        – รัน Planning หลัก
 Usage:
     python run_all.py
     python run_all.py --skip View_Stock    # ข้าม View_Stock (ถ้า DB ไม่พร้อม)
@@ -81,6 +82,11 @@ STEPS = [
         "name": "View_SC",
         "script": BASE_DIR / "View_SC.py",
         "desc": "ดึงข้อมูล SC Pending จาก Oracle DB",
+    },
+    {
+        "name": "View_Datamining",
+        "script": BASE_DIR / "View_Datamining.py",
+        "desc": "ดึงข้อมูล Datamining จาก Oracle DB",
     },
     {
         "name": "Stock",
@@ -218,8 +224,10 @@ def main():
 
     overall_start = time.time()
     failed_steps = []
+    ran_steps = []
 
     for i, step in enumerate(steps_to_run, start=1):
+        ran_steps.append(step["name"])
         success = run_step(step, i, total)
         if not success:
             failed_steps.append(step["name"])
@@ -233,7 +241,13 @@ def main():
     print(f"  สรุปผล  –  ใช้เวลารวม {overall_elapsed:.1f} วินาที")
     separator("-")
     for step in steps_to_run:
-        status = "❌ FAILED" if step["name"] in failed_steps else "✅ OK"
+        if step["name"] in failed_steps:
+            status = "❌ FAILED"
+        elif step["name"] in ran_steps:
+            status = "✅ OK"
+        else:
+            # pipeline หยุดกลางทาง → step นี้ยังไม่ถึงคิว (ไม่ใช่ว่าสำเร็จ)
+            status = "⏭️  ไม่ได้รัน"
         print(f"  {status}  {step['name']}")
     separator("=")
 

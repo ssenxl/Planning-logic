@@ -20,10 +20,10 @@ RUN pip install --no-cache-dir -r requirements-docker.txt
 # pipeline code (ทุกไฟล์ .py ที่ root เล็ก — copy ทั้งหมดให้ import ครบ)
 COPY *.py ./
 # input data dirs ที่ pipeline อ่าน
-COPY data ./data
 COPY Estimate_Core ./Estimate_Core
-COPY Yarn_Master ./Yarn_Master
 COPY Datamining ./Datamining
+# data/ และ Yarn_Master/ ไม่ได้ใช้งานแล้ว จึงไม่ copy
+
 # webapp backend + frontend build
 COPY webapp/backend ./webapp/backend
 COPY --from=fe /fe/dist ./webapp/frontend/dist

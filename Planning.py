@@ -3780,7 +3780,10 @@ def get_actual_mc_remain(mc_group, week, gauge, item_code=None):
 
     else:
 
-        base_remain = int(mc_rows[mc_rows["TOTAL_MC_REMAIN"] > 0]["TOTAL_MC_REMAIN"].sum())
+        # รวมทุกพูลย่อยของ Type_1+Gauge (รวมพูลที่ติดลบด้วย) — พูลย่อย (เช่น SKP/SKPTA)
+        # ใช้แทนกันได้ ถือเป็นเครื่องกลุ่มเดียวกัน; ถ้าพูลใดติดลบ = จองเกิน ต้องดึงยอดรวมลง
+        # (เดิมกรอง > 0 ทิ้งพูลติดลบ → เครื่องว่างพองเกินจริง วางงานลงพูลที่เต็มแล้วได้)
+        base_remain = int(mc_rows["TOTAL_MC_REMAIN"].sum())
 
 
 
@@ -10694,6 +10697,29 @@ for _ci, _cr in plan_df.iterrows():
         plan_df.at[_ci, "CYLINDER_CHANGE"] = "Yes"
 
 # =========================
+# เตรียม _plan_no_s9_df (pass 2 = ปิด S9) ล่วงหน้า — ใช้สร้างชีท *_NO_S9 หลายจุด
+# (REMAINING_JOBS_NO_S9, SETUP_TRACKING_NO_S9, PLAN_NO_S9) ให้ใช้ df ตัวเดียวกัน
+# =========================
+_plan_no_s9_df = pd.DataFrame(_plans_no_s9)
+if not _plan_no_s9_df.empty:
+    if "PLAN_WEEK" in _plan_no_s9_df.columns:
+        _plan_no_s9_df["PLAN_YEAR"] = _plan_no_s9_df["PLAN_WEEK"].map(_week_year_lookup).fillna(TODAY.year).astype(int)
+    if "MC_GROUP" in _plan_no_s9_df.columns:
+        _plan_no_s9_df["CAT"] = _plan_no_s9_df.apply(
+            lambda r: _mc_to_type1(str(r.get("MC_GROUP", "")), r.get("MC_GUAGE")), axis=1
+        )
+    _plan_no_s9_df["CYLINDER_CHANGE"] = ""
+    _cyl_keys_no_s9 = set()
+    for (_ciw, _cii, _cimg) in _cylinder_change_for_item_no_s9:
+        _cyl_keys_no_s9.add((int(_ciw) + 1, _cii, str(_cimg).strip().upper()))
+    for _ci, _cr in _plan_no_s9_df.iterrows():
+        _ck_w = int(_cr.get("PLAN_WEEK") or 0)
+        _ck_i = str(_cr.get("ITEM_CODE", "")).strip().upper()
+        _ck_m = str(_cr.get("MC_GROUP", "")).strip().upper()
+        if (_ck_w, _ck_i, _ck_m) in _cyl_keys_no_s9:
+            _plan_no_s9_df.at[_ci, "CYLINDER_CHANGE"] = "Yes"
+
+# =========================
 # LOAD BALANCING - Apply to final plan
 # =========================
 # ปิดการใช้ Load Balancing ตอนสรุปผลลัพธ์เพื่อรักษาความสามารถในการผลิตตาม ORDERS_QTY
@@ -10757,47 +10783,69 @@ def _sum_by_type(job_dict_by_week, week):
         result[_type_key] = result.get(_type_key, 0) + _jobs
     return result
 
-# รวม weeks จากทั้ง old และ new
-_all_weeks = sorted(
-    set(list(weekly_job_usage.keys()) + list(weekly_job_usage_old.keys()))
-)
-_remaining_rows = []
-for _week in _all_weeks:
-    _total_by_type = _sum_by_type(weekly_job_usage, _week)
-    _old_by_type = _sum_by_type(weekly_job_usage_old, _week)
-    _all_types = set(list(_total_by_type.keys()) + list(_old_by_type.keys()))
-    for _type_key in sorted(_all_types):
-        _total_used = _total_by_type.get(_type_key, 0)
-        _old_used = _old_by_type.get(_type_key, 0)
-        _new_used = _total_used - _old_used
-        _cap = _CAPACITY_MAP.get(_type_key, None)
-        _rem = (_cap - _total_used) if _cap is not None else None
-        _remaining_rows.append(
-            {
-                "WEEK": _week,
-                "TYPE": _type_key,
-                "OLD_JOBS": _old_used,
-                "NEW_JOBS": _new_used,
-                "TOTAL_JOBS": _total_used,
-                "CAPACITY": _cap,
-                "REMAINING_JOBS": _rem,
-            }
-        )
-remaining_df = (
-    pd.DataFrame(_remaining_rows)
-    if _remaining_rows
-    else pd.DataFrame(
-        columns=[
-            "WEEK",
-            "TYPE",
-            "OLD_JOBS",
-            "NEW_JOBS",
-            "TOTAL_JOBS",
-            "CAPACITY",
-            "REMAINING_JOBS",
-        ]
+# 🔧 FIX: NEW_JOBS = setup จริงจากแผนสุดท้าย (plan_df.NEW_MC) เพื่อให้ตรงกับ SETUP_TRACKING
+# เดิมคิดจาก weekly_job_usage (ตัวนับระหว่างวาง) ซึ่งไม่สะท้อน balancing ท้ายสุด → นับ job เกินจริง
+def _build_remaining_df(plan_frame):
+    """สร้าง REMAINING_JOBS จากแผนที่ระบุ — NEW จาก NEW_MC ของ frame, OLD จาก booking baseline
+    (weekly_job_usage_old เป็น booking baseline ตัวเดียว ใช้ร่วมได้ทั้ง with-S9 และ no-S9)"""
+    _plan_new_by_wt: dict = {}
+    if not plan_frame.empty and "NEW_MC" in plan_frame.columns:
+        _pnm_series = pd.to_numeric(plan_frame["NEW_MC"], errors="coerce").fillna(0).astype(int)
+        for _i, _pr in plan_frame.iterrows():
+            _nm = int(_pnm_series.loc[_i])
+            if _nm <= 0:
+                continue
+            _w = int(pd.to_numeric(_pr.get("PLAN_WEEK"), errors="coerce") or 0)
+            _tk = _get_type_key_for_mc(str(_pr.get("MC_GROUP", "")).strip().upper())
+            _plan_new_by_wt[(_w, _tk)] = _plan_new_by_wt.get((_w, _tk), 0) + _nm
+
+    # OLD จาก booking baseline (weekly_job_usage_old) — ตรงกับ SETUP_TRACKING OLD
+    _all_weeks = sorted(
+        set(list(weekly_job_usage_old.keys()) + [_w for (_w, _t) in _plan_new_by_wt])
     )
-)
+    _remaining_rows = []
+    for _week in _all_weeks:
+        _old_by_type = _sum_by_type(weekly_job_usage_old, _week)
+        _new_by_type = {}
+        for (_w, _tk), _v in _plan_new_by_wt.items():
+            if _w == _week:
+                _new_by_type[_tk] = _new_by_type.get(_tk, 0) + _v
+        _all_types = set(list(_old_by_type.keys()) + list(_new_by_type.keys()))
+        for _type_key in sorted(_all_types):
+            _old_used = _old_by_type.get(_type_key, 0)
+            _new_used = _new_by_type.get(_type_key, 0)
+            _total_used = _old_used + _new_used
+            _cap = _CAPACITY_MAP.get(_type_key, None)
+            _rem = (_cap - _total_used) if _cap is not None else None
+            _remaining_rows.append(
+                {
+                    "WEEK": _week,
+                    "TYPE": _type_key,
+                    "OLD_JOBS": _old_used,
+                    "NEW_JOBS": _new_used,
+                    "TOTAL_JOBS": _total_used,
+                    "CAPACITY": _cap,
+                    "REMAINING_JOBS": _rem,
+                }
+            )
+    return (
+        pd.DataFrame(_remaining_rows)
+        if _remaining_rows
+        else pd.DataFrame(
+            columns=[
+                "WEEK",
+                "TYPE",
+                "OLD_JOBS",
+                "NEW_JOBS",
+                "TOTAL_JOBS",
+                "CAPACITY",
+                "REMAINING_JOBS",
+            ]
+        )
+    )
+
+remaining_df = _build_remaining_df(plan_df)
+remaining_no_s9_df = _build_remaining_df(_plan_no_s9_df)  # เวอร์ชันปิด S9 สำหรับ PLAN_NO_S9
 print("📋 สรุป Remaining Jobs ต่อ Week (factory-wide ต่อ Type, OLD + NEW):")
 if not remaining_df.empty:
     for _week in sorted(remaining_df["WEEK"].unique()):
@@ -11321,36 +11369,39 @@ if not _multi_cap_df.empty:
 # SETUP_TRACKING sheet — แสดงเฉพาะ ITEM ที่หัก Job พร้อม Week, จำนวน Job และจำนวน MC ที่ Setup
 # เกณฑ์: หัก Job เมื่อ NEW_MC > 0 (เครื่องใหม่ที่ต้อง setup = 1 job ต่อ 1 เครื่อง)
 # =========================
-setup_tracking_rows = []
-
-# --- NEW PLAN: หัก Job เมื่อ NEW_MC > 0 ---
-if not plan_df.empty and "NEW_MC" in plan_df.columns:
-    _new_setup = plan_df[pd.to_numeric(plan_df["NEW_MC"], errors="coerce").fillna(0) > 0].copy()
-
-    for _, row in _new_setup.iterrows():
-        _new_mc_val = int(pd.to_numeric(row["NEW_MC"], errors="coerce") or 0)
-        _carryover_val = int(pd.to_numeric(row.get("CARRYOVER_MC", 0), errors="coerce") or 0)
-        _type_key_new = _get_type_key_for_mc(str(row["MC_GROUP"]).strip().upper())
-        setup_tracking_rows.append({
-            "PLAN_SOURCE": "NEW",
-            "PLAN_WEEK": row["PLAN_WEEK"],
-            "PLAN_YEAR": row.get("PLAN_YEAR"),
-            "ITEM_CODE": row["ITEM_CODE"],
-            "SC_SO_NO": row["SC_SO_NO"],
-            "MC_GROUP": row["MC_GROUP"],
-            "MC_GUAGE": row.get("MC_GUAGE", ""),
-            "TYPE": _type_key_new,
-            "JOBS_DEDUCTED": _new_mc_val,
-            "SETUP_MC": _new_mc_val,
-            "CARRYOVER_MC": _carryover_val,
-            "MC_THIS_WEEK": _new_mc_val + _carryover_val,
-            "MC_PREV_WEEK": _carryover_val,
-            "SETUP_DAYS": row.get("SETUP_DAYS", 0),
-            "KP_WEIGHT": pd.to_numeric(row.get("PRODUCE_QTY", 0), errors="coerce") or 0,
-            "DAILY_CAPACITY": row.get("DAILY_CAPACITY", 0),
-        })
+# --- NEW PLAN: หัก Job เมื่อ NEW_MC > 0 (แยกเป็นฟังก์ชันเพื่อสร้างทั้ง with-S9 และ no-S9) ---
+def _new_setup_rows(plan_frame):
+    """สร้าง setup rows ฝั่ง NEW จากแผนที่ระบุ (NEW_MC > 0)"""
+    _rows = []
+    if not plan_frame.empty and "NEW_MC" in plan_frame.columns:
+        _new_setup = plan_frame[pd.to_numeric(plan_frame["NEW_MC"], errors="coerce").fillna(0) > 0].copy()
+        for _, row in _new_setup.iterrows():
+            _new_mc_val = int(pd.to_numeric(row["NEW_MC"], errors="coerce") or 0)
+            _carryover_val = int(pd.to_numeric(row.get("CARRYOVER_MC", 0), errors="coerce") or 0)
+            _type_key_new = _get_type_key_for_mc(str(row["MC_GROUP"]).strip().upper())
+            _rows.append({
+                "PLAN_SOURCE": "NEW",
+                "PLAN_WEEK": row["PLAN_WEEK"],
+                "PLAN_YEAR": row.get("PLAN_YEAR"),
+                "ITEM_CODE": row["ITEM_CODE"],
+                "SC_SO_NO": row["SC_SO_NO"],
+                "MC_GROUP": row["MC_GROUP"],
+                "MC_GUAGE": row.get("MC_GUAGE", ""),
+                "TYPE": _type_key_new,
+                "JOBS_DEDUCTED": _new_mc_val,
+                "SETUP_MC": _new_mc_val,
+                "CARRYOVER_MC": _carryover_val,
+                "MC_THIS_WEEK": _new_mc_val + _carryover_val,
+                "MC_PREV_WEEK": _carryover_val,
+                "SETUP_DAYS": row.get("SETUP_DAYS", 0),
+                "KP_WEIGHT": pd.to_numeric(row.get("PRODUCE_QTY", 0), errors="coerce") or 0,
+                "DAILY_CAPACITY": row.get("DAILY_CAPACITY", 0),
+            })
+    return _rows
 
 # --- OLD PLAN (BOOKING): ใช้ _IS_NEW_SETUP / _MC_INCREASE จาก AVA_MC.py ---
+# OLD มาจาก booking baseline (detail_mc) เหมือนกันทั้ง 2 pass → สร้างครั้งเดียว ใช้ร่วม
+_old_setup_rows = []
 # ตรงกับ logic ของ weekly_job_usage_old เพื่อให้ตัวเลขสอดคล้องกับ REMAINING_JOBS
 if (
     not detail_mc.empty
@@ -11407,7 +11458,7 @@ if (
             _prev_mc_t = 0 if pd.isna(_raw_prev) else int(_raw_prev)
             _kp_weight_t = pd.to_numeric(_drow_t.get("KP_WEIGHT", 0), errors="coerce") or 0
             _type_key_old = _get_type_key_for_mc(_mc_grp_t)
-            setup_tracking_rows.append({
+            _old_setup_rows.append({
                 "PLAN_SOURCE": "OLD",
                 "PLAN_WEEK": _wk_t,
                 "PLAN_YEAR": _week_year_lookup.get(_wk_t, TODAY.year),
@@ -11468,7 +11519,7 @@ if (
                             _cust_t = str(_ord_t.iloc[0].get("Customer", "")).strip()
                     _kp_weight_fb = pd.to_numeric(_item_rows_t.iloc[0].get("KP_WEIGHT", 0), errors="coerce") if not _item_rows_t.empty and "KP_WEIGHT" in _item_rows_t.columns else 0
                     _type_key_old = _get_type_key_for_mc(str(_mc_grp).strip().upper())
-                    setup_tracking_rows.append({
+                    _old_setup_rows.append({
                         "PLAN_SOURCE": "OLD",
                         "PLAN_WEEK": _wk_t,
                         "PLAN_YEAR": _week_year_lookup.get(int(_wk_t), TODAY.year),
@@ -11489,39 +11540,28 @@ if (
 
 
 
-setup_tracking_df = (
-    pd.DataFrame(setup_tracking_rows)
-    if setup_tracking_rows
-    else pd.DataFrame(columns=[
-        "PLAN_SOURCE", "PLAN_WEEK", "PLAN_YEAR", "ITEM_CODE", "SC_SO_NO",
-        "MC_GROUP", "MC_GUAGE", "TYPE", "JOBS_DEDUCTED", "SETUP_MC", "CARRYOVER_MC",
-        "MC_THIS_WEEK", "MC_PREV_WEEK", "SETUP_DAYS", "KP_WEIGHT", "DAILY_CAPACITY",
-
-    ])
-
-)
-
-
-
-# เพิ่ม PLAN_YEAR ให้ setup_tracking_df
-if not setup_tracking_df.empty and "PLAN_WEEK" in setup_tracking_df.columns:
-    setup_tracking_df["PLAN_YEAR"] = setup_tracking_df["PLAN_WEEK"].map(_week_year_lookup).fillna(TODAY.year).astype(int)
-
-
-
-if not setup_tracking_df.empty:
-
-    setup_tracking_df = setup_tracking_df.sort_values(
-
-        ["PLAN_WEEK", "PLAN_SOURCE", "ITEM_CODE"], ignore_index=True
-
+def _finalize_setup_df(rows):
+    """ประกอบ setup_tracking_df จาก rows (NEW + OLD): + PLAN_YEAR, sort, เติม DAILY_CAPACITY"""
+    _df = (
+        pd.DataFrame(rows)
+        if rows
+        else pd.DataFrame(columns=[
+            "PLAN_SOURCE", "PLAN_WEEK", "PLAN_YEAR", "ITEM_CODE", "SC_SO_NO",
+            "MC_GROUP", "MC_GUAGE", "TYPE", "JOBS_DEDUCTED", "SETUP_MC", "CARRYOVER_MC",
+            "MC_THIS_WEEK", "MC_PREV_WEEK", "SETUP_DAYS", "KP_WEIGHT", "DAILY_CAPACITY",
+        ])
     )
+    if not _df.empty and "PLAN_WEEK" in _df.columns:
+        _df["PLAN_YEAR"] = _df["PLAN_WEEK"].map(_week_year_lookup).fillna(TODAY.year).astype(int)
+    if not _df.empty:
+        _df = _df.sort_values(["PLAN_WEEK", "PLAN_SOURCE", "ITEM_CODE"], ignore_index=True)
+    # เติม DAILY_CAPACITY สำหรับ OLD PLAN (จาก detail_mc) ที่ยังไม่มีค่า
+    if not _df.empty and "DAILY_CAPACITY" in _df.columns:
+        _df["DAILY_CAPACITY"] = _df["DAILY_CAPACITY"].fillna(0)
+    return _df
 
-
-
-# เติม DAILY_CAPACITY สำหรับ OLD PLAN (จาก detail_mc) ที่ยังไม่มีค่า
-if not setup_tracking_df.empty and "DAILY_CAPACITY" in setup_tracking_df.columns:
-    setup_tracking_df["DAILY_CAPACITY"] = setup_tracking_df["DAILY_CAPACITY"].fillna(0)
+setup_tracking_df = _finalize_setup_df(_new_setup_rows(plan_df) + _old_setup_rows)
+setup_tracking_no_s9_df = _finalize_setup_df(_new_setup_rows(_plan_no_s9_df) + _old_setup_rows)  # เวอร์ชันปิด S9
 
 
 if not setup_tracking_df.empty:
@@ -11620,32 +11660,14 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as _writer:
     setup_tracking_df.to_excel(_writer, sheet_name="SETUP_TRACKING", index=False)
     _unplanned_df.to_excel(_writer, sheet_name="UNPLANNED", index=False)
     _cylinder_change_df.to_excel(_writer, sheet_name="CYLINDER_CHANGE", index=False)
-    # PLAN_NO_S9: plan จาก pass 2 (ไม่มี S9 routing เลย) — item ทุกตัวใช้เครื่องปกติ
-    _plan_no_s9_df = pd.DataFrame(_plans_no_s9)
-    if not _plan_no_s9_df.empty:
-        # เพิ่ม PLAN_YEAR
-        if "PLAN_WEEK" in _plan_no_s9_df.columns:
-            _plan_no_s9_df["PLAN_YEAR"] = _plan_no_s9_df["PLAN_WEEK"].map(_week_year_lookup).fillna(TODAY.year).astype(int)
-        # เพิ่ม CAT
-        if "MC_GROUP" in _plan_no_s9_df.columns:
-            _plan_no_s9_df["CAT"] = _plan_no_s9_df.apply(
-                lambda r: _mc_to_type1(str(r.get("MC_GROUP", "")), r.get("MC_GUAGE")), axis=1
-            )
-        # เพิ่ม CYLINDER_CHANGE จาก pass 2 cylinder data
-        _plan_no_s9_df["CYLINDER_CHANGE"] = ""
-        _cyl_keys_no_s9 = set()
-        for (_ciw, _cii, _cimg) in _cylinder_change_for_item_no_s9:
-            _cyl_keys_no_s9.add((int(_ciw) + 1, _cii, str(_cimg).strip().upper()))
-        for _ci, _cr in _plan_no_s9_df.iterrows():
-            _ck_w = int(_cr.get("PLAN_WEEK") or 0)
-            _ck_i = str(_cr.get("ITEM_CODE", "")).strip().upper()
-            _ck_m = str(_cr.get("MC_GROUP", "")).strip().upper()
-            if (_ck_w, _ck_i, _ck_m) in _cyl_keys_no_s9:
-                _plan_no_s9_df.at[_ci, "CYLINDER_CHANGE"] = "Yes"
+    # PLAN_NO_S9: plan จาก pass 2 (ไม่มี S9 routing เลย) — ใช้ _plan_no_s9_df ที่ enrich ไว้แล้วด้านบน
     if "S9_ROUTING" in _plan_no_s9_df.columns:
         _ns9_other = [c for c in _plan_no_s9_df.columns if c != "S9_ROUTING"]
         _plan_no_s9_df = _plan_no_s9_df[_ns9_other + ["S9_ROUTING"]]
     _plan_no_s9_df.to_excel(_writer, sheet_name="PLAN_NO_S9", index=False)
+    # เวอร์ชันปิด S9 ของ REMAINING_JOBS / SETUP_TRACKING — ให้ load/ava ในเว็บตรงกับ PLAN_NO_S9
+    remaining_no_s9_df.to_excel(_writer, sheet_name="REMAINING_JOBS_NO_S9", index=False)
+    setup_tracking_no_s9_df.to_excel(_writer, sheet_name="SETUP_TRACKING_NO_S9", index=False)
 
 # ใส่สีให้ PLAN sheet: เหลือง=CYLINDER_CHANGE, แดง=S9_ROUTING
 _need_color = _cyl_trigger_keys or (
