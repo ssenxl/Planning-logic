@@ -253,56 +253,55 @@ def _latest_booking_path() -> Path | None:
     return files[0] if files else None
 
 
-def _plan_actual_mc_by_cat() -> dict:
-    """ผลรวม ACTUAL_MC (เครื่องที่แผนใช้จริง) ต่อ (week, 'CAT|GUAGE') จากชีท PLAN
-    ใช้เป็น baseline เพื่อให้ frontend คิดเครื่องว่างแบบ live ตอนลาก (offset)"""
-    p = latest_path()
+def _gkey(g) -> str:
+    """normalize เกจ: 22.0 / '22 ' → '22'"""
+    try:
+        return str(int(g))
+    except (TypeError, ValueError):
+        return str(g).strip()
+
+
+def booking_mc_by_item_week() -> dict:
+    """เครื่องที่ booking ถักไอเทมนั้นอยู่แล้ว ต่อ (สัปดาห์ × ITEM|MC_GROUP|GUAGE)
+    → { week(str): { "ITEM|MC_GROUP|GAUGE": int } }
+
+    ใช้ให้ Gantt แยกออกว่าเครื่องของแถวแผนเป็น "เครื่อง booking" (อยู่กับสัปดาห์นั้น
+    ไม่ย้ายตามงานที่ลาก และถูกหักจาก TOTAL_MC_REMAIN ไปแล้ว) หรือเป็นเครื่องที่แผน
+    จองเพิ่มจากพูล (ต้องหักออกจากเครื่องว่าง และย้ายตามงาน)"""
+    p = _latest_booking_path()
     if p is None:
         return {}
     try:
-        wb = load_workbook(p, read_only=True, data_only=True)
+        import pandas as pd
+        df = pd.read_excel(p, sheet_name="DETAIL")
     except Exception:
         return {}
-    _sheet = _MAIN_SHEET
-    if _sheet not in wb.sheetnames:
-        wb.close()
+    if not {"ITEM_CODE", "MC_GROUP", "GUAGE", "WEEK", "MC_USE_CEIL"} <= set(df.columns):
         return {}
-    rows = list(wb[_sheet].iter_rows(values_only=True))
-    wb.close()
-    if not rows:
-        return {}
-    header = [str(c).strip().upper() if c is not None else "" for c in rows[0]]
-
-    def col(name):
-        return header.index(name) if name in header else -1
-    wi, cati, gi, ami = col("PLAN_WEEK"), col("CAT"), col("MC_GUAGE"), col("ACTUAL_MC")
-    if wi < 0 or cati < 0 or gi < 0 or ami < 0:
-        return {}
-
-    def gkey(g):
-        try:
-            return str(int(g))
-        except (TypeError, ValueError):
-            return str(g).strip()
-
     out: dict = {}
-    for r in rows[1:]:
-        if max(wi, cati, gi, ami) >= len(r):
-            continue
-        wk = _wk_str(r[wi])
+    for _, r in df.iterrows():
+        wk = _wk_str(r["WEEK"])
         if wk is None:
             continue
-        key = f"{str(r[cati]).strip()}|{gkey(r[gi])}"
-        mc = _num(r[ami]) or 0
-        out[(wk, key)] = out.get((wk, key), 0) + int(mc)
+        mc = int(_num(r["MC_USE_CEIL"]) or 0)
+        if mc <= 0:
+            continue
+        key = "{}|{}|{}".format(
+            str(r["ITEM_CODE"]).strip().upper(),
+            str(r["MC_GROUP"]).strip().upper(),
+            _gkey(r["GUAGE"]),
+        )
+        slot = out.setdefault(wk, {})
+        slot[key] = slot.get(key, 0) + mc
     return out
 
 
 def ava_by_week() -> dict:
     """เครื่องว่าง (AVA) ต่อ (CAT×เกจ×สัปดาห์) จากชีท SUMMARY_MC_REMAIN ของ booking_final ล่าสุด
-    → { week(str): { "CAT|GUAGE": {"remain": int, "total": int, "used": int, "planBase": int} } }
-    - remain = TOTAL_MC_REMAIN (เครื่องว่างตั้งต้นจาก AVA_MC)
-    - planBase = ผลรวม ACTUAL_MC ในแผน ณ ตอนโหลด → frontend คิด live: remain − (ACTUAL_MC ปัจจุบัน − planBase)"""
+    → { week(str): { "CAT|GUAGE": {"remain": int, "total": int, "used": int} } }
+    - remain = TOTAL_MC_REMAIN = เครื่องจริง − เครื่องที่ booking จองไว้ (ยังไม่หักเครื่องที่แผนจอง)
+    - frontend หักเครื่องที่แผนจองเพิ่มเอง = ACTUAL_MC − เครื่อง booking ของ item นั้น
+      (ดู booking_mc_by_item_week) จึงไม่ต้องมี planBase อีก"""
     p = _latest_booking_path()
     if p is None:
         return {}
@@ -356,11 +355,6 @@ def ava_by_week() -> dict:
                 if rv and (rv["poly"] or rv["cotton"]):
                     slot["reserved"] = dict(rv)
 
-    # baseline: ACTUAL_MC ที่แผนใช้ ณ ตอนโหลด (ต่อ CAT|เกจ|สัปดาห์)
-    plan_mc = _plan_actual_mc_by_cat()
-    for wk, keys in out.items():
-        for key, slot in keys.items():
-            slot["planBase"] = int(plan_mc.get((wk, key), 0))
     return out
 
 

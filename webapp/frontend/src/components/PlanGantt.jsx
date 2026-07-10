@@ -83,7 +83,7 @@ function classifyType(factory, cat) {
   return null
 }
 
-export default function PlanGantt({ columns, rows, load = {}, ava = {}, onMoveWeek, colorRows, onRemove, onEditQty, lockBefore = null }) {
+export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingMc = {}, onMoveWeek, colorRows, onRemove, onEditQty, lockBefore = null }) {
   const [dragIdx, setDragIdx] = useState(null)
   const [overWeek, setOverWeek] = useState(null)
   // double click บล็อก → แก้ตัวเลขจำนวน (กก.) inline แล้วส่งค่าใหม่ผ่าน onEditQty(idx, qty)
@@ -99,7 +99,7 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, onMoveWe
       reqmc: at('REQUIRED_MC'), factory: at('FACTORY_TYPE'), cat: at('CAT'),
       newmc: at('NEW_MC'), gauge: at('MC_GUAGE'), actualmc: at('ACTUAL_MC'),
       carrymc: at('CARRYOVER_MC'), sharedmc: at('MC_SHARED'),
-      bookingmc: at('MC_BOOKING'), remark: at('REMARK'),
+      bookingmc: at('MC_BOOKING'), remark: at('REMARK'), mcgroup: at('MC_GROUP'),
     }
   }, [columns])
 
@@ -225,18 +225,38 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, onMoveWe
     return m
   }, [rows, ci, supported])
 
-  // ผลรวม ACTUAL_MC (เครื่องที่แผนใช้) ต่อ (สัปดาห์ × CAT|เกจ) — live ตามที่ลาก → ใช้คิดเครื่องว่าง
+  // เครื่องที่ "แผนจองเพิ่มจากพูล" ต่อ (สัปดาห์ × CAT|เกจ) — live ตามที่ลาก → ใช้คิดเครื่องว่าง
+  //
+  // TOTAL_MC_REMAIN (av.remain) หักเครื่องที่ booking จองไว้ไปแล้ว แต่ยังไม่หักเครื่องของแผน
+  // เครื่องของแผนที่กินพูลจริง = ACTUAL_MC − เครื่อง booking ของ item นั้นในสัปดาห์นั้น
+  //   • แถวที่นั่งบนเครื่อง booking (📦) → หักออกได้พอดี = 0 (ไม่กินเครื่องเพิ่ม)
+  //   • ลากงานออกจากสัปดาห์ → เครื่อง booking ไม่ได้ย้ายตาม จึงไม่ถูกคืนให้พูล
+  //
+  // รวม ACTUAL_MC ต่อ (สัปดาห์ × item × เครื่อง × เกจ) ก่อน แล้วค่อยหัก booking ครั้งเดียว
+  // มิฉะนั้นแถวหลายแถวของ item เดียวกันจะหักเครื่อง booking ซ้ำ
   const planMcByWeekCat = useMemo(() => {
     const m = {}
     if (!supported || ci.cat < 0 || ci.gauge < 0) return m
+    const byItem = new Map()
     for (const { row } of rows) {
       const w = norm(row[ci.week]); if (w === '') continue
-      const key = norm(row[ci.cat]) + '|' + norm(row[ci.gauge])
+      const g = norm(row[ci.gauge])
+      const item = norm(row[ci.item])
+      const mcg = ci.mcgroup >= 0 ? norm(row[ci.mcgroup]) : ''
+      const catKey = norm(row[ci.cat]) + '|' + g
+      const bkKey = `${item.toUpperCase()}|${mcg.toUpperCase()}|${g}`
+      const k = w + '@@' + catKey + '@@' + bkKey
       const mc = ci.actualmc >= 0 ? (Number(norm(row[ci.actualmc])) || 0) : 0
-      m[w + '@@' + key] = (m[w + '@@' + key] || 0) + mc
+      const cur = byItem.get(k)
+      if (cur) cur.mc += mc
+      else byItem.set(k, { w, catKey, bkKey, mc })
+    }
+    for (const { w, catKey, bkKey, mc } of byItem.values()) {
+      const bk = Number(bookingMc?.[w]?.[bkKey]) || 0
+      m[w + '@@' + catKey] = (m[w + '@@' + catKey] || 0) + Math.max(0, mc - bk)
     }
     return m
-  }, [rows, ci, supported])
+  }, [rows, ci, supported, bookingMc])
 
   // วัดความสูงหัวตาราง + แต่ละแถวโหลด → คำนวณ top ให้แถวโหลด sticky ค้างซ้อนใต้หัวตารางพอดี
   // (ความสูงหัวตาราง/ฟอนต์ไม่แน่นอน จึงวัดจริงแทนกำหนดตายตัว)
@@ -378,9 +398,9 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, onMoveWe
                   const isOver = overWeek === w
                   const avaKey = avaCatI >= 0 && avaGaugeI >= 0 ? r.vals[avaCatI] + '|' + r.vals[avaGaugeI] : null
                   const av = avaKey && ava[w] ? ava[w][avaKey] : null
-                  // เครื่องว่าง live = remain − (ACTUAL_MC ปัจจุบัน − ACTUAL_MC ตอนโหลด)
+                  // เครื่องว่าง live = เครื่องว่างหลัง booking − เครื่องที่แผนจองเพิ่มจากพูล
                   const remainLive = av
-                    ? av.remain - ((planMcByWeekCat[w + '@@' + avaKey] || 0) - (av.planBase || 0))
+                    ? av.remain - (planMcByWeekCat[w + '@@' + avaKey] || 0)
                     : null
                   const locked = isLocked(w)
                   return (
@@ -397,7 +417,7 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, onMoveWe
                         const rsvTxt = [rsvP ? `POLY ${rsvP}` : '', rsvC ? `COTTON ${rsvC}` : ''].filter(Boolean).join(', ')
                         return (
                           <span className={'cellava' + (remainLive <= 0 ? ' none' : '')}
-                            title={`เครื่องว่าง ${remainLive} / ปกติ ${av.total} (AVA_MC ตั้งต้น ${av.remain})`
+                            title={`เครื่องว่าง ${remainLive} / ปกติ ${av.total}\nว่างหลัง booking ${av.remain} − แผนจองเพิ่ม ${planMcByWeekCat[w + '@@' + avaKey] || 0}`
                               + (hasRsv ? `\nกันไว้: ${rsvTxt} เครื่อง (POLY/COTTON ใช้แทนงานปกติไม่ได้)` : '')}>
                             ว่าง {remainLive}
                             {hasRsv && <span className="cellava-rsv">🔒{rsvP ? ` P${rsvP}` : ''}{rsvC ? ` C${rsvC}` : ''}</span>}

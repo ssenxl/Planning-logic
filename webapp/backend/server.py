@@ -273,6 +273,13 @@ def api_plan_ava():
     return plan_view.ava_by_week()
 
 
+@app.get("/api/plan/booking-mc")
+def api_plan_booking_mc():
+    """เครื่องที่ booking ถักไอเทมนั้นอยู่แล้ว ต่อ (สัปดาห์ × ITEM|MC_GROUP|GUAGE)
+    Gantt ใช้แยกเครื่อง booking (ไม่ย้ายตามงาน) ออกจากเครื่องที่แผนจองจากพูล"""
+    return plan_view.booking_mc_by_item_week()
+
+
 @app.get("/api/plan/download")
 def api_plan_download():
     p = plan_view.latest_path()

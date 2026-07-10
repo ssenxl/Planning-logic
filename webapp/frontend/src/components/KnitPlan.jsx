@@ -29,6 +29,8 @@ export default function KnitPlan() {
   const [showOutsource, setShowOutsource] = useState(false)
   const [load, setLoad] = useState({})
   const [ava, setAva] = useState({})
+  // เครื่องที่ booking ถักไอเทมนั้นอยู่แล้ว ต่อ (สัปดาห์ × ITEM|MC_GROUP|GUAGE)
+  const [bookingMc, setBookingMc] = useState({})
   const prevRunning = useRef(false)
 
   async function loadMeta() {
@@ -44,6 +46,7 @@ export default function KnitPlan() {
   }
   async function loadAva() {
     try { setAva(await api.planAva()) } catch { setAva({}) }
+    try { setBookingMc(await api.planBookingMc()) } catch { setBookingMc({}) }
   }
   async function loadSheet(sheet) {
     setLoading(true); setMsg('')
@@ -249,7 +252,7 @@ export default function KnitPlan() {
             <b>Gantt แผนผลิต (เครื่อง × สัปดาห์)</b>
             <button onClick={() => setShowGantt(s => !s)}>{showGantt ? 'ซ่อน' : 'แสดง'}</button>
           </div>
-          {showGantt && <PlanGantt columns={grid.columns} rows={visible} load={load} ava={ava} onMoveWeek={moveJob} onEditQty={editQty} />}
+          {showGantt && <PlanGantt columns={grid.columns} rows={visible} load={load} ava={ava} bookingMc={bookingMc} onMoveWeek={moveJob} onEditQty={editQty} />}
         </div>
       )}
 
