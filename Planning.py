@@ -915,6 +915,48 @@ def _ck(item, mc_group, gauge=None):
     return (item_norm, mc_norm, g)
 
 
+def _combine_carry_with_booking(booking_key, carry_mc, prev_week_idx, cur_week_idx):
+    """รวมเครื่อง carry ของแผน กับเครื่อง booking ของสัปดาห์ปัจจุบัน — ห้ามนับเครื่อง booking ซ้ำ
+
+    machines_in_use[key] เก็บ "เครื่องรวม" ของสัปดาห์ก่อน (เครื่องแผน + เครื่อง booking)
+    ดังนั้นเครื่องที่เป็นของแผนเองจริงๆ = carry_mc − booking(สัปดาห์ก่อน)
+    เครื่องรวมสัปดาห์นี้ = เครื่องของแผนเอง + booking(สัปดาห์นี้)
+
+    เดิมใช้ carry_mc + booking(สัปดาห์นี้) ตรงๆ → เครื่อง booking ตัวเดิมถูกบวกเข้าไปใหม่
+    ทุกสัปดาห์ ทำให้จำนวนเครื่องโตขึ้นเรื่อยๆ (เช่น 1 → 2 → 3) ทั้งที่เป็นเครื่องตัวเดียวกัน
+
+    คืน (เครื่องรวมสัปดาห์นี้, เครื่องของแผนเอง, booking สัปดาห์ก่อน, booking สัปดาห์นี้)
+    """
+    _bk = booking_mc_by_week.get(booking_key, {})
+    bk_prev = int(_bk.get(prev_week_idx, 0) or 0) if prev_week_idx is not None else 0
+    bk_now = int(_bk.get(cur_week_idx, 0) or 0) if cur_week_idx is not None else 0
+    plan_own = max(0, int(carry_mc or 0) - bk_prev)
+    return plan_own + bk_now, plan_own, bk_prev, bk_now
+
+
+def _build_plan_remark(mc_group, carryover_mc, new_mc, setup_days, booking_mc=0):
+    """สร้างข้อความ REMARK อธิบายที่มาของเครื่องในแถวแผน
+
+    เพื่อให้คนอ่านแผนแยกออกว่าเครื่องที่เห็นเป็น "เครื่องใหม่ที่ต้อง setup" หรือ
+    "เครื่องเดิมที่วิ่งอยู่แล้ว (carry / เติม order เข้าไป)" ซึ่งไม่เสียเวลา setup และไม่กินเครื่องเพิ่ม
+    """
+    parts = []
+    if new_mc > 0:
+        parts.append(f"setup เครื่องใหม่ {new_mc} ตัว ({setup_days} วัน)")
+    if carryover_mc > 0:
+        if booking_mc > 0:
+            _own = max(0, int(carryover_mc) - int(booking_mc))
+            if _own > 0:
+                parts.append(f"carry เครื่องเดิม {_own} ตัว + เติมเข้าเครื่อง booking ที่ถักไอเทมนี้อยู่ {booking_mc} ตัว")
+            else:
+                parts.append(f"เติมเข้าเครื่อง booking ที่ถักไอเทมนี้อยู่แล้ว {booking_mc} ตัว (ไม่ใช้เครื่องเพิ่ม)")
+        else:
+            parts.append(f"carry เครื่องเดิม {carryover_mc} ตัวจากสัปดาห์ก่อน (ไม่ต้อง setup)")
+    if not parts:
+        parts.append("ไม่ใช้เครื่อง")
+    return f"{mc_group}: " + " + ".join(parts)
+
+
 def _resolve_carry_key(item, mc_group, gauge=None):
     """คืน key ที่เหมาะสุดสำหรับ carryover โดย fallback เป็น item+mc แม้ gauge ไม่ตรง"""
     base_key = _ck(item, mc_group, gauge)
@@ -8376,9 +8418,11 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                     and _bk_mc_at_fill_week > 0
                 )
                 if _is_new_plan_carry_fill:
-                    _fill_avail_mc = _new_carry_at_fill + _bk_mc_at_fill_week
+                    _fill_avail_mc, _fill_own_mc, _fill_bk_prev, _bk_mc_at_fill_week = _combine_carry_with_booking(
+                        _fill_ck, _new_carry_at_fill, _prev_lp_at_fill, _fill_w_idx
+                    )
                     machines_in_use[_fill_ck] = _fill_avail_mc  # อัปเดตก่อน implied_mc cap
-                    print(f"[CARRY+BK FILL] {item} W{_fill_week}: new plan carry={_new_carry_at_fill} + booking={_bk_mc_at_fill_week} → combined={_fill_avail_mc} mc")
+                    print(f"[CARRY+BK FILL] {item} W{_fill_week}: plan-own={_fill_own_mc} (carry {_new_carry_at_fill} − booking W ก่อน {_fill_bk_prev}) + booking={_bk_mc_at_fill_week} → combined={_fill_avail_mc} mc")
                 if _fill_week in (17, 32):
                     _fill_actual_wd = get_working_days_by_factory(
                         _fill_mc_group, _fill_avail_mc, week=_fill_week, gauge=_fill_gauge
@@ -8404,10 +8448,12 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                             _fill_avail_mc = _implied_mc
                 _rem_cap = _found_rem_cap
                 # เพิ่ม cap จาก new plan carry machine (full week capacity) เข้า _rem_cap
-                if _is_new_plan_carry_fill and _fill_actual_wd > 0 and _fill_daily_cap > 0:
-                    _extra_carry_cap = _new_carry_at_fill * _fill_daily_cap * _fill_actual_wd
+                # ⚠️ ใช้ _fill_own_mc (เครื่องของแผนเอง) ไม่ใช่ _new_carry_at_fill (รวมเครื่อง booking)
+                # เพราะ capacity ที่เหลือของเครื่อง booking อยู่ใน _found_rem_cap อยู่แล้ว → บวกซ้ำไม่ได้
+                if _is_new_plan_carry_fill and _fill_actual_wd > 0 and _fill_daily_cap > 0 and _fill_own_mc > 0:
+                    _extra_carry_cap = _fill_own_mc * _fill_daily_cap * _fill_actual_wd
                     _rem_cap += _extra_carry_cap
-                    print(f"[CARRY+BK FILL] {item} W{_fill_week}: +carry cap {_new_carry_at_fill}mc × {_fill_daily_cap:.2f} × {_fill_actual_wd}วัน = +{_extra_carry_cap:.2f} → total _rem_cap={_rem_cap:.2f}")
+                    print(f"[CARRY+BK FILL] {item} W{_fill_week}: +carry cap {_fill_own_mc}mc × {_fill_daily_cap:.2f} × {_fill_actual_wd}วัน = +{_extra_carry_cap:.2f} → total _rem_cap={_rem_cap:.2f}")
                 # YD-ORDERS: ถ้า SUB_COLOR เปลี่ยน → หัก capacity ออก 1 วัน (สะสมในสัปดาห์เดียวกัน)
                 if order_type == "YD-ORDERS" and sub_color:
                     _fill_prev_color = last_sub_color.get(_fill_ck, "")
@@ -8426,6 +8472,20 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                             remaining_week_cap_owner.pop(_rem_cap_key, None)
                             print(f"[YD SUB_COLOR FILL] {item} W{_fill_week}: color setup หัก cap จนหมด → ข้าม fill week นี้ (กัน infinite loop)")
                             break
+                # เครื่องของ fill row นี้ใช้ร่วมกับแถวที่ครองเครื่องอยู่แล้วใน (item, mc, week) เดียวกันหรือไม่
+                # ถ้าใช่ → แถวนี้ต้องรายงาน ACTUAL_MC = 0 มิฉะนั้นผลรวมเครื่องต่อสัปดาห์จะนับซ้ำ
+                # (เช่น SO A 3 เครื่อง + SO B 3 เครื่อง = 6 ทั้งที่เป็นเครื่องชุดเดียวกัน 3 ตัว)
+                _fill_shared_owner = next(
+                    (
+                        str(p.get("SC_SO_NO", "")).strip()
+                        for p in plans
+                        if p.get("ITEM_CODE") == item
+                        and p.get("MC_GROUP") == _fill_mc_group
+                        and p.get("PLAN_WEEK") == _fill_week
+                        and int(p.get("ACTUAL_MC", 0) or 0) > 0
+                    ),
+                    None,
+                )
                 while qty_left > 0 and _rem_cap > 0:
                     if _fill_rev_weight and _fill_rev_weight > 0:
                         _rem_batches = int(_rem_cap // _fill_rev_weight)
@@ -8444,9 +8504,15 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                             "PRODUCE_QTY": produce,
                             "SETUP_DAYS": 0,
                             "REQUIRED_MC": _fill_avail_mc,
-                            "ACTUAL_MC": _fill_avail_mc,
-                            "CARRYOVER_MC": _fill_avail_mc,
+                            "ACTUAL_MC": 0 if _fill_shared_owner else _fill_avail_mc,
+                            "CARRYOVER_MC": 0 if _fill_shared_owner else _fill_avail_mc,
                             "NEW_MC": 0,
+                            "MC_SHARED": _fill_avail_mc if _fill_shared_owner else 0,
+                            "REMARK": (
+                                f"เติมเข้าเครื่องเดิม — ใช้เครื่อง {_fill_avail_mc} ตัวร่วมกับ SO {_fill_shared_owner} ({_fill_mc_group}) ไม่ใช้เครื่องเพิ่ม ไม่ต้อง setup"
+                                if _fill_shared_owner
+                                else f"เติมเข้าเครื่องที่วิ่งอยู่ {_fill_mc_group} {_fill_avail_mc} เครื่อง (ใช้ capacity ที่เหลือ) ไม่ต้อง setup"
+                            ),
                             "FACTORY_WORKING_DAYS": get_working_days_by_factory(_fill_mc_group, _fill_avail_mc, week=_fill_week, gauge=_fill_gauge),
                             "CALENDAR_WORKING_DAYS": len(get_working_days_in_week(_fill_week)),
                             "ACTUAL_WORKING_DAYS": _fill_actual_wd,
@@ -8475,6 +8541,9 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                         })
                         plans[-1]["NAY_COLOR"] = str(order.get("NAY_COLOR", "")).strip()
                         plans[-1]["COLOR_DESC"] = str(order.get("COLOR_DESC", "")).strip()
+                        # แถวแรกประกาศเครื่องไปแล้ว → แถวถัดไปใน week เดียวกันถือว่าใช้เครื่องร่วม
+                        if not _fill_shared_owner:
+                            _fill_shared_owner = str(order.get("SO_NO", order.get("SC/SO NO", ""))).strip()
                         qty_left -= produce
                         _rem_cap -= produce
                         # อัปเดต remaining cap หลังใช้งาน
@@ -10136,12 +10205,15 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                     if _is_new_plan_carry:
                         # รวม carry จาก new plan (W23) + old booking (W24) เป็น machines_in_use เดียวกัน
                         # เพื่อให้ planning loop เห็น cap รวม = N+1 เครื่อง แทนที่จะเห็นแค่ 1
-                        _old_bk_mc_here = booking_mc_by_week[_ck_key].get(_pw_idx, 0)
+                        # ⚠️ ต้องหักเครื่อง booking ของสัปดาห์ก่อนออกจาก carry ก่อน มิฉะนั้นเครื่อง booking
+                        # ตัวเดิมจะถูกบวกซ้ำทุกสัปดาห์ (เครื่องโตขึ้นเรื่อยๆ ทั้งที่เป็นเครื่องตัวเดียวกัน)
                         _new_carry_mc = machines_in_use.get(_carry_ck_skip, 0)
-                        _combined_carry = _new_carry_mc + _old_bk_mc_here
+                        _combined_carry, _skip_own_mc, _skip_bk_prev, _old_bk_mc_here = _combine_carry_with_booking(
+                            _ck_key, _new_carry_mc, _prev_lp_skip, _pw_idx
+                        )
                         if _old_bk_mc_here > 0:
                             machines_in_use[_carry_ck_skip] = _combined_carry
-                        print(f"[CARRY THROUGH OLD BOOKING] {item}+{plan_week}+{mc_group}: carry W23={_new_carry_mc} + old booking W{plan_week}={_old_bk_mc_here} → combined={_combined_carry} mc")
+                        print(f"[CARRY THROUGH OLD BOOKING] {item}+{plan_week}+{mc_group}: plan-own={_skip_own_mc} (carry {_new_carry_mc} − booking W ก่อน {_skip_bk_prev}) + old booking W{plan_week}={_old_bk_mc_here} → combined={_combined_carry} mc")
             # YD-ORDERS: ห้าม merge — แต่ละ SO ต้องแยกเป็น row ของตัวเอง
             if order_type == "YD-ORDERS":
                 _is_fg_split = True  # บังคับสร้าง row ใหม่เสมอ
@@ -10352,6 +10424,18 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                     "ACTUAL_MC": available_machines,  # เครื่องที่ใช้จริง week นี้
                     "CARRYOVER_MC": carryover_mc,  # เครื่องที่ carry-over จาก week ก่อน
                     "NEW_MC": new_mc,  # เครื่องใหม่ที่ setup week นี้
+                    "MC_SHARED": 0,  # แถวนี้ประกาศเครื่องเอง (ไม่ได้ใช้เครื่องร่วมกับแถวอื่น)
+                    "REMARK": _build_plan_remark(
+                        "COMKN" if _s9_active else mc_group,
+                        carryover_mc,
+                        new_mc,
+                        setup_days_used,
+                        booking_mc=0
+                        if _s9_active
+                        else booking_mc_by_week.get(
+                            _ck(item, mc_group, item_gauge), {}
+                        ).get(week_index(plan_week), 0),
+                    ),
                     "FACTORY_WORKING_DAYS": get_working_days_by_factory(
                         mc_group, available_machines, week=plan_week, gauge=item_gauge
                     ),

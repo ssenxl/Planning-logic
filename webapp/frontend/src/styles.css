@@ -503,6 +503,13 @@ button {
   margin-right: 2px;
 }
 
+/* emoji บอกประเภทเครื่อง: ➕ ใช้เครื่องร่วม / 🆕 setup ใหม่ / 🔁 carry เครื่องเดิม */
+.gbar-mc {
+  font-size: 10px;
+  margin-right: 3px;
+  flex: none;
+}
+
 .gbar-del {
   margin-left: auto;
   border: none;

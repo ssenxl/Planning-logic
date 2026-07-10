@@ -44,6 +44,22 @@ const LOAD_TYPES = [
   { key: 'PHET_SINGLE', label: 'PHET SINGLE' },
 ]
 
+// ประเภทเครื่องของแถวแผน → emoji ติดหน้า item บนบล็อก
+// ➕ ใช้เครื่องร่วมกับแถวอื่น (MC_SHARED > 0) — ไม่กินเครื่องเพิ่ม ไม่ต้อง setup
+// 🆕 setup เครื่องใหม่ (NEW_MC > 0) — กินเครื่องจากพูล + เสียเวลา setup
+// 🔁 carry เครื่องเดิมจากสัปดาห์ก่อน (CARRYOVER_MC > 0) — ไม่ต้อง setup
+const MC_KINDS = {
+  shared: { icon: '➕', label: 'เติมเข้าเครื่องเดิม (ใช้เครื่องร่วม ไม่กินเครื่องเพิ่ม)' },
+  setup: { icon: '🆕', label: 'setup เครื่องใหม่' },
+  carry: { icon: '🔁', label: 'carry เครื่องเดิม (ไม่ต้อง setup)' },
+}
+function mcKind(newMc, carryMc, sharedMc) {
+  if (sharedMc > 0) return 'shared'
+  if (newMc > 0) return 'setup'
+  if (carryMc > 0) return 'carry'
+  return ''
+}
+
 // เลขสัปดาห์ปัจจุบันตามนิยาม Fri–Thu (บวก 3 วันก่อนคิด ISO week) — ต้องตรงกับ Calendar.py
 function currentPlanWeek() {
   const now = new Date()
@@ -80,6 +96,7 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, onMoveWe
       week: at('PLAN_WEEK'), item: at('ITEM_CODE'), qty: at('PRODUCE_QTY'),
       reqmc: at('REQUIRED_MC'), factory: at('FACTORY_TYPE'), cat: at('CAT'),
       newmc: at('NEW_MC'), gauge: at('MC_GUAGE'), actualmc: at('ACTUAL_MC'),
+      carrymc: at('CARRYOVER_MC'), sharedmc: at('MC_SHARED'), remark: at('REMARK'),
     }
   }, [columns])
 
@@ -177,12 +194,15 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, onMoveWe
     for (const { row, idx } of rows) {
       const key = rowKey(row) + '||' + norm(row[ci.week])
       if (!m.has(key)) m.set(key, [])
+      const num = (i) => (i >= 0 ? Number(norm(row[i])) || 0 : 0)
       m.get(key).push({
         idx,
         item: norm(row[ci.item]),
         ck: colorKey(row),
         qty: ci.qty >= 0 ? norm(row[ci.qty]) : '',
         actualmc: ci.actualmc >= 0 ? norm(row[ci.actualmc]) : '',
+        mc: mcKind(num(ci.newmc), num(ci.carrymc), num(ci.sharedmc)),
+        remark: ci.remark >= 0 ? norm(row[ci.remark]) : '',
       })
     }
     return m
@@ -268,6 +288,16 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, onMoveWe
         <span className="hint small" style={{ padding: 0 }}>
           ลากบล็อกไปคอลัมน์สัปดาห์อื่นเพื่อเปลี่ยน <b>PLAN_WEEK</b> (กลุ่มแถวคงเดิม) — ตารางด้านล่างจะอัปเดตตาม
         </span>
+        {ci.sharedmc >= 0 && (
+          <div className="gantt-legend">
+            <span className="glegend-title">เครื่อง:</span>
+            {Object.entries(MC_KINDS).map(([k, v]) => (
+              <span key={k} className="glegend" title={v.label}>
+                <b className="gbar-mc">{v.icon}</b>{v.label}
+              </span>
+            ))}
+          </div>
+        )}
         {colorCols.length > 0 && (
           <div className="gantt-legend">
             <span className="glegend-title">สีตาม CAT / Guage:</span>
@@ -382,9 +412,10 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, onMoveWe
                             onDragEnd={locked ? undefined : () => { setDragIdx(null); setOverWeek(null) }}
                             onDoubleClick={() => startEditQty(j, locked)}
                             style={isColor ? undefined : { background: colorOf(j.ck) }}
-                            title={`${j.item}\n${r.vals.join(' • ')} • สัปดาห์ ${w}${j.qty !== '' ? `\nจำนวน ${j.qty}` : ''}${j.actualmc !== '' ? ` • ใช้ ${j.actualmc} เครื่อง` : ''}\nสี: ${j.ck}${isColor ? '\n★ งานสี (ต้องย้อม)' : ''}${onEditQty && !locked && j.qty !== '' ? '\n✏ double click เพื่อแก้จำนวน' : ''}${locked ? '\n🔒 สัปดาห์ freeze — แก้ไม่ได้' : ''}`}>
+                            title={`${j.item}\n${r.vals.join(' • ')} • สัปดาห์ ${w}${j.qty !== '' ? `\nจำนวน ${j.qty}` : ''}${j.actualmc !== '' ? ` • ใช้ ${j.actualmc} เครื่อง` : ''}${j.mc ? `\n${MC_KINDS[j.mc].icon} ${MC_KINDS[j.mc].label}` : ''}${j.remark ? `\n${j.remark}` : ''}\nสี: ${j.ck}${isColor ? '\n★ งานสี (ต้องย้อม)' : ''}${onEditQty && !locked && j.qty !== '' ? '\n✏ double click เพื่อแก้จำนวน' : ''}${locked ? '\n🔒 สัปดาห์ freeze — แก้ไม่ได้' : ''}`}>
                             {locked && <span className="gbar-star">🔒</span>}
                             {isColor && !locked && <span className="gbar-star">★</span>}
+                            {j.mc && <span className="gbar-mc">{MC_KINDS[j.mc].icon}</span>}
                             <span className="gbar-item">{j.item}</span>
                             {editing ? (
                               <input className="gbar-qty-edit" type="number" step="any" autoFocus
