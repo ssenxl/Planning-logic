@@ -407,7 +407,6 @@ def _get_spare_info(factory: str, mc_cat: str, tgt_g: str):
                 best_key = _k
     return best_val, best_key
 _current_order_rdd_idx = None  # rdd_idx ของ order ที่กำลัง plan อยู่ (ใช้ตรวจ JIT timing)
-_PLANNING_DISABLE_S9 = False  # True = planning pass ที่ปิด S9 ทั้งหมด (ใช้ผลิต PLAN_NO_S9)
 
 
 
@@ -802,27 +801,19 @@ except Exception as _e_is:
     ITEM_SPECIAL_LOOKUP = {}
 
 
-# S9 Logic: โหลด Item S9, S9 Only, MC S9
-_s9_eligible_items: set = set()  # items ที่ใช้ S9 เป็น fallback เมื่อไม่ทัน
+# S9 Logic: โหลด S9 Only + MC S9
+# ⚠️ เลิกใช้ S9 Eligible (fallback เมื่อเครื่องปกติไม่ทัน) แล้ว — เหลือเฉพาะ "S9 Only"
+# ที่ต้อง route ไป S9 pool เสมอ จึงไม่อ่านชีท "Item S9" อีก
 _s9_only_items: set = set()       # items ที่ใช้ S9 เสมอ
 _mc_s9_df: "pd.DataFrame" = pd.DataFrame()
 _s9_weekly_usage: dict = {}  # {(week, s9_mc_upper, gauge_norm): machines_allocated}
 try:
-    _is9_df = pd.read_excel(_MASTER_MC_PATH, sheet_name="Item S9")
-    _is9_df.columns = _is9_df.columns.str.strip()
-    _tmp_is9 = _is9_df.dropna(subset=["ITEM_CODE", "MC_GAUGE"])
-    _s9_eligible_items = set(
-        zip(
-            _tmp_is9["ITEM_CODE"].astype(str).str.strip().str.upper(),
-            _tmp_is9["MC_GAUGE"].astype(str).str.strip().str.upper().str.replace("G", "").str.replace("GAUGE", ""),
-        )
-    )
     _s9only_df = pd.read_excel(_MASTER_MC_PATH, sheet_name="S9 Only")
     _s9only_df.columns = _s9only_df.columns.str.strip()
     _s9_only_items = set(str(v).strip().upper() for v in _s9only_df["ITEM_CODE"].dropna())
     _mc_s9_df = pd.read_excel(_MASTER_MC_PATH, sheet_name="MC S9")
     _mc_s9_df.columns = _mc_s9_df.columns.str.strip()
-    print(f"[S9] Loaded {len(_s9_eligible_items)} eligible (item,gauge) pairs, {len(_s9_only_items)} S9-only, {len(_mc_s9_df)} MC S9 entries")
+    print(f"[S9] Loaded {len(_s9_only_items)} S9-only items, {len(_mc_s9_df)} MC S9 entries")
 except Exception as _s9_err:
     print(f"[WARN] Cannot load S9 data from MasterMC: {_s9_err}")
 
@@ -6872,18 +6863,15 @@ weekly_job_usage_old = {wk: dict(mc_dict) for wk, mc_dict in weekly_job_usage.it
 
 
 # =========================
-# PLANNING LOOP (ใช้รัน 2 รอบ: pass 1 = มี S9, pass 2 = ปิด S9)
+# PLANNING LOOP (รันรอบเดียว — S9 เหลือเฉพาะ routing ของ item ใน "S9 Only")
 # =========================
-def _run_planning_loop(disable_s9: bool = False) -> list:
-    global _PLANNING_DISABLE_S9
+def _run_planning_loop() -> list:
     global weekly_new_plan_usage, remaining_week_cap, remaining_week_cap_owner
     global _type_special_weekly_usage
     global cylinder_change_count, cylinder_adjustments, _cylinder_change_for_item
     global _cylinder_change_start_map, _cylinder_change_mc_count, _cylinder_change_done
     global _carry_cyl_pending, _current_order_rdd_idx, _s9_weekly_usage
     global orders, sc_so_no, plans, _skip_no_cap, _skip_no_mc_group, _skip_no_factory, _skip_not_in_master
-
-    _PLANNING_DISABLE_S9 = disable_s9
 
     # Reset state ที่ถูก init ก่อน line 6737 (ต้อง reset ทุก pass)
     _type_special_weekly_usage = {}
@@ -8036,7 +8024,7 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
         # YD-ORDERS: re-clamp ห้ามวางก่อนวันย้อมเสร็จ (order_week = next_week หลัง DYE_END_DATE)
         # gate แรก (บรรทัด ~7826) อาจถูก override โดย pull-back ทีหลัง:
         # WARM GAP FILL / FG CONTINUATION / booking pull-back → ดึง plan_week กลับมาก่อน order_week
-        # โดยไม่เช็ควันนัดย้อม ทำให้ PLAN_NO_S9 วางก่อนย้อมเสร็จ จึงต้อง clamp ซ้ำครั้งสุดท้าย
+        # โดยไม่เช็ควันนัดย้อม ทำให้แผนวางก่อนย้อมเสร็จ จึงต้อง clamp ซ้ำครั้งสุดท้าย
         if order_type == "YD-ORDERS" and order_week is not None:
             _yd_floor_idx = week_index(order_week)
             _yd_cur_idx = week_index(plan_week)
@@ -8662,18 +8650,11 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                         locked_mc_group_for[(sc_so_no, item)] = _mc_r
                 # S9 Logic: reset flag ต่อ iteration แล้วตรวจสอบใหม่
                 _s9_active = False
-                # S9 trigger ทุก iteration (ไม่มี _s9_split_done gate)
+                # S9 trigger ทุก iteration — เฉพาะ item ใน "S9 Only" เท่านั้น
+                # (เลิกใช้ S9 Eligible/fallback แล้ว: งานที่เครื่องปกติไม่ทันจะไม่ถูกโยนไป S9 อีก)
                 if required_machines_info:
                     _item_u_s9 = str(item).strip().upper()
-                    _gauge_norm_s9 = _normalize_gauge(_gauge_r) if _gauge_r is not None else ""
-                    _s9_trigger = (
-                        _item_u_s9 in _s9_only_items  # S9 Only: trigger เสมอ ทั้ง Pass 1 และ Pass 2
-                        or (
-                            not _PLANNING_DISABLE_S9  # Eligible: เฉพาะ Pass 2 (ปิดใน PLAN_NO_S9 pass)
-                            and (_item_u_s9, _gauge_norm_s9) in _s9_eligible_items
-                            and (not _feas_r or past_rdd or _s9_week_locked)
-                        )
-                    )
+                    _s9_trigger = _item_u_s9 in _s9_only_items
                     if _s9_trigger and _gauge_r is not None and _mc_r is not None:
                         _s9_mc_cat_t = _mc_to_type1(_mc_r, _gauge_r)
                         _s9r = _calc_s9_required_machines(
@@ -10735,15 +10716,9 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
     return plans
 
 # =========================
-# รันรอบเดียว (ปิด S9): ใช้ผล no-S9 เป็น plan หลัก — เลิกรันรอบ S9 แล้ว
+# รัน planning รอบเดียว (S9 เหลือเฉพาะ routing ของ item ใน "S9 Only")
 # =========================
-_plans_no_s9 = _run_planning_loop(disable_s9=True)
-# บันทึก cylinder state จาก pass no-S9
-_cylinder_change_for_item_no_s9 = dict(_cylinder_change_for_item)
-
-# รันรอบเดียว (ปิด S9) — ใช้ผล no-S9 เป็น plan หลัก ไม่รันรอบ S9 อีก
-_plans_with_s9 = _plans_no_s9
-plans = _plans_with_s9
+plans = _run_planning_loop()
 
 # EXPORT
 # =========================
@@ -10789,29 +10764,6 @@ for _ci, _cr in plan_df.iterrows():
     _ck_mc = str(_cr.get("MC_GROUP", "")).strip().upper()
     if (_ck_week, _ck_item, _ck_mc) in _cyl_trigger_keys:
         plan_df.at[_ci, "CYLINDER_CHANGE"] = "Yes"
-
-# =========================
-# เตรียม _plan_no_s9_df (pass 2 = ปิด S9) ล่วงหน้า — ใช้สร้างชีท *_NO_S9 หลายจุด
-# (REMAINING_JOBS_NO_S9, SETUP_TRACKING_NO_S9, PLAN_NO_S9) ให้ใช้ df ตัวเดียวกัน
-# =========================
-_plan_no_s9_df = pd.DataFrame(_plans_no_s9)
-if not _plan_no_s9_df.empty:
-    if "PLAN_WEEK" in _plan_no_s9_df.columns:
-        _plan_no_s9_df["PLAN_YEAR"] = _plan_no_s9_df["PLAN_WEEK"].map(_week_year_lookup).fillna(TODAY.year).astype(int)
-    if "MC_GROUP" in _plan_no_s9_df.columns:
-        _plan_no_s9_df["CAT"] = _plan_no_s9_df.apply(
-            lambda r: _mc_to_type1(str(r.get("MC_GROUP", "")), r.get("MC_GUAGE")), axis=1
-        )
-    _plan_no_s9_df["CYLINDER_CHANGE"] = ""
-    _cyl_keys_no_s9 = set()
-    for (_ciw, _cii, _cimg) in _cylinder_change_for_item_no_s9:
-        _cyl_keys_no_s9.add((int(_ciw) + 1, _cii, str(_cimg).strip().upper()))
-    for _ci, _cr in _plan_no_s9_df.iterrows():
-        _ck_w = int(_cr.get("PLAN_WEEK") or 0)
-        _ck_i = str(_cr.get("ITEM_CODE", "")).strip().upper()
-        _ck_m = str(_cr.get("MC_GROUP", "")).strip().upper()
-        if (_ck_w, _ck_i, _ck_m) in _cyl_keys_no_s9:
-            _plan_no_s9_df.at[_ci, "CYLINDER_CHANGE"] = "Yes"
 
 # =========================
 # LOAD BALANCING - Apply to final plan
@@ -10939,7 +10891,6 @@ def _build_remaining_df(plan_frame):
     )
 
 remaining_df = _build_remaining_df(plan_df)
-remaining_no_s9_df = _build_remaining_df(_plan_no_s9_df)  # เวอร์ชันปิด S9 สำหรับ PLAN_NO_S9
 print("📋 สรุป Remaining Jobs ต่อ Week (factory-wide ต่อ Type, OLD + NEW):")
 if not remaining_df.empty:
     for _week in sorted(remaining_df["WEEK"].unique()):
@@ -11655,7 +11606,6 @@ def _finalize_setup_df(rows):
     return _df
 
 setup_tracking_df = _finalize_setup_df(_new_setup_rows(plan_df) + _old_setup_rows)
-setup_tracking_no_s9_df = _finalize_setup_df(_new_setup_rows(_plan_no_s9_df) + _old_setup_rows)  # เวอร์ชันปิด S9
 
 
 if not setup_tracking_df.empty:
@@ -11754,14 +11704,6 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as _writer:
     setup_tracking_df.to_excel(_writer, sheet_name="SETUP_TRACKING", index=False)
     _unplanned_df.to_excel(_writer, sheet_name="UNPLANNED", index=False)
     _cylinder_change_df.to_excel(_writer, sheet_name="CYLINDER_CHANGE", index=False)
-    # PLAN_NO_S9: plan จาก pass 2 (ไม่มี S9 routing เลย) — ใช้ _plan_no_s9_df ที่ enrich ไว้แล้วด้านบน
-    if "S9_ROUTING" in _plan_no_s9_df.columns:
-        _ns9_other = [c for c in _plan_no_s9_df.columns if c != "S9_ROUTING"]
-        _plan_no_s9_df = _plan_no_s9_df[_ns9_other + ["S9_ROUTING"]]
-    _plan_no_s9_df.to_excel(_writer, sheet_name="PLAN_NO_S9", index=False)
-    # เวอร์ชันปิด S9 ของ REMAINING_JOBS / SETUP_TRACKING — ให้ load/ava ในเว็บตรงกับ PLAN_NO_S9
-    remaining_no_s9_df.to_excel(_writer, sheet_name="REMAINING_JOBS_NO_S9", index=False)
-    setup_tracking_no_s9_df.to_excel(_writer, sheet_name="SETUP_TRACKING_NO_S9", index=False)
 
 # ใส่สีให้ PLAN sheet: เหลือง=CYLINDER_CHANGE, แดง=S9_ROUTING
 _need_color = _cyl_trigger_keys or (
@@ -11786,16 +11728,6 @@ if _need_color:
         elif _is_cyl_row:
             for _cell in _row:
                 _cell.fill = _yellow
-    # ใส่สีให้ PLAN_NO_S9 sheet ด้วย: เหลือง=CYLINDER_CHANGE (ไม่มีแดง S9 เพราะปิด S9 แล้ว)
-    if "PLAN_NO_S9" in _wb.sheetnames:
-        _ws_no_s9 = _wb["PLAN_NO_S9"]
-        _hdr_no_s9 = {cell.value: cell.column for cell in _ws_no_s9[1]}
-        _cyl_col_no_s9 = _hdr_no_s9.get("CYLINDER_CHANGE")
-        if _cyl_col_no_s9:
-            for _row in _ws_no_s9.iter_rows(min_row=2, max_row=_ws_no_s9.max_row):
-                if str(_row[_cyl_col_no_s9 - 1].value).strip() == "Yes":
-                    for _cell in _row:
-                        _cell.fill = _yellow
     _wb.save(OUTPUT_FILE)
 
 

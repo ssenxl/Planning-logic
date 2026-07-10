@@ -17,45 +17,16 @@ _INT_RE = re.compile(r"^-?(0|[1-9][0-9]*)$")
 _FLOAT_RE = re.compile(r"^-?(0|[1-9][0-9]*|0?)\.[0-9]+$")
 
 
-# ชีทข้อมูลภายในของเวอร์ชันปิด S9 — ใช้คำนวณ load/ava แต่ไม่โชว์ใน dropdown
-_NO_S9_INTERNAL = ("REMAINING_JOBS_NO_S9", "SETUP_TRACKING_NO_S9")
-
-
-def _has_no_s9(sheets) -> bool:
-    return "PLAN_NO_S9" in sheets
-
-
-def _main_sheet(sheets) -> str:
-    """ชีทแผนหลัก (ชื่อจริงในไฟล์): PLAN_NO_S9 ถ้ามี ไม่งั้น fallback เป็น PLAN"""
-    return "PLAN_NO_S9" if _has_no_s9(sheets) else "PLAN"
-
-
-def _sheet_variant(sheets, base: str) -> str:
-    """เลือกชีท base เวอร์ชันปิด S9 (base + '_NO_S9') ถ้ามี ไม่งั้น base เดิม"""
-    v = base + "_NO_S9"
-    return v if v in sheets else base
+# ชีทแผนหลักในไฟล์ production_plan_*.xlsx
+# (เดิมมี PLAN_NO_S9 เป็นชีทซ้ำจาก pass ที่ปิด S9 — เลิกใช้ S9 fallback แล้วจึงเหลือชีทเดียว)
+_MAIN_SHEET = "PLAN"
 
 
 def _display_sheets(sheets) -> list:
-    """รายชื่อชีทสำหรับ dropdown (ชื่อที่ผู้ใช้เห็น):
-    - โชว์ PLAN_NO_S9 เป็น 'PLAN' (ขึ้นก่อน) และซ่อนชีท PLAN จริง (with-S9)
-    - ซ่อนชีทข้อมูลภายใน *_NO_S9
-    - ถ้าไม่มี PLAN_NO_S9 (ไฟล์เก่า) → คืนรายการเดิม"""
-    if not _has_no_s9(sheets):
-        return list(sheets)
-    out = ["PLAN"]  # = PLAN_NO_S9 (alias) ขึ้นก่อน
-    for s in sheets:
-        if s in ("PLAN", "PLAN_NO_S9") or s in _NO_S9_INTERNAL:
-            continue
-        out.append(s)
+    """รายชื่อชีทสำหรับ dropdown — เอา PLAN ขึ้นก่อน"""
+    out = [s for s in sheets if s == _MAIN_SHEET]
+    out += [s for s in sheets if s != _MAIN_SHEET]
     return out
-
-
-def _to_actual_sheet(display, sheets) -> str:
-    """แปลงชื่อชีทจาก frontend (display) → ชื่อชีทจริงในไฟล์"""
-    if _has_no_s9(sheets) and display == "PLAN":
-        return "PLAN_NO_S9"
-    return display
 
 
 def latest_path() -> Path | None:
@@ -101,17 +72,16 @@ def read_grid(sheet: str = None) -> dict:
     if p is None:
         raise FileNotFoundError("ยังไม่มีไฟล์แผนผลิต — กรุณากดรันแผนก่อน")
     wb = load_workbook(p, read_only=True, data_only=True)
-    all_sheets = wb.sheetnames
-    sheets = _display_sheets(all_sheets)  # ชื่อสำหรับ dropdown (PLAN_NO_S9 โชว์เป็น 'PLAN')
+    sheets = _display_sheets(wb.sheetnames)
     mtime = p.stat().st_mtime
     if not sheets:
         wb.close()
         return {"name": p.name, "mtime": mtime, "sheet": None,
                 "sheets": [], "columns": [], "rows": []}
-    # ค่าเริ่มต้น = ชีทแรกใน dropdown (= 'PLAN' ซึ่ง alias ของ PLAN_NO_S9)
+    # ค่าเริ่มต้น = ชีทแรกใน dropdown (= 'PLAN')
     if sheet is None or sheet not in sheets:
         sheet = sheets[0]
-    ws = wb[_to_actual_sheet(sheet, all_sheets)]  # แปลง display → ชีทจริง
+    ws = wb[sheet]
     rows = []
     for r in ws.iter_rows(values_only=True):
         rows.append(["" if v is None else _round2(v) for v in r])
@@ -170,7 +140,7 @@ def _plan_new_mc_by_type() -> dict:
         wb = load_workbook(p, read_only=True, data_only=True)
     except Exception:
         return {}
-    _sheet = _main_sheet(wb.sheetnames)
+    _sheet = _MAIN_SHEET
     if _sheet not in wb.sheetnames:
         wb.close()
         return {}
@@ -219,8 +189,8 @@ def load_by_week() -> dict:
     except Exception:
         return {}
     sheets = xls.sheet_names
-    _rj_sheet = _sheet_variant(sheets, "REMAINING_JOBS")   # ใช้เวอร์ชัน no-S9 ถ้ามี
-    _st_sheet = _sheet_variant(sheets, "SETUP_TRACKING")
+    _rj_sheet = "REMAINING_JOBS"
+    _st_sheet = "SETUP_TRACKING"
 
     # capacity (คงที่) จาก REMAINING_JOBS
     cap: dict = {}
@@ -293,7 +263,7 @@ def _plan_actual_mc_by_cat() -> dict:
         wb = load_workbook(p, read_only=True, data_only=True)
     except Exception:
         return {}
-    _sheet = _main_sheet(wb.sheetnames)
+    _sheet = _MAIN_SHEET
     if _sheet not in wb.sheetnames:
         wb.close()
         return {}
@@ -456,7 +426,6 @@ def write_grid(sheet: str, columns: list, rows: list) -> dict:
     shutil.copy2(p, bak)
 
     wb = load_workbook(p, data_only=False)
-    sheet = _to_actual_sheet(sheet, wb.sheetnames)  # แปลง display ('PLAN') → ชีทจริง (PLAN_NO_S9)
     if sheet not in wb.sheetnames:
         wb.close()
         raise KeyError(f"ไม่พบชีท '{sheet}' ในไฟล์แผน")
