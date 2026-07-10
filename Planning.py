@@ -11714,9 +11714,16 @@ _cylinder_change_df = pd.DataFrame(_cyl_rows) if _cyl_rows else pd.DataFrame(
     columns=["WEEK", "FACTORY", "MC_CAT", "GAUGE_FROM", "GAUGE_TO", "MC_CHANGED", "ITEM_CODE"]
 )
 
-if "S9_ROUTING" in plan_df.columns:
-    _other_cols = [c for c in plan_df.columns if c != "S9_ROUTING"]
-    plan_df = plan_df[_other_cols + ["S9_ROUTING"]]
+# ย้ายคอลัมน์เสริมที่เพิ่มเข้ามา (วันทำงาน + ประเภทเครื่อง + REMARK) + S9_ROUTING
+# ไปไว้ท้ายสุด เพื่อไม่ให้แทรกกลางคอลัมน์หลักที่คนอ่านแผนใช้ประจำ
+_tail_cols = [
+    c
+    for c in ["WD_BASE", "WD_W32", "MC_SHARED", "MC_BOOKING", "REMARK", "S9_ROUTING"]
+    if c in plan_df.columns
+]
+if _tail_cols:
+    _other_cols = [c for c in plan_df.columns if c not in _tail_cols]
+    plan_df = plan_df[_other_cols + _tail_cols]
 
 # วันทำงานตามปฏิทินของทุกสัปดาห์ (รวมสัปดาห์ที่ไม่มีงานในแผน)
 # หน้าเว็บใช้คำนวณจำนวนเครื่องใหม่เมื่อลากงานข้ามสัปดาห์:
