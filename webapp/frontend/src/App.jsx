@@ -4,21 +4,17 @@ import KnitPlan from './components/KnitPlan.jsx'
 import Data from './components/Data.jsx'
 import OrderColor from './components/OrderColor.jsx'
 import Masters from './components/Masters.jsx'
-import Database from './components/Database.jsx'
-import Schedule from './components/Schedule.jsx'
 import Outputs from './components/Outputs.jsx'
 import Login from './components/Login.jsx'
 
 import { auth, setOnUnauthorized } from './api.js'
 
 const TABS = [
-  { id: 'dashboard', label: 'แดชบอร์ด', icon: '▶' },
+  { id: 'dashboard', label: 'หน้าหลัก', icon: '🏠' },
   { id: 'plan', label: 'แผนผลิต', icon: '📅' },
   { id: 'data', label: 'DATA', icon: '📊' },
   { id: 'order-color', label: 'ดึง Order Color', icon: '🎨' },
   { id: 'masters', label: 'แก้ Master', icon: '✎' },
-  { id: 'database', label: 'ฐานข้อมูล', icon: '🗄' },
-  { id: 'schedule', label: 'ตั้งเวลา', icon: '⏰' },
   { id: 'outputs', label: 'ผลลัพธ์', icon: '📄' },
 ]
 
@@ -72,8 +68,6 @@ export default function App() {
         {tab === 'data' && <Data />}
         {tab === 'order-color' && <OrderColor />}
         {tab === 'masters' && <Masters />}
-        {tab === 'database' && <Database />}
-        {tab === 'schedule' && <Schedule />}
         {tab === 'outputs' && <Outputs />}
       </main>
 

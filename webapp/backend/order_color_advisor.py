@@ -15,7 +15,7 @@ order_color_advisor.py — วิเคราะห์ "item ที่มีส�
 """
 import json
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import config
 import plan_view
@@ -78,6 +78,29 @@ def _codes(ora):
         if c and c != "NAN":
             out.append(c)
     return out
+
+
+def _po_week(v):
+    """PO_IN_DATE ("18/06/2026,24/06/2026,...") → สัปดาห์ที่ด้ายเข้า "ครบทุกล็อต" (วันหลังสุด)
+    กติกา PO_IN: เส้นแบ่งสัปดาห์คือ พฤหัส–พุธ (ขยับจากนิยามศุกร์–พฤหัส 1 วัน) —
+    ด้ายที่เข้าวันพฤหัสนับเป็นด้ายเข้าของ "สัปดาห์ถัดไป" → สูตร = สัปดาห์ของ(วันที่+1)
+    = +4 วันก่อนหา ISO week (นิยามโปรเจกต์ +3) — "" ถ้าไม่มีวันที่"""
+    if v is None:
+        return ""
+    last = None
+    for part in str(v).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            d = datetime.strptime(part, "%d/%m/%Y").date()
+        except ValueError:
+            continue
+        if last is None or d > last:
+            last = d
+    if last is None:
+        return ""
+    return (last + timedelta(days=4)).isocalendar()[1]
 
 
 def _dye_weeks(load_dye):
@@ -329,6 +352,7 @@ def build_booking_gantt() -> dict:
     code_meta = {}
     code_fg = {}
     code_need = {}          # รหัส → จำนวน กก. ที่ต้องถักเพื่อย้อม (None = ไม่รู้ → นับทุกแถว)
+    code_info = {}          # รหัส → {qty: TOTAL_QTY (จำนวนให้สี), stock: STOCK_BALANCE_KG} โชว์ในตารางเทียบแผน
     stock_covered = set()   # รหัสงานสีที่มีผ้าใน stock พอ → ไม่ต้องถัก (ตัดออกจาก Gantt)
     n_stock_skip = 0
     for v in items.values():
@@ -353,6 +377,7 @@ def build_booking_gantt() -> dict:
             code_meta[c] = (dw, deadline)
             code_fg[c] = fw
             code_need[c] = need_qty
+            code_info[c] = {"qty": round(v["qty"], 1), "stock": round(v["stock"], 1)}
 
     p = plan_view._latest_booking_path()
     if p is None:
@@ -387,7 +412,10 @@ def build_booking_gantt() -> dict:
     # SETUP_DAYS = วัน setup ของแถว (ถ้าเป็น setup ใหม่) — หักออกจากวันทำงานปลายทาง
     cols = ["ITEM_CODE", "PLAN_WEEK", "CAT", "MC_GUAGE", "MC_GROUP",
             "ACTUAL_MC", "PRODUCE_QTY", "FG_WEEK", "FACTORY_TYPE", "NEW_MC",
-            "MC_DAYS", "WD_FRAC", "SETUP_DAYS"]
+            "MC_DAYS", "WD_FRAC", "SETUP_DAYS", "SO_NO", "TEAM_NAME", "PO_WEEK"]
+    has_so = "SO_NO" in df.columns
+    has_team = "TEAM_NAME" in df.columns   # ไฟล์ booking_final เก่าอาจยังไม่มี → ส่งค่าว่าง
+    has_po = "PO_IN_DATE" in df.columns    # สัปดาห์ด้ายเข้าครบ — ไฟล์เก่าไม่มี → ส่งค่าว่าง
     rows = []
     for _, r in df.iterrows():
         w = _to_int(r["WEEK"])
@@ -422,6 +450,9 @@ def build_booking_gantt() -> dict:
             round(mu * (eff if eff > 0 else wd), 3),
             round(wd / wmax, 3) if wmax > 0 else 1.0,
             setup,
+            str(r["SO_NO"]).strip() if has_so and pd.notna(r["SO_NO"]) else "",
+            str(r["TEAM_NAME"]).strip() if has_team and pd.notna(r["TEAM_NAME"]) else "",
+            _po_week(r["PO_IN_DATE"]) if has_po and pd.notna(r["PO_IN_DATE"]) else "",
         ])
 
     # ---- จัดกลุ่ม "run" = แผนต่อเนื่อง (carry) ของ item×เครื่อง สัปดาห์ติดกัน (gap ≤ 3 ไม่ setup ใหม่)
@@ -480,6 +511,7 @@ def build_booking_gantt() -> dict:
 
     return {"columns": cols, "rows": rows, "color_idx": color_idx,
             "color_codes": sorted(color_codes), "color_meta": color_meta,
+            "code_info": code_info,
             "plan_name": p.name, "injected": 0, "week_days": week_days,
             "stock_skipped": n_stock_skip, "edit_from": edit_from,
             "note": (f"ทุก item จาก booking {p.name} — ตั้งแต่ W{cur_week} "

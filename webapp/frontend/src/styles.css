@@ -490,11 +490,12 @@ button {
   border-color: #c3e6cd;
 }
 
-/* บล็อกงานสีใน Gantt (what-if) */
+/* บล็อกงานสีใน Gantt (what-if) — พื้นหลังทอง/ส้ม ให้แยกจากงานไม่มีสีได้ทันที */
 .gbar-color {
-  outline: 2px solid #111;
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  outline: 2px solid #b45309;
   outline-offset: -2px;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, .6) inset;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
 }
 
 .gbar-star {
@@ -613,6 +614,17 @@ button {
   border-bottom: 2px solid #e2c98a;
 }
 
+/* มีแถว PO_IN ต่อท้าย → เส้นคั่น item ย้ายไปอยู่ที่แถว PO_IN แทน */
+.chg-table .chg-after.mid td {
+  border-bottom: 1px solid #f0e3bd;
+}
+
+.chg-table .chg-po td {
+  color: #8a6d1a;
+  background: #fffdf2;
+  border-bottom: 2px solid #e2c98a;
+}
+
 .chg-table .cell-out {
   background: #fdeceb !important;
   color: #c0392b !important;
@@ -622,6 +634,12 @@ button {
 .chg-table .cell-in {
   background: #e6f4ea !important;
   color: #1a7f37 !important;
+  font-weight: 700;
+}
+
+.chg-table .cell-po {
+  background: #fff3bf !important;
+  color: #8a6d1a !important;
   font-weight: 700;
 }
 
@@ -636,6 +654,14 @@ button {
 .cell-in-demo {
   background: #e6f4ea;
   color: #1a7f37;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+.cell-po-demo {
+  background: #fff3bf;
+  color: #8a6d1a;
   font-weight: 700;
   padding: 0 4px;
   border-radius: 3px;
@@ -909,6 +935,30 @@ button {
 
 .status {
   margin-top: 6px;
+}
+
+.status-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+button.ghost.sm {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+button.ghost.sm:hover {
+  border-color: var(--pri);
+  color: var(--pri);
+  background: var(--pri-soft);
 }
 
 /* log */

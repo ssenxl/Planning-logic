@@ -17,7 +17,6 @@ from pydantic import BaseModel
 import config
 import runner
 import masters
-import database
 import scheduler
 import auth
 import map_item_view
@@ -49,8 +48,6 @@ AUTH_OPEN_PATHS = {"/api/login", "/api/health"}
 def _is_download_path(path: str) -> bool:
     """endpoint ดาวน์โหลดไฟล์ — เปิดให้โหลดได้โดยไม่ต้องมี token
     (ใช้ลิงก์ <a href> โหลดตรงได้ทุกเมื่อ); ไม่รวม /api/outputs/booking ที่เป็น list"""
-    if path == "/api/database/download":
-        return True
     if path == "/api/map-item/download":
         return True
     if path == "/api/plan/download":
@@ -206,32 +203,6 @@ def api_output_delete(fname: str):
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"ลบไม่ได้: {e}")
     return {"ok": True, "deleted": fname}
-
-
-# ---------------- Database (ดูไฟล์ข้อมูลในโปรเจกต์ read-only) ----------------
-@app.get("/api/database")
-def api_database():
-    return database.list_datasets()
-
-
-@app.get("/api/database/sheet")
-def api_database_sheet(file: str, sheet: str = None):
-    try:
-        return database.read_grid(file, sheet)
-    except (KeyError, FileNotFoundError) as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/database/download")
-def api_database_download(file: str):
-    try:
-        p = database._resolve(file)
-    except (KeyError, FileNotFoundError) as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return FileResponse(str(p), filename=p.name,
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 # ---------------- Map Item (ผลลัพธ์ Datamining ↔ Booking) ----------------

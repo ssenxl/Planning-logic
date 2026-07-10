@@ -81,9 +81,9 @@ if not MASTER_MC_FILE.exists():
         f"กรุณาแก้ path ใน config.ini หัวข้อ [paths] master_mc ให้ตรงกับเครื่องของคุณ"
     )
 OUTPUT_DIR = BASE_DIR / "data_plan"
-from datetime import date as _date_today
-_d = _date_today.today()
-OUTPUT_FILE = OUTPUT_DIR / f"booking_final_ready_{_d.day}-{_d.month}-{_d.year+543}.xlsx"
+from datetime import datetime as _datetime_now
+_d = _datetime_now.now()
+OUTPUT_FILE = OUTPUT_DIR / f"booking_final_ready_{_d.day}-{_d.month}-{_d.year+543}_{_d.hour:02d}{_d.minute:02d}.xlsx"
 
 EXCLUDE_MC_GROUP = [
     "CL-NP",
@@ -105,6 +105,8 @@ KEEP_COLUMNS = [
     "GUAGE",
     "ITEM_CODE",
     "SO_NO",
+    "TEAM_NAME",
+    "PO_IN_DATE",
     "CAP_KNIT",
     "KP_WEIGHT",
     "WEEK",
@@ -618,6 +620,12 @@ if "CAT" in df.columns:
     agg_dict["CAT"] = "first"
 if "SO_NO" in df.columns:
     agg_dict["SO_NO"] = lambda x: ",".join(x.dropna().astype(str).unique())
+if "TEAM_NAME" in df.columns:
+    agg_dict["TEAM_NAME"] = lambda x: ",".join(x.dropna().astype(str).unique())
+if "PO_IN_DATE" in df.columns:
+    # ค่าในไฟล์ booking เป็นวันที่ต่อกันด้วย comma อยู่แล้ว → แตกแล้วรวม unique ไม่ให้วันซ้ำ
+    agg_dict["PO_IN_DATE"] = lambda x: ",".join(dict.fromkeys(
+        d.strip() for v in x.dropna().astype(str) for d in v.split(",") if d.strip()))
 for col in ["YARN-USED", "YARN_USED", "STRUCTURE", "MATERIAL_CONTENT", "DESCRIPTION"]:
     if col in df.columns:
         agg_dict[col] = "first"

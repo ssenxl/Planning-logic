@@ -10,7 +10,7 @@ function fmt(iso) {
   return new Date(iso).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-export default function Schedule() {
+export default function Schedule({ onSaved }) {
   const [sched, setSched] = useState(null)
   const [msg, setMsg] = useState('')
   const [saving, setSaving] = useState(false)
@@ -38,6 +38,7 @@ export default function Schedule() {
     try {
       const r = await api.saveSchedule(payload)
       setSched(r); setMsg('บันทึกเวลาแล้ว')
+      if (onSaved) onSaved(r)
     } catch (e) { setMsg('บันทึกไม่ได้: ' + e.message) }
     finally { setSaving(false) }
   }

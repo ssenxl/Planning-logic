@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api } from '../api.js'
+import Schedule from './Schedule.jsx'
 
 const MODES = [
   { id: 'full', label: 'รันทั้ง Pipeline', desc: 'ดึง DB + รันแผนทั้งหมด', cls: 'primary' },
@@ -54,6 +55,7 @@ export default function Dashboard() {
   const [status, setStatus] = useState({})
   const [logs, setLogs] = useState([])
   const [sched, setSched] = useState({})
+  const [showSched, setShowSched] = useState(false)
   const [msg, setMsg] = useState('')
   const offset = useRef(0)
   const logBox = useRef(null)
@@ -150,7 +152,10 @@ export default function Dashboard() {
         </div>
 
         <div className="status">
-          <h3>กำหนดการอัตโนมัติถัดไป</h3>
+          <div className="status-head">
+            <h3>กำหนดการอัตโนมัติถัดไป</h3>
+            <button className="ghost sm" onClick={() => setShowSched(true)}>⏰ ตั้งเวลา</button>
+          </div>
           <table className="kv">
             <tbody>
               <tr><td>รันทั้ง Pipeline</td><td>{sched.full?.enabled ? fmt(sched.full?.next_run) : 'ปิดอยู่'}</td></tr>
@@ -169,6 +174,15 @@ export default function Dashboard() {
           </pre>
         </details>
       </div>
+
+      {showSched && (
+        <div className="modal-backdrop" onClick={() => setShowSched(false)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <button className="modal-close" title="ปิด" onClick={() => setShowSched(false)}>✕</button>
+            <Schedule onSaved={loadSched} />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

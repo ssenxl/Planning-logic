@@ -52,12 +52,6 @@ export const api = {
   outputs: () => req('GET', '/api/outputs'),
   outputsBooking: () => req('GET', '/api/outputs/booking'),
   deleteOutput: (name) => req('DELETE', '/api/outputs/' + encodeURIComponent(name)),
-  // database (ดูไฟล์ข้อมูลในโปรเจกต์ read-only)
-  database: () => req('GET', '/api/database'),
-  databaseSheet: (file, sheet) =>
-    req('GET', `/api/database/sheet?file=${encodeURIComponent(file)}` +
-      (sheet ? `&sheet=${encodeURIComponent(sheet)}` : '')),
-  databaseDownloadUrl: (file) => `/api/database/download?file=${encodeURIComponent(file)}`,
   // map item (ผลลัพธ์การเชื่อม Datamining ↔ Booking)
   mapItemFiles: () => req('GET', '/api/map-item'),
   mapItemSheet: (file, sheet) =>

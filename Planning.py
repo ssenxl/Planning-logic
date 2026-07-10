@@ -44,7 +44,7 @@ ITEMCORE_FILE = ITEMCORE_DIR / "Itemcore.xlsx"
 CALENDAR_FILE = "https://nanyangtextilegroup.sharepoint.com/:x:/s/SCM_Cloud/IQCXP4jH73zhQozDNvw1XF8OAY5m4p-UFv35Tcpza6v8mJo?e=43ffCc"
 BOOKING_DIR = BASE_DIR / "Booking"
 today = datetime.now()
-OUTPUT_FILE = DATA_PLAN_DIR / f"production_plan_{today.day}-{today.month}-{today.year+543}.xlsx"
+OUTPUT_FILE = DATA_PLAN_DIR / f"production_plan_{today.day}-{today.month}-{today.year+543}_{today.hour:02d}{today.minute:02d}.xlsx"
 SETUP_DAYS = 3
 SETUP_GAP_WEEK = 3
 # Week ที่ไม่ต้องการวางแผน (เช่น สัปดาห์หยุด/ปิดโรงงาน)
@@ -7991,6 +7991,17 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
                 # else: ใช้ start_idx เดิม (FG ที่ 2 เริ่มก่อน FG แรกเสร็จ → ผลิตซ้อนกันได้)
 
 
+        # YD-ORDERS: re-clamp ห้ามวางก่อนวันย้อมเสร็จ (order_week = next_week หลัง DYE_END_DATE)
+        # gate แรก (บรรทัด ~7826) อาจถูก override โดย pull-back ทีหลัง:
+        # WARM GAP FILL / FG CONTINUATION / booking pull-back → ดึง plan_week กลับมาก่อน order_week
+        # โดยไม่เช็ควันนัดย้อม ทำให้ PLAN_NO_S9 วางก่อนย้อมเสร็จ จึงต้อง clamp ซ้ำครั้งสุดท้าย
+        if order_type == "YD-ORDERS" and order_week is not None:
+            _yd_floor_idx = week_index(order_week)
+            _yd_cur_idx = week_index(plan_week)
+            if _yd_floor_idx is not None and _yd_cur_idx is not None and _yd_cur_idx < _yd_floor_idx:
+                start_idx = _yd_floor_idx
+                plan_week = order_week
+
         # ----------------------
         # weekly allocation with best machine selection
         # ----------------------
@@ -10640,15 +10651,14 @@ def _run_planning_loop(disable_s9: bool = False) -> list:
     return plans
 
 # =========================
-# รัน 2 รอบ: pass 2 (ปิด S9) ก่อน → บันทึก cylinder state → pass 1 (มี S9) ทีหลัง
-# เพื่อให้ globals สะท้อน pass 1 ตอน post-processing plan_df
+# รันรอบเดียว (ปิด S9): ใช้ผล no-S9 เป็น plan หลัก — เลิกรันรอบ S9 แล้ว
 # =========================
 _plans_no_s9 = _run_planning_loop(disable_s9=True)
-# บันทึก cylinder state จาก pass 2 (no-S9) ก่อน pass 1 reset ทับ
+# บันทึก cylinder state จาก pass no-S9
 _cylinder_change_for_item_no_s9 = dict(_cylinder_change_for_item)
 
-_plans_with_s9 = _run_planning_loop(disable_s9=False)
-# globals ตอนนี้สะท้อน pass 1 (with-S9) → ใช้กับ plan_df post-processing ต่อไป
+# รันรอบเดียว (ปิด S9) — ใช้ผล no-S9 เป็น plan หลัก ไม่รันรอบ S9 อีก
+_plans_with_s9 = _plans_no_s9
 plans = _plans_with_s9
 
 # EXPORT

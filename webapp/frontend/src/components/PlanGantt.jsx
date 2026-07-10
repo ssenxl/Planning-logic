@@ -123,9 +123,8 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, onMoveWe
       const mx = Math.max(...nums)
       if (mx < lo) return []
       const range = Array.from({ length: mx - lo + 1 }, (_, i) => String(lo + i))
-      // โหมด lockBefore: ตัดสัปดาห์หยุด (ไม่มีทั้งงาน/AVA/โหลด เช่น W31) ออก — วางงานที่นั่นไม่ได้
-      if (lockBefore != null) return range.filter(w => vals.has(w))
-      return range
+      // ตัดสัปดาห์หยุด (ไม่มีทั้งงาน/AVA/โหลด เช่น W31) ออกทั้งสองโหมด — วางงานที่นั่นไม่ได้
+      return range.filter(w => vals.has(w))
     }
     return arr.sort((a, b) => String(a).localeCompare(String(b), 'th', { numeric: true }))
   }, [rows, ci, supported, load, ava, lockBefore])
@@ -382,7 +381,7 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, onMoveWe
                             onDragStart={locked ? undefined : e => { e.dataTransfer.setData('text/plain', String(j.idx)); e.dataTransfer.effectAllowed = 'move'; setDragIdx(j.idx) }}
                             onDragEnd={locked ? undefined : () => { setDragIdx(null); setOverWeek(null) }}
                             onDoubleClick={() => startEditQty(j, locked)}
-                            style={{ background: colorOf(j.ck) }}
+                            style={isColor ? undefined : { background: colorOf(j.ck) }}
                             title={`${j.item}\n${r.vals.join(' • ')} • สัปดาห์ ${w}${j.qty !== '' ? `\nจำนวน ${j.qty}` : ''}${j.actualmc !== '' ? ` • ใช้ ${j.actualmc} เครื่อง` : ''}\nสี: ${j.ck}${isColor ? '\n★ งานสี (ต้องย้อม)' : ''}${onEditQty && !locked && j.qty !== '' ? '\n✏ double click เพื่อแก้จำนวน' : ''}${locked ? '\n🔒 สัปดาห์ freeze — แก้ไม่ได้' : ''}`}>
                             {locked && <span className="gbar-star">🔒</span>}
                             {isColor && !locked && <span className="gbar-star">★</span>}

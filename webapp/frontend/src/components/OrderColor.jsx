@@ -145,7 +145,7 @@ export default function OrderColor() {
     const at = (n) => basePlan.columns.indexOf(n)
     const due = at('RDD_WEEK') >= 0 ? at('RDD_WEEK') : at('FG_WEEK')
     const qty = at('PRODUCE_QTY') >= 0 ? at('PRODUCE_QTY') : at('PLAN_QTY')
-    return { week: at('PLAN_WEEK'), item: at('ITEM_CODE'), cat: at('CAT'), gauge: at('MC_GUAGE'), amc: at('ACTUAL_MC'), mcg: at('MC_GROUP'), qty, due }
+    return { week: at('PLAN_WEEK'), item: at('ITEM_CODE'), cat: at('CAT'), gauge: at('MC_GUAGE'), amc: at('ACTUAL_MC'), mcg: at('MC_GROUP'), qty, due, so: at('SO_NO'), team: at('TEAM_NAME'), po: at('PO_WEEK') }
   }, [basePlan])
   const avaWeeks = useMemo(
     () => Object.keys(pAva || {}).map(Number).filter(Number.isFinite).sort((a, b) => a - b),
@@ -168,13 +168,58 @@ export default function OrderColor() {
     if (!slot) return null
     return slot.remain - (occAt(rows, w, cg) - (slot.planBase || 0))
   }
-  // สัปดาห์ว่างถัดไปสำหรับงานที่ถูกถอด (เครื่องว่าง > 0) — ไล่จาก fromWeek+1 ไม่เจอค่อยวนหาก่อนหน้า
-  function nextFreeWeek(rows, cat, gauge, fromWeek) {
-    const cg = String(cat).trim() + '|' + gnorm(gauge)
-    for (const w of avaWeeks) if (w > fromWeek && (remainAt(rows, w, cg) ?? 0) > 0) return w
-    for (const w of avaWeeks) if (w !== fromWeek && (remainAt(rows, w, cg) ?? 0) > 0) return w
-    const later = avaWeeks.filter(w => w > fromWeek)
-    return later[0] ?? avaWeeks[avaWeeks.length - 1] ?? fromWeek
+  // เครื่องว่าง live ของ week โดยข้ามแถวใน skip (หาง run ที่กำลังจะย้ายออก — ไม่นับเครื่องที่เดิม)
+  function remainSkip(rowsW, w, cg, skip) {
+    const slot = pAva[String(w)]?.[cg]
+    if (!slot) return null
+    let occ = 0
+    for (const x of rowsW) {
+      if (skip && skip.has(x.bi)) continue
+      if (String(x.row[cidx.week]) === String(w) && cgKey(x.row) === cg) occ += Number(x.row[cidx.amc]) || 0
+    }
+    return slot.remain - (occ - (slot.planBase || 0))
+  }
+  // โควตา job setup ที่เหลือของ week ตามประเภทเครื่อง (ไม่มีข้อมูลโควตา = ไม่จำกัด)
+  function jobFreeAt(rowsW, w, t, skip) {
+    const info = pLoad?.[String(w)]?.[t]
+    const iNm = basePlan ? basePlan.columns.indexOf('NEW_MC') : -1
+    const iFac = basePlan ? basePlan.columns.indexOf('FACTORY_TYPE') : -1
+    if (!info || iNm < 0) return Infinity
+    let used = Number(info.old) || 0
+    for (const x of rowsW) {
+      if (skip && skip.has(x.bi)) continue
+      if (String(x.row[cidx.week]) !== String(w)) continue
+      if (jobTypeOf(iFac >= 0 ? x.row[iFac] : '', x.row[cidx.cat]) !== t) continue
+      used += Number(x.row[iNm]) || 0
+    }
+    return (Number(info.cap) || 0) - used
+  }
+  // หา week ปลายทางให้แถวที่ถูกถอด (ไล่จาก afterWeek+1 บนแกนทำงาน):
+  //   (ก) เครื่องว่าง ≥ เครื่องที่แถวใช้
+  //   (ข) ถ้าลงแล้วต้อง setup ใหม่ (แถวเป็น setup เอง หรือ gap จาก anchor > 3 สัปดาห์)
+  //       → job setup ของ week นั้นต้องเหลือพอ
+  // ไม่มี week ผ่านเงื่อนไข → week ท้ายสุดของแกน (ok=false ให้ UI เตือน)
+  function placeDisplaced(rowsW, xrow, afterWeek, anchorWeek, skip) {
+    const cg = cgKey(xrow)
+    const needMc = Math.max(1, Number(xrow[cidx.amc]) || 1)
+    const iSd = basePlan.columns.indexOf('SETUP_DAYS')
+    const iNm = basePlan.columns.indexOf('NEW_MC')
+    const iFac = basePlan.columns.indexOf('FACTORY_TYPE')
+    const hasSetup = iSd >= 0 && (Number(xrow[iSd]) || 0) > 0
+    const t = jobTypeOf(iFac >= 0 ? xrow[iFac] : '', xrow[cidx.cat])
+    for (const w of avaWeeks) {
+      if (w <= afterWeek) continue
+      if ((remainSkip(rowsW, w, cg, skip) ?? 0) < needMc) continue
+      const newSetup = !hasSetup && (anchorWeek == null || w - anchorWeek > 3)
+      if ((hasSetup || newSetup) && t) {
+        const needJobs = hasSetup ? Math.max(1, Number(xrow[iNm]) || needMc) : needMc
+        if (jobFreeAt(rowsW, w, t, skip) < needJobs) continue
+      }
+      return { week: w, ok: true, newSetup }
+    }
+    const last = avaWeeks.length ? avaWeeks[avaWeeks.length - 1] : afterWeek + 1
+    const w = Math.max(last, afterWeek + 1)
+    return { week: w, ok: false, newSetup: !hasSetup && (anchorWeek == null || w - anchorWeek > 3) }
   }
 
   // แถวที่เป็น "งานสี" ระบุด้วย index (เฉพาะ run ที่ครอบจำนวนให้สี — ส่วนเกิน = งานไม่มีสี)
@@ -200,13 +245,16 @@ export default function OrderColor() {
       const np = Math.min(Math.max(p - offsetPos, 0), axis.length - 1)
       return axis[np]
     }
-    const displacedSet = new Set()   // แถวที่ถูกถอดย้ายเดี่ยว → กลายเป็น setup ใหม่ (กิน job)
+    const displacedSet = new Set()   // แถวถูกถอดที่ขาดจาก run เดิม → กลายเป็น setup ใหม่ (กิน job)
+    const placeWarns = []            // แถวถูกถอดที่ไม่มี week ไหนเครื่อง/job ว่างพอ (วางไว้ท้ายแผน)
+    const iNmW = basePlan.columns.indexOf('NEW_MC')
     for (const [ck, sel] of Object.entries(choices)) {
       if (!sel) continue
       const ci0 = Number(ck)
       const first = byIdx.get(ci0)
       if (!first) continue
       let target = null
+      let pending = null             // หาง run ที่ถูกถอด — รอวางหลังย้ายงานสีเข้า target แล้ว
       if (sel.type === 'free') {
         target = Number(sel.week)
       } else {
@@ -215,41 +263,51 @@ export default function OrderColor() {
         if (!rr) continue
         target = Number(basePlan.rows[rrIdx][wi])
         // งานที่ถูกถอด: เลื่อน "หางของ run" (แถวนี้ + แถวถัดๆ ไปของแผนต่อเนื่องเดียวกัน)
-        // ไปข้างหน้าทีละ 1 ตำแหน่งบนแกนสัปดาห์ทำงาน (ripple) — ไม่กองรวมสัปดาห์เดียว
         const iRun = basePlan.columns.indexOf('RUN_ID')
         const rid = iRun >= 0 ? basePlan.rows[rrIdx][iRun] : null
         const tail = []
+        let prevW = null             // สัปดาห์หัว run ที่เหลือก่อน target — ใช้เช็ค gap > 3 (setup ใหม่)
         if (rid != null) {
           for (const x of rows) {
-            if (basePlan.rows[x.bi][iRun] === rid && Number(basePlan.rows[x.bi][wi]) >= target) tail.push(x)
+            if (basePlan.rows[x.bi][iRun] !== rid) continue
+            if (Number(basePlan.rows[x.bi][wi]) >= target) tail.push(x)
+            else prevW = Math.max(prevW ?? -Infinity, Number(x.row[wi]))
           }
           tail.sort((a, b) => Number(basePlan.rows[a.bi][wi]) - Number(basePlan.rows[b.bi][wi]))
+          if (prevW === -Infinity) prevW = null
         } else tail.push(rr)
-        for (const x of tail) {
-          const bw = Number(basePlan.rows[x.bi][wi])
-          const p = posOf.get(bw)
-          x.row[wi] = (p != null && p + 1 < axis.length) ? axis[p + 1] : bw + 1
-        }
-        // ถ้าหางเลื่อนแล้วขาดจากหัว run (gap > 3 สัปดาห์ = ต้อง setup ใหม่) → แถวแรกหางกิน job
-        if (tail.length) {
-          const headWeeks = []
-          for (const x of rows) {
-            if (rid != null && basePlan.rows[x.bi][iRun] === rid && Number(basePlan.rows[x.bi][wi]) < target)
-              headWeeks.push(Number(x.row[wi]))
-          }
-          const prevW = headWeeks.length ? Math.max(...headWeeks) : null
-          const firstNewW = Number(tail[0].row[wi])
-          if (prevW != null && firstNewW - prevW > 3) displacedSet.add(tail[0].bi)
-        }
+        pending = { tail, prevW }
       }
+      // ย้ายงานสี (ทั้ง run) เข้า target ก่อน → ตอนหา week ให้หางที่ถูกถอด เครื่องที่งานสีใช้ถูกนับแล้ว
       const p0 = posOf.get(Number(basePlan.rows[ci0][wi]))
       const pt = posOf.get(Number(target))
-      if (p0 == null || pt == null || p0 === pt) continue
-      const offsetPos = p0 - pt
-      const runRows = metaByIdx.get(ci0)?.run_rows || [ci0]
-      for (const bi of runRows) {
-        const x = byIdx.get(bi)
-        if (x) x.row[wi] = shiftWeek(basePlan.rows[bi][wi], offsetPos)
+      if (p0 != null && pt != null && p0 !== pt) {
+        const offsetPos = p0 - pt
+        const runRows = metaByIdx.get(ci0)?.run_rows || [ci0]
+        for (const bi of runRows) {
+          const x = byIdx.get(bi)
+          if (x) x.row[wi] = shiftWeek(basePlan.rows[bi][wi], offsetPos)
+        }
+      }
+      // วางหางทีละแถวตามลำดับ: week ต้องมีเครื่องว่างพอ และถ้าขาดจากแถวก่อนหน้า
+      // (gap > 3 = setup ใหม่) ต้องมี job setup ว่างพอ — แถวหางที่ยังไม่วางไม่นับเครื่อง/job
+      if (pending) {
+        const skip = new Set(pending.tail.map(x => x.bi))
+        let anchor = pending.prevW
+        let after = Number(target)
+        for (const x of pending.tail) {
+          const res = placeDisplaced(rows, x.row, after, anchor, skip)
+          x.row[wi] = res.week
+          skip.delete(x.bi)          // วางแล้ว — นับเครื่อง/job ที่ week ใหม่
+          if (res.newSetup) {
+            displacedSet.add(x.bi)
+            // ตั้ง job ชั่วคราวให้แถวถัดไปเห็นโควตาที่ถูกกิน (ค่าจริงคำนวณใหม่ท้าย memo)
+            if (iNmW >= 0) x.row[iNmW] = Math.max(1, Number(x.row[cidx.amc]) || 1)
+          }
+          if (!res.ok) placeWarns.push(`${String(x.row[cidx.item] ?? '')} → W${res.week}`)
+          anchor = res.week
+          after = res.week
+        }
       }
     }
     for (const [bi, w] of Object.entries(overrides)) { const x = byIdx.get(Number(bi)); if (x) x.row[wi] = w }
@@ -297,8 +355,9 @@ export default function OrderColor() {
         }
       }
     }
+    rows.warns = placeWarns          // แถวถูกถอดที่หา week ลงไม่ได้ — โชว์แถบเตือนบน UI
     return rows
-  }, [basePlan, choices, overrides, removed, qtyEdits, pAva, cidx, metaByIdx, avaWeeks])
+  }, [basePlan, choices, overrides, removed, qtyEdits, pAva, pLoad, cidx, metaByIdx, avaWeeks])
 
   const planRows = useMemo(() => work.map(x => ({ row: x.row, idx: x.bi })), [work])
   const colorRows = useMemo(() => {
@@ -334,33 +393,35 @@ export default function OrderColor() {
           }
         }
         // (2) เครื่องเต็ม → ถอดงานไม่มีสี CAT|เกจเดียวกันใน week ก่อนหน้า
-        //     งานที่ถอด = เลื่อนหางของ run ต่อกัน (ripple) → ปลายทาง = สัปดาห์ถัดไปบนแกนทำงาน
+        //     ปลายทางของงานที่ถอด = week แรกที่เครื่องว่างพอ (+ job setup ว่างพอ ถ้าต้อง setup ใหม่)
         const runSet = new Set(m.run_rows || [m.idx])
         const iRun = basePlan.columns.indexOf('RUN_ID')
-        const posOfW = new Map(avaWeeks.map((w, i) => [w, i]))
-        const nextOnAxis = (w) => {
-          const p = posOfW.get(Number(w))
-          return (p != null && p + 1 < avaWeeks.length) ? avaWeeks[p + 1] : Number(w) + 1
-        }
         for (const x of work) {
           if (runSet.has(x.bi) || colorIdxSet.has(x.bi)) continue
           if (cgKey(x.row) !== cg) continue
           const w = Number(x.row[cidx.week])
           if (w < editFrom || w >= curWeek) continue
-          const nf = nextOnAxis(w)
-          const due = cidx.due >= 0 ? Number(x.row[cidx.due]) : NaN
-          const lt = Number.isFinite(due) ? Math.max(0, nf - due) : 0
-          // จำนวนแถวหาง run เดียวกันที่จะเลื่อนตาม (รวมแถวนี้)
-          let tailLen = 1
+          // หาง run เดียวกันที่จะเลื่อนตาม (รวมแถวนี้) + สัปดาห์หัว run ที่เหลือ (เช็ค gap > 3)
+          let tailBis = [x.bi], prevW = null
           if (iRun >= 0) {
             const rid2 = basePlan.rows[x.bi][iRun]
-            tailLen = work.filter(y =>
-              basePlan.rows[y.bi][iRun] === rid2 && Number(basePlan.rows[y.bi][cidx.week]) >= w).length
+            tailBis = []
+            for (const y of work) {
+              if (basePlan.rows[y.bi][iRun] !== rid2) continue
+              const yw = Number(y.row[cidx.week])
+              if (yw >= w) tailBis.push(y.bi)
+              else prevW = Math.max(prevW ?? -Infinity, yw)
+            }
+            if (prevW === -Infinity) prevW = null
           }
-          cands.push({ idx: x.bi, item: String(x.row[cidx.item] ?? ''), week: w, moveTo: nf, target: w, late: lt, due, tailLen })
+          const res = placeDisplaced(work, x.row, w, prevW, new Set(tailBis))
+          const nf = res.week
+          const due = cidx.due >= 0 ? Number(x.row[cidx.due]) : NaN
+          const lt = Number.isFinite(due) ? Math.max(0, nf - due) : 0
+          cands.push({ idx: x.bi, item: String(x.row[cidx.item] ?? ''), week: w, moveTo: nf, target: w, late: lt, due, tailLen: tailBis.length, full: !res.ok })
         }
-        // แนะนำ: ดึงเข้าเร็วสุด (target น้อยสุด) → เครื่องว่างก่อนถอดงาน → งานที่ถอดสายน้อยสุด
-        cands.sort((a, b) => a.target - b.target || (a.free ? 0 : 1) - (b.free ? 0 : 1) || a.late - b.late)
+        // แนะนำ: ดึงเข้าเร็วสุด (target น้อยสุด) → เครื่องว่างก่อนถอดงาน → ตัวที่หา week ลงได้ → สายน้อยสุด
+        cands.sort((a, b) => a.target - b.target || (a.free ? 0 : 1) - (b.free ? 0 : 1) || (a.full ? 1 : 0) - (b.full ? 1 : 0) || a.late - b.late)
         if (cands.length) cands[0].best = true
       }
       // fits = ไม่ต้องทำอะไร (เร็วสุดแล้ว หรือไม่มีที่ให้เร็วขึ้น)
@@ -371,7 +432,7 @@ export default function OrderColor() {
       out.push({ meta: m, curWeek, remain: remain ?? 0, fits, canEarlier, locked, lateWeeks, gain, runLen, cands })
     }
     return out
-  }, [basePlan, work, removed, pAva, cidx, colorIdxSet])
+  }, [basePlan, work, removed, pAva, pLoad, avaWeeks, cidx, colorIdxSet])
 
   function planMoveWeek(idx, week) { setOverrides(o => ({ ...o, [idx]: week })) }
   // เลือกวิธีจัดงานสี (ทั้ง run): 'free:<week>' = ย้ายเข้าเครื่องว่าง | '<idx>' = ถอดงานไม่มีสีนั้น | '' = ล้าง
@@ -563,20 +624,22 @@ export default function OrderColor() {
     for (let bi = 0; bi < basePlan.rows.length; bi++) {
       const baseWeek = Number(basePlan.rows[bi][wi])
       const item = String(basePlan.rows[bi][cidx.item] ?? '')
+      const so = cidx.so >= 0 ? String(basePlan.rows[bi][cidx.so] ?? '').trim() : ''
+      const team = cidx.team >= 0 ? String(basePlan.rows[bi][cidx.team] ?? '').trim() : ''
       const isC = colorIdxSet.has(bi)
       if (removed.has(bi)) {
-        out.push({ bi, item, isColor: isC, type: 'removed', from: baseWeek })
+        out.push({ bi, item, so, team, isColor: isC, type: 'removed', from: baseWeek })
         continue
       }
       const x = byIdx.get(bi)
       if (!x) continue
       const curW = Number(x.row[wi])
-      if (curW !== baseWeek) out.push({ bi, item, isColor: isC, type: 'moved', from: baseWeek, to: curW })
+      if (curW !== baseWeek) out.push({ bi, item, so, team, isColor: isC, type: 'moved', from: baseWeek, to: curW })
       // แก้จำนวน (กก.) — แสดงแยกรายการ (แถวเดียวอาจทั้งย้ายและแก้จำนวน)
       const qe = cidx.qty >= 0 ? qtyEdits[bi] : undefined
       const baseQty = cidx.qty >= 0 ? Number(basePlan.rows[bi][cidx.qty]) : NaN
       if (qe != null && qe !== baseQty)
-        out.push({ bi, item, isColor: isC, type: 'qty', from: baseQty, to: qe, week: curW })
+        out.push({ bi, item, so, team, isColor: isC, type: 'qty', from: baseQty, to: qe, week: curW })
     }
     // งานสีขึ้นก่อน แล้วเรียงตาม week ใหม่ (รายการแก้จำนวนใช้ week ของแถว)
     const kw = (c) => c.type === 'qty' ? c.week : (c.to ?? c.from)
@@ -603,8 +666,12 @@ export default function OrderColor() {
       const e = items.get(k) || {
         item: String(brow[cidx.item] ?? ''),
         mcg: cidx.mcg >= 0 ? String(brow[cidx.mcg] ?? '') : '',
-        before: {}, after: {}, isColor: false,
+        before: {}, after: {}, po: {}, hasPo: false, poPushed: false,
+        isColor: false, so: new Set(), team: new Set(),
       }
+      // TEAM/SO ต่อแถวเป็น comma-join จาก booking — แตกเป็นรายตัวแล้วรวม unique ของทั้ง item
+      if (cidx.so >= 0) String(brow[cidx.so] ?? '').split(',').forEach(s => { const t = s.trim(); if (t) e.so.add(t) })
+      if (cidx.team >= 0) String(brow[cidx.team] ?? '').split(',').forEach(s => { const t = s.trim(); if (t) e.team.add(t) })
       const w = String(Number(brow[cidx.week]))
       e.before[w] = (e.before[w] || 0) + (Number(brow[cidx.qty]) || 0)
       if (colorIdxSet.has(bi)) e.isColor = true
@@ -615,17 +682,34 @@ export default function OrderColor() {
       if (!e) continue
       const w = String(Number(x.row[cidx.week]))
       e.after[w] = (e.after[w] || 0) + (Number(x.row[cidx.qty]) || 0)
+      // แถว PO_IN (เหลือง) = แผนใหม่เช็คด้ายเข้า — ทอได้เร็วสุด "สัปดาห์ถัดจากด้ายเข้าครบ" (PO_WEEK + 1)
+      // ช่องที่แผนใหม่ทอก่อนนั้นถูกดันไป PO_WEEK + 1
+      if (cidx.po >= 0) {
+        const pv = basePlan.rows[x.bi][cidx.po]
+        const pw = (pv === '' || pv == null) ? NaN : Number(pv)
+        const cw = Number(x.row[cidx.week])
+        if (Number.isFinite(pw)) e.hasPo = true
+        const yw = (Number.isFinite(pw) && pw + 1 > cw) ? pw + 1 : cw
+        if (yw !== cw) e.poPushed = true
+        e.po[String(yw)] = (e.po[String(yw)] || 0) + (Number(x.row[cidx.qty]) || 0)
+      }
     }
     const weekSet = new Set()
     for (const e of items.values()) {
       Object.keys(e.before).forEach(w => weekSet.add(Number(w)))
       Object.keys(e.after).forEach(w => weekSet.add(Number(w)))
+      if (e.hasPo) Object.keys(e.po).forEach(w => weekSet.add(Number(w)))
     }
     const weeks = [...weekSet].filter(Number.isFinite).sort((a, b) => a - b)
     const list = [...items.values()].sort((a, b) => (b.isColor - a.isColor) || a.item.localeCompare(b.item))
     for (const e of list) {
       e.totalBefore = Object.values(e.before).reduce((s, v) => s + v, 0)
       e.totalAfter = Object.values(e.after).reduce((s, v) => s + v, 0)
+      e.totalPo = Object.values(e.po).reduce((s, v) => s + v, 0)
+      // จำนวนให้สี (TOTAL_QTY) + Stock (STOCK_BALANCE_KG) จากไฟล์ Order Color — มีเฉพาะงานสี
+      const info = basePlan.code_info?.[e.item.trim().toUpperCase()]
+      e.orderQty = info?.qty
+      e.stockBal = info?.stock
     }
     return { weeks, list }
   }, [basePlan, work, changesList, cidx, colorIdxSet])
@@ -684,7 +768,7 @@ export default function OrderColor() {
                 <h2>แผนถักงานสี (Gantt) — ทุก item ต่อสัปดาห์ × เครื่อง</h2>
                 <div className="data-selected-meta">
                   {basePlan.plan_name ? `จาก booking ${basePlan.plan_name} • ` : ''}
-                  ★ = งานสี (ทอก่อน) • ลากบล็อกเปลี่ยนสัปดาห์ / คลิก ✕ ถอดงานไม่มีสีเพื่อเปิดที่ให้งานสี
+                  ★ บล็อกสีทอง = งานสี (ทอก่อน) • ลากบล็อกเปลี่ยนสัปดาห์ / คลิก ✕ ถอดงานไม่มีสีเพื่อเปิดที่ให้งานสี
                 </div>
               </div>
               <div className="actions">
@@ -696,6 +780,12 @@ export default function OrderColor() {
               </div>
             </div>
             {basePlan.note && <div className="msg note">ℹ️ {basePlan.note}</div>}
+            {work.warns?.length > 0 && (
+              <div className="msg note">
+                ⚠ งานที่ถูกถอดไม่มีสัปดาห์ที่เครื่อง/job setup ว่างพอ — วางไว้ท้ายแผนไปก่อน:{' '}
+                {[...new Set(work.warns)].join(' • ')}
+              </div>
+            )}
 
             <div className="cat-chips">
               <span className="hint small" style={{ padding: 0 }}>👁 ดูทีละ CAT × เกจ:</span>
@@ -743,7 +833,7 @@ export default function OrderColor() {
                             <option key={ci} value={cval(c)}>
                               {c.best ? '⭐ ' : ''}{c.free
                                 ? `เริ่มทอ W${c.week} (เครื่องว่าง เร็วขึ้น ${s.curWeek - c.week} สัปดาห์${s.runLen > 1 ? ' ทั้ง run' : ''})`
-                                : `W${c.week}: ถอด ${c.item} ออก → เลื่อนไป W${c.moveTo}${c.tailLen > 1 ? ` (หาง run ${c.tailLen} สัปดาห์เลื่อนต่อกัน)` : ''} ${c.late > 0 ? `สาย ${c.late} สัปดาห์` : 'ทันเวลา'}`}
+                                : `W${c.week}: ถอด ${c.item} ออก → เลื่อนไป W${c.moveTo}${c.tailLen > 1 ? ` (หาง run ${c.tailLen} สัปดาห์เลื่อนต่อกัน)` : ''} ${c.late > 0 ? `สาย ${c.late} สัปดาห์` : 'ทันเวลา'}${c.full ? ' ⚠ ไม่มีสัปดาห์ที่เครื่อง/job ว่างพอ' : ''}`}
                             </option>
                           ))}
                         </select>
@@ -751,7 +841,7 @@ export default function OrderColor() {
                           <span className={'swap-impact' + (chosen.free ? ' ok' : (chosen.late > 0 ? ' late' : ' ok'))}>
                             {chosen.free
                               ? `→ เริ่มทอ W${chosen.week}${s.runLen > 1 ? ` (run ${s.runLen} สัปดาห์ขยับตาม)` : ' (เครื่องว่าง)'}`
-                              : `→ เริ่มทอ W${chosen.week} • ${chosen.item} เลื่อนไป W${chosen.moveTo}${chosen.tailLen > 1 ? ` (หาง ${chosen.tailLen} สัปดาห์เลื่อนต่อกัน)` : ''} ${chosen.late > 0 ? `(สาย ${chosen.late})` : '(ทันเวลา)'}`}
+                              : `→ เริ่มทอ W${chosen.week} • ${chosen.item} เลื่อนไป W${chosen.moveTo}${chosen.tailLen > 1 ? ` (หาง ${chosen.tailLen} สัปดาห์เลื่อนต่อกัน)` : ''} ${chosen.late > 0 ? `(สาย ${chosen.late})` : '(ทันเวลา)'}${chosen.full ? ' ⚠ ไม่มีสัปดาห์ที่เครื่อง/job ว่างพอ' : ''}`}
                           </span>
                         )}
                       </>
@@ -824,6 +914,9 @@ export default function OrderColor() {
                   {changesList.map((c, i) => (
                     <li key={i} className={c.isColor ? 'chg-color' : ''}>
                       {c.isColor ? '★ ' : ''}<b>{c.item}</b>
+                      {(c.team || c.so) && (
+                        <span className="ai-reason"> ({[c.team && `TEAM ${c.team}`, c.so && `SO ${c.so}`].filter(Boolean).join(' • ')})</span>
+                      )}
                       {c.type === 'removed'
                         ? <span className="ai-impact"> — เอาออกจากแผน (เดิม W{c.from})</span>
                         : c.type === 'qty'
@@ -837,40 +930,67 @@ export default function OrderColor() {
                   <>
                     <div className="hint small" style={{ padding: '8px 0 2px' }}>
                       ตารางเทียบ <b>แผนเดิม → แผนใหม่</b> (กก. ต่อสัปดาห์ เฉพาะ item ที่มีการปรับ) •
-                      <span className="cell-out-demo"> เดิม</span> = ตำแหน่งที่ย้ายออก • <span className="cell-in-demo">ใหม่</span> = ตำแหน่งใหม่
+                      <span className="cell-out-demo"> เดิม</span> = ตำแหน่งที่ย้ายออก • <span className="cell-in-demo">ใหม่</span> = ตำแหน่งใหม่ (ตาม AVA) •
+                      <span className="cell-po-demo"> PO_IN</span> = ตำแหน่งเมื่อรอด้ายเข้าครบ (ช่องเหลือง = ด้ายมาไม่ทันแผนใหม่ ทอได้เร็วสุดสัปดาห์ถัดจากด้ายเข้าครบ)
                     </div>
                     <div className="gridwrap">
                       <table className="grid chg-table">
                         <thead>
                           <tr>
-                            <th>ITEM</th><th>เครื่อง</th><th>แผน</th>
+                            <th>ITEM</th><th>เครื่อง</th>
+                            <th className="wk-col">จำนวนให้สี</th>
+                            <th className="wk-col">Stock (กก.)</th>
+                            <th>แผน</th>
                             {changeTable.weeks.map(w => <th key={w} className="wk-col">W{w}</th>)}
                             <th className="wk-col">รวม</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {changeTable.list.map((e, i) => (
-                            <React.Fragment key={i}>
-                              <tr className="chg-before">
-                                <td className="rocell" rowSpan={2}>{e.isColor ? '★ ' : ''}<b>{e.item}</b></td>
-                                <td className="rocell" rowSpan={2}>{e.mcg}</td>
-                                <td className="rocell">เดิม</td>
-                                {changeTable.weeks.map(w => {
-                                  const b = e.before[String(w)] || 0, a = e.after[String(w)] || 0
-                                  return <td key={w} className={'wk-col' + (b && b !== a ? ' cell-out' : '')}>{b ? fmtNum(Math.round(b * 10) / 10) : ''}</td>
-                                })}
-                                <td className="wk-col">{fmtNum(Math.round(e.totalBefore * 10) / 10)}</td>
-                              </tr>
-                              <tr className="chg-after">
-                                <td className="rocell"><b>ใหม่</b></td>
-                                {changeTable.weeks.map(w => {
-                                  const b = e.before[String(w)] || 0, a = e.after[String(w)] || 0
-                                  return <td key={w} className={'wk-col' + (a && a !== b ? ' cell-in' : '')}>{a ? fmtNum(Math.round(a * 10) / 10) : ''}</td>
-                                })}
-                                <td className="wk-col"><b>{fmtNum(Math.round(e.totalAfter * 10) / 10)}</b></td>
-                              </tr>
-                            </React.Fragment>
-                          ))}
+                          {changeTable.list.map((e, i) => {
+                            const showPo = e.hasPo
+                            return (
+                              <React.Fragment key={i}>
+                                <tr className="chg-before">
+                                  <td className="rocell" rowSpan={showPo ? 3 : 2}>
+                                    {e.isColor ? '★ ' : ''}<b>{e.item}</b>
+                                    {e.team.size > 0 && <div className="ai-reason" style={{ fontSize: '0.85em' }}>TEAM {[...e.team].join(', ')}</div>}
+                                    {e.so.size > 0 && <div className="ai-reason" style={{ fontSize: '0.85em' }}>SO {[...e.so].join(', ')}</div>}
+                                  </td>
+                                  <td className="rocell" rowSpan={showPo ? 3 : 2}>{e.mcg}</td>
+                                  <td className="rocell wk-col" rowSpan={showPo ? 3 : 2}>
+                                    {e.orderQty != null ? <b>{fmtNum(e.orderQty)}</b> : '—'}
+                                  </td>
+                                  <td className="rocell wk-col" rowSpan={showPo ? 3 : 2}>
+                                    {e.stockBal != null ? fmtNum(e.stockBal) : '—'}
+                                  </td>
+                                  <td className="rocell">เดิม</td>
+                                  {changeTable.weeks.map(w => {
+                                    const b = e.before[String(w)] || 0, a = e.after[String(w)] || 0
+                                    return <td key={w} className={'wk-col' + (b && b !== a ? ' cell-out' : '')}>{b ? fmtNum(Math.round(b * 10) / 10) : ''}</td>
+                                  })}
+                                  <td className="wk-col">{fmtNum(Math.round(e.totalBefore * 10) / 10)}</td>
+                                </tr>
+                                <tr className={'chg-after' + (showPo ? ' mid' : '')}>
+                                  <td className="rocell"><b>ใหม่</b></td>
+                                  {changeTable.weeks.map(w => {
+                                    const b = e.before[String(w)] || 0, a = e.after[String(w)] || 0
+                                    return <td key={w} className={'wk-col' + (a && a !== b ? ' cell-in' : '')}>{a ? fmtNum(Math.round(a * 10) / 10) : ''}</td>
+                                  })}
+                                  <td className="wk-col"><b>{fmtNum(Math.round(e.totalAfter * 10) / 10)}</b></td>
+                                </tr>
+                                {showPo && (
+                                  <tr className="chg-po">
+                                    <td className="rocell"><b>PO_IN</b>{!e.poPushed && ' ✓'}</td>
+                                    {changeTable.weeks.map(w => {
+                                      const a = e.after[String(w)] || 0, p = e.po[String(w)] || 0
+                                      return <td key={w} className={'wk-col' + (p && p !== a ? ' cell-po' : '')}>{p ? fmtNum(Math.round(p * 10) / 10) : ''}</td>
+                                    })}
+                                    <td className="wk-col"><b>{fmtNum(Math.round(e.totalPo * 10) / 10)}</b></td>
+                                  </tr>
+                                )}
+                              </React.Fragment>
+                            )
+                          })}
                         </tbody>
                       </table>
                     </div>
