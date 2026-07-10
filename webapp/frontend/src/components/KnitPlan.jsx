@@ -190,11 +190,13 @@ export default function KnitPlan() {
     set('AVAILABLE_DAYS', avail)
 
     // เครื่อง booking ผูกกับสัปดาห์ ไม่ย้ายตามงาน → อ่านค่าของสัปดาห์ปลายทาง
+    // ⚠️ ถ้ายังไม่มีข้อมูล booking (API ล้ม / ไฟล์แผนเก่า) ห้ามเขียนทับเป็น 0
+    //    มิฉะนั้นแถวที่นั่งบนเครื่อง booking จะกลายเป็น carry ทันทีที่ลาก
     const ici = ix('ITEM_CODE'), mci = ix('MC_GROUP'), gci = ix('MC_GUAGE')
-    if (ici >= 0 && mci >= 0 && gci >= 0) {
+    if (ici >= 0 && mci >= 0 && gci >= 0 && Object.keys(bookingMc || {}).length > 0) {
       const gz = norm(row[gci]).replace(/\.0$/, '')
       const k = `${norm(row[ici]).toUpperCase()}|${norm(row[mci]).toUpperCase()}|${gz}`
-      set('MC_BOOKING', Number(bookingMc?.[String(w)]?.[k]) || 0)
+      set('MC_BOOKING', Number(bookingMc[String(w)]?.[k]) || 0)
     }
   }
 

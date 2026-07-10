@@ -232,11 +232,14 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
   //   • แถวที่นั่งบนเครื่อง booking (📦) → หักออกได้พอดี = 0 (ไม่กินเครื่องเพิ่ม)
   //   • ลากงานออกจากสัปดาห์ → เครื่อง booking ไม่ได้ย้ายตาม จึงไม่ถูกคืนให้พูล
   //
+  // เครื่อง booking อ่านจากคอลัมน์ MC_BOOKING ของแถวโดยตรง (ตรงกับสัปดาห์ปัจจุบันของแถว
+  // เพราะ moveJob อัปเดตค่านี้ตอนลาก) — fallback ไป API bookingMc ถ้าไฟล์แผนเก่าไม่มีคอลัมน์
   // รวม ACTUAL_MC ต่อ (สัปดาห์ × item × เครื่อง × เกจ) ก่อน แล้วค่อยหัก booking ครั้งเดียว
   // มิฉะนั้นแถวหลายแถวของ item เดียวกันจะหักเครื่อง booking ซ้ำ
   const planMcByWeekCat = useMemo(() => {
     const m = {}
     if (!supported || ci.cat < 0 || ci.gauge < 0) return m
+    const hasBkCol = ci.bookingmc >= 0
     const byItem = new Map()
     for (const { row } of rows) {
       const w = norm(row[ci.week]); if (w === '') continue
@@ -247,13 +250,15 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
       const bkKey = `${item.toUpperCase()}|${mcg.toUpperCase()}|${g}`
       const k = w + '@@' + catKey + '@@' + bkKey
       const mc = ci.actualmc >= 0 ? (Number(norm(row[ci.actualmc])) || 0) : 0
+      // MC_BOOKING เท่ากันทุกแถวของ (item×เครื่อง×เกจ×สัปดาห์) เดียวกัน → เก็บค่าเดียว (max)
+      const bkCol = hasBkCol ? (Number(norm(row[ci.bookingmc])) || 0) : null
       const cur = byItem.get(k)
-      if (cur) cur.mc += mc
-      else byItem.set(k, { w, catKey, bkKey, mc })
+      if (cur) { cur.mc += mc; if (bkCol != null) cur.bk = Math.max(cur.bk, bkCol) }
+      else byItem.set(k, { w, catKey, bkKey, mc, bk: bkCol })
     }
-    for (const { w, catKey, bkKey, mc } of byItem.values()) {
-      const bk = Number(bookingMc?.[w]?.[bkKey]) || 0
-      m[w + '@@' + catKey] = (m[w + '@@' + catKey] || 0) + Math.max(0, mc - bk)
+    for (const { w, catKey, bkKey, mc, bk } of byItem.values()) {
+      const bkVal = bk != null ? bk : (Number(bookingMc?.[w]?.[bkKey]) || 0)
+      m[w + '@@' + catKey] = (m[w + '@@' + catKey] || 0) + Math.max(0, mc - bkVal)
     }
     return m
   }, [rows, ci, supported, bookingMc])
