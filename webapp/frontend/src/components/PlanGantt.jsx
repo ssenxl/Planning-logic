@@ -45,20 +45,19 @@ const LOAD_TYPES = [
 ]
 
 // ประเภทเครื่องของแถวแผน → emoji ติดหน้า item บนบล็อก
-// ➕ ใช้เครื่องร่วมกับแถวอื่นใน (item, เครื่อง, สัปดาห์) เดียวกัน — ไม่กินเครื่องเพิ่ม
 // 🔧 setup เครื่องใหม่ — กินเครื่องจากพูล + เสียเวลา setup
-// 📦 carry เครื่องจาก booking — มีงานถักไอเทมนี้อยู่บนเครื่องแล้ว แค่เติม order เข้าไป
-// ⏩ carry เครื่องของแผนเองจากสัปดาห์ก่อน — เครื่องเดิมวิ่งต่อเนื่อง ไม่ต้อง setup
+// 📦 เติมเข้าเครื่องที่วิ่งอยู่ — เครื่องของ booking (MC_BOOKING) หรือของ SO อื่นในแผน
+//    (MC_SHARED) ที่ถักไอเทมนี้อยู่แล้ว → ไม่ใช้เครื่องเพิ่ม ไม่ต้อง setup
+//    (รายละเอียดว่าเครื่องของใคร ดูใน REMARK ที่ tooltip)
+// ⏩ เครื่องของแผนเองวิ่งต่อจากสัปดาห์ก่อน — ไม่ต้อง setup
 const MC_KINDS = {
-  shared: { icon: '➕', label: 'ใช้เครื่องร่วมกับแถวอื่น (ไม่กินเครื่องเพิ่ม)' },
   setup: { icon: '🔧', label: 'setup เครื่องใหม่' },
-  booking: { icon: '📦', label: 'carry เครื่องจาก booking (มีงานถักอยู่แล้ว)' },
+  onExisting: { icon: '📦', label: 'เติมเข้าเครื่องที่วิ่งอยู่ (ไม่ใช้เครื่องเพิ่ม ไม่ต้อง setup)' },
   carry: { icon: '⏩', label: 'เครื่องเดิมวิ่งต่อจากสัปดาห์ก่อน' },
 }
 function mcKind(newMc, carryMc, sharedMc, bookingMc) {
-  if (sharedMc > 0) return 'shared'
   if (newMc > 0) return 'setup'
-  if (bookingMc > 0) return 'booking'
+  if (sharedMc > 0 || bookingMc > 0) return 'onExisting'
   if (carryMc > 0) return 'carry'
   return ''
 }
