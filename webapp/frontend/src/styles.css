@@ -1358,6 +1358,11 @@ button.ghost.sm:hover {
   border-left: 1px solid rgba(0, 0, 0, 0.15);
 }
 
+/* วางงาน POLY/COTTON เกินเครื่องที่กันไว้ → เตือนแดง */
+.cellava-rsv.over {
+  color: #c0392b;
+}
+
 /* แถวสรุปโหลดงานต่อสัปดาห์ (ใช้ / capacity) */
 .gantt-load-row .gantt-glabel {
   background: #eef0f8;

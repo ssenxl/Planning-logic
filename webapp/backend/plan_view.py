@@ -370,14 +370,22 @@ def ava_by_week() -> dict:
             src = pool_acc.get(wk, {}).get(key) or np_acc.get(wk, {}).get(key)
             out.setdefault(wk, {})[key] = dict(src)
 
-    # แนบเครื่องที่กันไว้ (POLY/COTTON) — reservation ไม่ขึ้นกับสัปดาห์ ใส่ให้ทุก week ของ key นั้น
+    # แนบเครื่องที่กันไว้ (POLY/COTTON) — ยอดกันไว้ไม่ขึ้นกับสัปดาห์ แต่ "ที่ booking ใช้ไป"
+    # ขึ้นกับสัปดาห์ → แนบทั้ง poly/cotton (กันไว้) และ poly_used/cotton_used (booking ใช้ต่อสัปดาห์)
+    # เพื่อให้ frontend คำนวณเครื่องกันไว้ที่เหลือจริง = กันไว้ − booking − แผน
     reserved = _reserved_by_cat()
+    reserved_used = _reserved_used_by_cat_week()
     if reserved:
         for wk, keys in out.items():
             for key, slot in keys.items():
                 rv = reserved.get(key)
                 if rv and (rv["poly"] or rv["cotton"]):
-                    slot["reserved"] = dict(rv)
+                    used = reserved_used.get(wk, {}).get(key) or {}
+                    slot["reserved"] = {
+                        "poly": rv["poly"], "cotton": rv["cotton"],
+                        "poly_used": int(used.get("poly_used", 0)),
+                        "cotton_used": int(used.get("cotton_used", 0)),
+                    }
 
     return out
 
@@ -408,6 +416,39 @@ def _reserved_by_cat() -> dict:
         slot = out.setdefault(key, {"poly": 0, "cotton": 0})
         slot["poly"] += int(_num(r["POLY"]) or 0)
         slot["cotton"] += int(_num(r["COTTON"]) or 0)
+    return out
+
+
+def _reserved_used_by_cat_week() -> dict:
+    """เครื่อง POLY/COTTON ที่ booking ใช้ไปแล้ว 'ต่อสัปดาห์' จากชีท MC_RESERVED_WEEKLY
+    → { week(str): { "CAT|GUAGE": {"poly_used": int, "cotton_used": int} } }
+    ใช้คู่กับ _reserved_by_cat() เพื่อรู้เครื่องกันไว้ที่เหลือจริง = กันไว้ − booking"""
+    p = _latest_booking_path()
+    if p is None:
+        return {}
+    try:
+        import pandas as pd
+        df = pd.read_excel(p, sheet_name="MC_RESERVED_WEEKLY")
+    except Exception:
+        return {}
+    if not {"MC_CAT", "GUAGE", "WEEK", "POLY_USED", "COTTON_USED"} <= set(df.columns):
+        return {}
+
+    def gkey(g):
+        try:
+            return str(int(g))
+        except (TypeError, ValueError):
+            return str(g).strip()
+
+    out: dict = {}
+    for _, r in df.iterrows():
+        wk = _wk_str(r["WEEK"])
+        if wk is None:
+            continue
+        key = f"{str(r['MC_CAT']).strip()}|{gkey(r['GUAGE'])}"
+        slot = out.setdefault(wk, {}).setdefault(key, {"poly_used": 0, "cotton_used": 0})
+        slot["poly_used"] += int(_num(r["POLY_USED"]) or 0)
+        slot["cotton_used"] += int(_num(r["COTTON_USED"]) or 0)
     return out
 
 

@@ -1052,6 +1052,33 @@ reserved_summary = (
     else pd.DataFrame(columns=["FACTORY", "MC_CAT", "GUAGE", "POLY", "COTTON"])
 )
 
+# เครื่อง POLY/COTTON ที่ booking ใช้ไปแล้ว "ต่อสัปดาห์" (จาก sub-pool rows ที่ POOL_TYPE
+# ลงท้าย :POLY / :COTTON) → ให้เว็บ/Planning คำนวณเครื่องกันไว้ที่เหลือจริง = กันไว้ − booking
+# (เดิม MC_RESERVED บอกแค่ยอดกันไว้ ไม่รู้ว่า booking กินไปเท่าไหร่ → ชิปโชว์เหมือนยังว่าง)
+def _reserved_weekly_usage(_suffix):
+    if "POOL_TYPE" not in df.columns:
+        return pd.DataFrame(columns=["MC_CAT", "GUAGE", "WEEK", "_U"])
+    _sub = df[df["POOL_TYPE"].astype(str).str.endswith(_suffix)]
+    if _sub.empty:
+        return pd.DataFrame(columns=["MC_CAT", "GUAGE", "WEEK", "_U"])
+    return (
+        _sub.groupby(["MC_CAT", "GUAGE", "WEEK"], as_index=False)["MC_USE_CEIL"].sum()
+        .rename(columns={"MC_USE_CEIL": "_U"})
+    )
+
+_rw_poly = _reserved_weekly_usage(":POLY").rename(columns={"_U": "POLY_USED"})
+_rw_cotton = _reserved_weekly_usage(":COTTON").rename(columns={"_U": "COTTON_USED"})
+reserved_weekly_summary = _rw_poly.merge(_rw_cotton, on=["MC_CAT", "GUAGE", "WEEK"], how="outer")
+if not reserved_weekly_summary.empty:
+    reserved_weekly_summary["MC_CAT"] = reserved_weekly_summary["MC_CAT"].astype(str).str.strip()
+    reserved_weekly_summary["GUAGE"] = reserved_weekly_summary["GUAGE"].astype(str).str.strip()
+    reserved_weekly_summary["WEEK"] = reserved_weekly_summary["WEEK"].astype(int)
+    for _c in ("POLY_USED", "COTTON_USED"):
+        reserved_weekly_summary[_c] = reserved_weekly_summary[_c].fillna(0).astype(int)
+    reserved_weekly_summary = reserved_weekly_summary.sort_values(["MC_CAT", "GUAGE", "WEEK"])
+else:
+    reserved_weekly_summary = pd.DataFrame(columns=["MC_CAT", "GUAGE", "WEEK", "POLY_USED", "COTTON_USED"])
+
 # =========================
 # AVAILABILITY SUMMARY: WEEK 25-35 (แยกรายสัปดาห์ เรียงไปทางขวา)
 # =========================
@@ -1226,6 +1253,7 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
     df.to_excel(writer, sheet_name="DETAIL", index=False)
     summary.to_excel(writer, sheet_name="SUMMARY_MC_REMAIN", index=False)
     reserved_summary.to_excel(writer, sheet_name="MC_RESERVED", index=False)
+    reserved_weekly_summary.to_excel(writer, sheet_name="MC_RESERVED_WEEKLY", index=False)
     ava_wide.to_excel(writer, sheet_name=AVA_SHEET)
     # freeze คอลัมน์ A-B (MC_CAT, GUAGE) + แถวหัวตาราง ให้ค้างเวลาเลื่อนดู week ทางขวา
     _ws = writer.sheets[AVA_SHEET]

@@ -279,6 +279,9 @@ try:
         _mcs_cat = str(_mcs_row.get("MC_CAT", "")).strip().upper()
         _mcs_mc_raw = str(_mcs_row.get("MC", "")).strip().upper()
         _mcs_g = str(_mcs_row.get("Guage", "")).strip().upper().replace("GAUGE", "").replace("G", "").strip()
+        # ตัด ".0" ท้าย ให้ตรงกับ gauge_str ที่ผ่าน _normalize_gauge (float 36.0 → "36")
+        if _mcs_g.endswith(".0"):
+            _mcs_g = _mcs_g[:-2]
         if not _mcs_f or not _mcs_cat or not _mcs_g:
             continue
         _mcs_poly_raw = _mcs_row.get("POLY")
@@ -299,6 +302,40 @@ try:
 except Exception as _e_mcs:
     print(f"⚠️ ไม่สามารถโหลด MC Special: {_e_mcs}")
     _MC_SPECIAL_PLAN = {}
+
+# Booking ที่กินเครื่อง POLY/COTTON sub-pool ไปแล้ว ต่อ (cat, gauge, week) — อ่านจาก DETAIL
+# ของ booking_final (POOL_TYPE ลงท้าย :POLY/:COTTON) เพื่อหักจาก capacity ก่อนวางงานใหม่
+# ไม่งั้นจะวางงาน POLY/COTTON ทับเครื่องที่ booking จองเต็มแล้ว (over-plan)
+_MC_SPECIAL_BOOKING_USED: dict = {}  # (cat_upper, gauge_str, week, "POLY"/"COTTON") → machines
+try:
+    if "POOL_TYPE" in detail_mc.columns:
+        def _bku_gauge(g):
+            try:
+                return str(int(float(g)))
+            except (TypeError, ValueError):
+                return str(g).strip()
+        for _, _bk_r in detail_mc.iterrows():
+            _bk_pt = str(_bk_r.get("POOL_TYPE", "")).strip()
+            if _bk_pt.endswith(":POLY"):
+                _bk_type = "POLY"
+            elif _bk_pt.endswith(":COTTON"):
+                _bk_type = "COTTON"
+            else:
+                continue
+            _bk_cat = str(_bk_r.get("MC_CAT", "")).strip().upper()
+            _bk_g = _bku_gauge(_bk_r.get("GUAGE", ""))
+            try:
+                _bk_wk = int(_bk_r.get("WEEK"))
+            except (TypeError, ValueError):
+                continue
+            _bk_key = (_bk_cat, _bk_g, _bk_wk, _bk_type)
+            _MC_SPECIAL_BOOKING_USED[_bk_key] = (
+                _MC_SPECIAL_BOOKING_USED.get(_bk_key, 0) + int(_bk_r.get("MC_USE_CEIL", 0) or 0)
+            )
+    print(f"✅ MC Special booking used: {len(_MC_SPECIAL_BOOKING_USED)} (cat,gauge,week,type)")
+except Exception as _e_bku:
+    print(f"⚠️ ไม่สามารถคำนวณ MC Special booking used: {_e_bku}")
+    _MC_SPECIAL_BOOKING_USED = {}
 
 # TYPE_SPECIAL quota (BABY FRENCH / SINGLE JACQUARD / TWILL)
 def _is_description_special_type_plan(desc: str, keywords: list) -> bool:
@@ -712,6 +749,11 @@ def _normalize_gauge(gauge) -> str:
     # Remove common suffixes/prefixes
 
     gauge_str = gauge_str.replace("G", "").replace("GAUGE", "")
+
+    # ตัด ".0" ท้าย: gauge จาก float (เช่น 36.0) ให้ตรงกับ gauge จาก string ("36")
+    # ไม่งั้นคีย์ lookup ไม่ตรง (เช่น MC Special ใน MasterMC เป็น float แต่ DETAIL เป็น string)
+    if gauge_str.endswith(".0"):
+        gauge_str = gauge_str[:-2]
 
     return gauge_str
 
@@ -3748,6 +3790,33 @@ def get_working_days_in_week(week):
 
 
 
+def _mc_special_remain(mc_group, week, gauge, item_code):
+    """คืนจำนวนเครื่อง POLY/COTTON sub-pool ที่ยัง setup ใหม่ได้ = กันไว้ − booking − แผน(new)
+    คืน None ถ้า item นี้ไม่อยู่ในกลุ่มที่กันเครื่อง (ไม่ต้อง hard cap)
+    ใช้ hard-block: setup ใหม่ห้ามเกินเครื่องที่กันไว้ (carryover เครื่องเดิมไม่นับตรงนี้)"""
+    if not _MC_SPECIAL_PLAN or not item_code:
+        return None
+    sp_type = _get_item_cotton_poly(item_code)
+    if not sp_type:
+        return None
+    gauge_str = _normalize_gauge(gauge)
+    mc_u = str(mc_group).strip().upper()
+    factory = _mc_to_factory(mc_u, gauge_str)
+    cat = _mc_to_type1(mc_u, gauge_str)
+    entry = (
+        _MC_SPECIAL_PLAN.get((factory, cat, mc_u, gauge_str))
+        or _MC_SPECIAL_PLAN.get((factory, cat, "", gauge_str))
+    )
+    if not entry:
+        return None
+    reserved = entry.get(sp_type, 0)
+    if reserved <= 0:
+        return None
+    used = _mc_special_weekly_usage.get((factory, cat, gauge_str, week, sp_type), 0)
+    bk = _MC_SPECIAL_BOOKING_USED.get((cat, gauge_str, week, sp_type), 0)
+    return max(0, reserved - bk - used)
+
+
 def get_actual_mc_remain(mc_group, week, gauge, item_code=None):
 
     """คืนค่าจำนวนเครื่องว่างจริงของ pool = TOTAL_MC_REMAIN จาก summary_mc
@@ -3853,13 +3922,15 @@ def get_actual_mc_remain(mc_group, week, gauge, item_code=None):
             _cotton_reserved = _ms_entry.get("COTTON", 0)
             _poly_reserved = _ms_entry.get("POLY", 0)
             if _sp_type == "COTTON" and _cotton_reserved > 0:
-                # COTTON item: ใช้ได้เฉพาะใน COTTON sub-pool
+                # COTTON item: ใช้ได้เฉพาะใน COTTON sub-pool = กันไว้ − booking − แผน
                 _sp_used = _mc_special_weekly_usage.get((_sp_factory, _sp_cat, gauge_str, week, "COTTON"), 0)
-                result = min(result, max(0, _cotton_reserved - _sp_used))
+                _sp_bk = _MC_SPECIAL_BOOKING_USED.get((_sp_cat, gauge_str, week, "COTTON"), 0)
+                result = min(result, max(0, _cotton_reserved - _sp_bk - _sp_used))
             elif _sp_type == "POLY" and _poly_reserved > 0:
-                # POLY item: ใช้ได้เฉพาะใน POLY sub-pool
+                # POLY item: ใช้ได้เฉพาะใน POLY sub-pool = กันไว้ − booking − แผน
                 _sp_used = _mc_special_weekly_usage.get((_sp_factory, _sp_cat, gauge_str, week, "POLY"), 0)
-                result = min(result, max(0, _poly_reserved - _sp_used))
+                _sp_bk = _MC_SPECIAL_BOOKING_USED.get((_sp_cat, gauge_str, week, "POLY"), 0)
+                result = min(result, max(0, _poly_reserved - _sp_bk - _sp_used))
             else:
                 # item ทั่วไป (ไม่ใช่ COTTON/POLY): หักเครื่องที่ reserved ออกจาก pool
                 result = max(0, result - _cotton_reserved - _poly_reserved)
@@ -9469,6 +9540,18 @@ def _run_planning_loop() -> list:
                             print(f"[SETUP CYL CHANGE] {item} W{plan_week}: setup trigger W{_cyl_base_s} → +{_cyl_pending_added_s} machine(s) ready W{_next_cyl_w_s}")
                         else:
                             break  # quota เต็มสำหรับ week นี้
+            # Hard cap POLY/COTTON: เครื่องที่แผนใช้ (carryover + new) ห้ามเกินที่กันไว้
+            # remain = กันไว้ − booking − แผนที่ใช้ไปแล้วในสัปดาห์นั้น
+            # ถ้าไม่มีเครื่องเหลือ → carry ก็ทำไม่ได้ (ไม่มีเครื่องให้ carry) ตามที่ user ยืนยัน
+            # ตัด new ก่อน แล้วค่อยตัด carry (รักษาเครื่องที่วิ่งอยู่ไว้ก่อน)
+            _sp_remain = _mc_special_remain(mc_group, plan_week, _sel_gauge, item)
+            if _sp_remain is not None and (carryover_mc + new_mc) > _sp_remain:
+                _sp_old = (carryover_mc, new_mc)
+                carryover_mc = min(carryover_mc, _sp_remain)
+                new_mc = max(0, min(new_mc, _sp_remain - carryover_mc))
+                available_machines = carryover_mc + new_mc
+                print(f"[POLY/COTTON CAP] {item} W{plan_week}: carry/new {_sp_old} → ({carryover_mc}, {new_mc}) remain={_sp_remain} (เครื่องกันไว้เต็ม)")
+
             # Enforce RTS+LOCAL: use existing carryover machines only (no new setup)
             # prev_machines comes from machines_in_use (last active week, MC_USE_CEIL>0)
             # 🔧 FIX: เช็ค is_continuing ก่อน — ถ้า gap > SETUP_GAP_WEEK ต้อง setup ใหม่

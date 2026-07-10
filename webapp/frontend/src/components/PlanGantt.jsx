@@ -27,6 +27,16 @@ const SWAP_GROUPS = [
 // normalize สำหรับเทียบค่า (trim + upper) เพราะ norm() ไม่ได้ trim/upper ให้
 const nkey = (v) => String(v ?? '').trim().toUpperCase()
 
+// จำแนกประเภท item ตาม prefix (ให้ตรงกับ _get_item_cotton_poly ใน Planning.py):
+// FD5/F5 → COTTON, FD4/F4 → POLY, อื่นๆ → '' (งานปกติ)
+// ใช้แยกว่าแถวแผนนี้กินเครื่อง sub-pool ที่กันไว้ (POLY/COTTON) หรือกินเครื่องปกติ
+function itemPoolType(item) {
+  const s = nkey(item)
+  if (s.startsWith('FD5') || s.startsWith('F5')) return 'cotton'
+  if (s.startsWith('FD4') || s.startsWith('F4')) return 'poly'
+  return ''
+}
+
 /**
  * Gantt แผนผลิต: แกนตั้ง = เครื่อง/เกจ/CAT, แกนนอน = PLAN_WEEK
  * - บล็อก = งาน 1 รายการ (ITEM_CODE) กว้าง 1 สัปดาห์ สีตาม CAT + เกจ
@@ -236,6 +246,11 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
   // เพราะ moveJob อัปเดตค่านี้ตอนลาก) — fallback ไป API bookingMc ถ้าไฟล์แผนเก่าไม่มีคอลัมน์
   // รวม ACTUAL_MC ต่อ (สัปดาห์ × item × เครื่อง × เกจ) ก่อน แล้วค่อยหัก booking ครั้งเดียว
   // มิฉะนั้นแถวหลายแถวของ item เดียวกันจะหักเครื่อง booking ซ้ำ
+  // ผลลัพธ์ต่อ (สัปดาห์@@CAT|เกจ) = { normal, poly, cotton } เครื่องที่แผนจองเพิ่มจากพูล
+  //   • normal → หักออกจากเลข "ว่าง" (เครื่องปกติ)
+  //   • poly/cotton → หักออกจากเครื่องที่กันไว้ (ชิป 🔒) ไม่แตะเครื่องปกติ
+  // แยกตาม prefix item เฉพาะกลุ่มที่มีเครื่องกันไว้จริง (ava.reserved) — ให้ตรงกับ
+  // Planning.py ที่งาน POLY/COTTON กินเฉพาะ sub-pool ของตัวเอง งานปกติกินเครื่องปกติ
   const planMcByWeekCat = useMemo(() => {
     const m = {}
     if (!supported || ci.cat < 0 || ci.gauge < 0) return m
@@ -254,14 +269,23 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
       const bkCol = hasBkCol ? (Number(norm(row[ci.bookingmc])) || 0) : null
       const cur = byItem.get(k)
       if (cur) { cur.mc += mc; if (bkCol != null) cur.bk = Math.max(cur.bk, bkCol) }
-      else byItem.set(k, { w, catKey, bkKey, mc, bk: bkCol })
+      else byItem.set(k, { w, catKey, bkKey, item, mc, bk: bkCol })
     }
-    for (const { w, catKey, bkKey, mc, bk } of byItem.values()) {
+    for (const { w, catKey, bkKey, item, mc, bk } of byItem.values()) {
       const bkVal = bk != null ? bk : (Number(bookingMc?.[w]?.[bkKey]) || 0)
-      m[w + '@@' + catKey] = (m[w + '@@' + catKey] || 0) + Math.max(0, mc - bkVal)
+      const net = Math.max(0, mc - bkVal)
+      if (net === 0) continue
+      const slot = m[w + '@@' + catKey] || (m[w + '@@' + catKey] = { normal: 0, poly: 0, cotton: 0 })
+      // เข้าถัง POLY/COTTON เฉพาะเมื่อกลุ่มนี้มีเครื่องกันไว้จริง — ไม่งั้นงาน POLY
+      // ในกลุ่มที่ไม่มี reservation จะกินเครื่องปกติ (ตรงกับ Planning.py)
+      const rsv = ava?.[w]?.[catKey]?.reserved
+      const t = itemPoolType(item)
+      if (t === 'poly' && rsv && rsv.poly > 0) slot.poly += net
+      else if (t === 'cotton' && rsv && rsv.cotton > 0) slot.cotton += net
+      else slot.normal += net
     }
     return m
-  }, [rows, ci, supported, bookingMc])
+  }, [rows, ci, supported, bookingMc, ava])
 
   // วัดความสูงหัวตาราง + แต่ละแถวโหลด → คำนวณ top ให้แถวโหลด sticky ค้างซ้อนใต้หัวตารางพอดี
   // (ความสูงหัวตาราง/ฟอนต์ไม่แน่นอน จึงวัดจริงแทนกำหนดตายตัว)
@@ -403,10 +427,14 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
                   const isOver = overWeek === w
                   const avaKey = avaCatI >= 0 && avaGaugeI >= 0 ? r.vals[avaCatI] + '|' + r.vals[avaGaugeI] : null
                   const av = avaKey && ava[w] ? ava[w][avaKey] : null
-                  // เครื่องว่าง live = เครื่องว่างหลัง booking − เครื่องที่แผนจองเพิ่มจากพูล
-                  const remainLive = av
-                    ? av.remain - (planMcByWeekCat[w + '@@' + avaKey] || 0)
-                    : null
+                  // เครื่องที่แผนจองเพิ่ม แยกเป็น ปกติ / POLY / COTTON
+                  const planSlot = planMcByWeekCat[w + '@@' + avaKey] || null
+                  const planNormal = planSlot ? planSlot.normal : 0
+                  const planPoly = planSlot ? planSlot.poly : 0
+                  const planCotton = planSlot ? planSlot.cotton : 0
+                  // เครื่องว่าง live = เครื่องว่างหลัง booking − เครื่องที่แผนจองเพิ่ม (เฉพาะงานปกติ)
+                  //   งาน POLY/COTTON ไม่หักตรงนี้ เพราะกินเครื่องที่กันไว้ (ชิป 🔒) ต่างหาก
+                  const remainLive = av ? av.remain - planNormal : null
                   const locked = isLocked(w)
                   return (
                     <td key={w}
@@ -419,13 +447,24 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
                         const rsvP = rsv ? (rsv.poly || 0) : 0
                         const rsvC = rsv ? (rsv.cotton || 0) : 0
                         const hasRsv = rsvP > 0 || rsvC > 0
-                        const rsvTxt = [rsvP ? `POLY ${rsvP}` : '', rsvC ? `COTTON ${rsvC}` : ''].filter(Boolean).join(', ')
+                        // เครื่องกันไว้คงเหลือ = กันไว้ − booking − ที่แผนใช้ในสัปดาห์นั้น (ติดลบ = วางเกิน)
+                        // booking ที่กินเครื่องกันไว้ไปแล้ว (จาก MC_RESERVED_WEEKLY) ต้องหักด้วย
+                        // ไม่งั้นชิปจะโชว์เหมือนยังว่าง ทั้งที่ booking ใช้เต็มแล้ว
+                        const rsvPused = rsv ? (rsv.poly_used || 0) : 0
+                        const rsvCused = rsv ? (rsv.cotton_used || 0) : 0
+                        const polyLeft = rsvP - rsvPused - planPoly
+                        const cottonLeft = rsvC - rsvCused - planCotton
+                        const rsvOver = polyLeft < 0 || cottonLeft < 0
+                        const rsvTxt = [
+                          rsvP ? `POLY ${rsvP} (booking ${rsvPused} + แผน ${planPoly} → เหลือ ${polyLeft})` : '',
+                          rsvC ? `COTTON ${rsvC} (booking ${rsvCused} + แผน ${planCotton} → เหลือ ${cottonLeft})` : '',
+                        ].filter(Boolean).join('\n')
                         return (
                           <span className={'cellava' + (remainLive <= 0 ? ' none' : '')}
-                            title={`เครื่องว่าง ${remainLive} / ปกติ ${av.total}\nว่างหลัง booking ${av.remain} − แผนจองเพิ่ม ${planMcByWeekCat[w + '@@' + avaKey] || 0}`
-                              + (hasRsv ? `\nกันไว้: ${rsvTxt} เครื่อง (POLY/COTTON ใช้แทนงานปกติไม่ได้)` : '')}>
+                            title={`เครื่องว่าง ${remainLive} / ปกติ ${av.total}\nว่างหลัง booking ${av.remain} − แผนจองเพิ่ม(ปกติ) ${planNormal}`
+                              + (hasRsv ? `\nเครื่องกันไว้ (ใช้แทนงานปกติไม่ได้):\n${rsvTxt}` : '')}>
                             ว่าง {remainLive}
-                            {hasRsv && <span className="cellava-rsv">🔒{rsvP ? ` P${rsvP}` : ''}{rsvC ? ` C${rsvC}` : ''}</span>}
+                            {hasRsv && <span className={'cellava-rsv' + (rsvOver ? ' over' : '')}>🔒{rsvP ? ` P${polyLeft}` : ''}{rsvC ? ` C${cottonLeft}` : ''}</span>}
                           </span>
                         )
                       })()}
