@@ -280,6 +280,12 @@ def api_plan_booking_mc():
     return plan_view.booking_mc_by_item_week()
 
 
+@app.get("/api/plan/week-days")
+def api_plan_week_days():
+    """วันทำงานตามปฏิทินต่อสัปดาห์ — Gantt ใช้คำนวณเครื่องใหม่เมื่อลากงานข้ามสัปดาห์"""
+    return plan_view.week_days()
+
+
 @app.get("/api/plan/download")
 def api_plan_download():
     p = plan_view.latest_path()

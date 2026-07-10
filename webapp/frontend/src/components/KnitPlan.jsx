@@ -31,6 +31,8 @@ export default function KnitPlan() {
   const [ava, setAva] = useState({})
   // เครื่องที่ booking ถักไอเทมนั้นอยู่แล้ว ต่อ (สัปดาห์ × ITEM|MC_GROUP|GUAGE)
   const [bookingMc, setBookingMc] = useState({})
+  // วันทำงานตามปฏิทินต่อสัปดาห์ — ใช้คำนวณเครื่องใหม่เมื่อลากงานข้ามสัปดาห์
+  const [weekDays, setWeekDays] = useState({})
   const prevRunning = useRef(false)
 
   async function loadMeta() {
@@ -47,6 +49,7 @@ export default function KnitPlan() {
   async function loadAva() {
     try { setAva(await api.planAva()) } catch { setAva({}) }
     try { setBookingMc(await api.planBookingMc()) } catch { setBookingMc({}) }
+    try { setWeekDays(await api.planWeekDays()) } catch { setWeekDays({}) }
   }
   async function loadSheet(sheet) {
     setLoading(true); setMsg('')
@@ -144,6 +147,57 @@ export default function KnitPlan() {
     setGrid(g => ({ ...g, rows: g.rows.filter((_, i) => i !== ri) }))
     setDirty(true)
   }
+  // วันทำงานจริงของแถวในสัปดาห์ w — ตรงกับ get_working_days_by_factory() ใน Planning.py
+  //   w == 17        → 8 วัน
+  //   w == 32        → WD_W32 (ต่อเครื่อง จาก REMARK ใน MasterMC)
+  //   นอกนั้น        → max(1, WD_BASE − max(0, 6 − วันทำงานตามปฏิทินของ w))
+  function actualWdAt(gv, w) {
+    const cal = Number(weekDays?.[String(w)]) || 0
+    if (!gv('WD_BASE') || !cal) return null   // ไฟล์แผนเก่าไม่มีข้อมูล
+    if (w === 17) return 8
+    if (w === 32) return gv('WD_W32')
+    return Math.max(1, gv('WD_BASE') - Math.max(0, 6 - cal))
+  }
+
+  // กำลังผลิตของแถวถ้าอยู่สัปดาห์ w (กก.) โดยใช้เครื่องชุดเดิมที่แถวถืออยู่
+  //   เครื่อง carry ได้วันทำงานเต็ม / เครื่อง setup ใหม่ได้ (วันทำงาน − setup ต่อเครื่อง)
+  // ⚠️ ห้ามคำนวณ ACTUAL_MC ใหม่จาก PRODUCE_QTY — เครื่อง carry ถูกกำหนดโดยสัปดาห์ก่อนหน้า
+  //    และอาจถือเครื่องเกินที่งานต้องการ ตัวเลขที่ถูกต้องต้องรันแผนใหม่เท่านั้น
+  function capacityAt(gv, w) {
+    const awd = actualWdAt(gv, w)
+    if (awd == null) return null
+    const n = gv('NEW_MC'), c = gv('CARRYOVER_MC')
+    const setupPerMc = n > 0 ? gv('SETUP_DAYS') / n : 0
+    const mcDays = c * awd + n * Math.max(0.5, awd - setupPerMc)
+    return mcDays * gv('DAILY_CAPACITY')
+  }
+
+  // อัปเดตคอลัมน์ที่เป็นฟังก์ชันของสัปดาห์ล้วนๆ (คำนวณได้แม่นยำ) หลังย้ายงาน
+  function recalcRowForWeek(row, cols, week) {
+    const ix = (n) => cols.indexOf(n)
+    const gv = (n) => { const k = ix(n); return k >= 0 ? (Number(norm(row[k])) || 0) : 0 }
+    const set = (n, v) => { const k = ix(n); if (k >= 0) row[k] = v }
+
+    const w = Number(week)
+    const awd = actualWdAt(gv, w)
+    if (awd == null) return
+    const n = gv('NEW_MC')
+    const avail = n > 0 ? Math.max(0.5, awd - gv('SETUP_DAYS') / n) : awd
+
+    set('CALENDAR_WORKING_DAYS', Number(weekDays[String(w)]) || 0)
+    set('FACTORY_WORKING_DAYS', w === 17 ? 8 : w === 32 ? gv('WD_W32') : gv('WD_BASE'))
+    set('ACTUAL_WORKING_DAYS', awd)
+    set('AVAILABLE_DAYS', avail)
+
+    // เครื่อง booking ผูกกับสัปดาห์ ไม่ย้ายตามงาน → อ่านค่าของสัปดาห์ปลายทาง
+    const ici = ix('ITEM_CODE'), mci = ix('MC_GROUP'), gci = ix('MC_GUAGE')
+    if (ici >= 0 && mci >= 0 && gci >= 0) {
+      const gz = norm(row[gci]).replace(/\.0$/, '')
+      const k = `${norm(row[ici]).toUpperCase()}|${norm(row[mci]).toUpperCase()}|${gz}`
+      set('MC_BOOKING', Number(bookingMc?.[String(w)]?.[k]) || 0)
+    }
+  }
+
   // ลากบล็อกใน Gantt → เปลี่ยน PLAN_WEEK (+ MC_GROUP ถ้าย้ายข้ามเครื่อง) ของงานนั้น
   // ย้ายข้ามเครื่อง (เช่น FA↔SKP) ต้องยืนยันก่อน
   function moveJob(ri, week, mcGroup) {
@@ -151,17 +205,32 @@ export default function KnitPlan() {
     const wci = grid.columns.indexOf('PLAN_WEEK')
     const mci = grid.columns.indexOf('MC_GROUP')
     const ici = grid.columns.indexOf('ITEM_CODE')
+    const item = ici >= 0 ? norm(grid.rows[ri][ici]) : ''
     const curMc = mci >= 0 ? norm(grid.rows[ri][mci]) : ''
     const crossMc = mcGroup && mci >= 0 && String(mcGroup).trim().toUpperCase() !== curMc.trim().toUpperCase()
-    if (crossMc) {
-      const item = ici >= 0 ? norm(grid.rows[ri][ici]) : ''
-      if (!window.confirm(`ยืนยันย้ายงาน ${item} จากเครื่อง ${curMc} → ${mcGroup} (สัปดาห์ ${week})?`)) return
+    if (crossMc && !window.confirm(`ยืนยันย้ายงาน ${item} จากเครื่อง ${curMc} → ${mcGroup} (สัปดาห์ ${week})?`)) return
+
+    // วันทำงานแต่ละสัปดาห์ไม่เท่ากัน (W32 = 10 วัน, W33 = 5 วัน) → เครื่องชุดเดิมอาจผลิตไม่ทัน
+    const oldRow = grid.rows[ri]
+    const gvOld = (n) => { const k = grid.columns.indexOf(n); return k >= 0 ? (Number(norm(oldRow[k])) || 0) : 0 }
+    const sharedRow = gvOld('MC_SHARED') > 0
+    const cap = sharedRow ? null : capacityAt(gvOld, Number(week))
+    const need = gvOld('PRODUCE_QTY')
+    if (cap != null && need > 0 && cap + 1e-6 < need) {
+      const msg = `${item} → สัปดาห์ ${week}: เครื่องที่ถืออยู่ (carry ${gvOld('CARRYOVER_MC')} + ใหม่ ${gvOld('NEW_MC')}) `
+        + `ผลิตได้แค่ ${Math.round(cap).toLocaleString()} กก. แต่ต้องผลิต ${Math.round(need).toLocaleString()} กก.\n\n`
+        + `สัปดาห์ปลายทางมีวันทำงานน้อยกว่า — ระบบไม่คำนวณจำนวนเครื่องใหม่ให้ (ต้องรันแผนใหม่)\n\n`
+        + `ยืนยันย้ายหรือไม่?`
+      if (!window.confirm(msg)) return
     }
+
     setGrid(g => {
       const rows = g.rows.slice()
       const row = rows[ri].slice()
+      const oldWeek = wci >= 0 ? norm(row[wci]) : ''
       if (wci >= 0) row[wci] = week
       if (crossMc) row[mci] = mcGroup
+      if (String(oldWeek) !== String(week) || crossMc) recalcRowForWeek(row, g.columns, week)
       rows[ri] = row
       return { ...g, rows }
     })

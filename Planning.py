@@ -8503,6 +8503,8 @@ def _run_planning_loop() -> list:
                                 else f"เติมเข้าเครื่องที่วิ่งอยู่ {_fill_mc_group} {_fill_avail_mc} เครื่อง (ใช้ capacity ที่เหลือ) ไม่ต้อง setup"
                             ),
                             "FACTORY_WORKING_DAYS": get_working_days_by_factory(_fill_mc_group, _fill_avail_mc, week=_fill_week, gauge=_fill_gauge),
+                            "WD_BASE": get_working_days_by_factory(_fill_mc_group, _fill_avail_mc, week=0, item_code=item, gauge=_fill_gauge),
+                            "WD_W32": get_working_days_by_factory(_fill_mc_group, _fill_avail_mc, week=32, gauge=_fill_gauge),
                             "CALENDAR_WORKING_DAYS": len(get_working_days_in_week(_fill_week)),
                             "ACTUAL_WORKING_DAYS": _fill_actual_wd,
                             "DAILY_CAPACITY": _fill_daily_cap,
@@ -10430,6 +10432,14 @@ def _run_planning_loop() -> list:
                     "FACTORY_WORKING_DAYS": get_working_days_by_factory(
                         mc_group, available_machines, week=plan_week, gauge=item_gauge
                     ),
+                    # วันทำงานฐานของแถว (ไม่ขึ้นกับสัปดาห์) + วันทำงานถ้าอยู่ W32
+                    # ใช้ให้หน้าเว็บคำนวณจำนวนเครื่องใหม่ได้เมื่อลากงานข้ามสัปดาห์
+                    "WD_BASE": get_working_days_by_factory(
+                        mc_group, available_machines, week=0, item_code=item, gauge=item_gauge
+                    ),
+                    "WD_W32": get_working_days_by_factory(
+                        mc_group, available_machines, week=32, gauge=item_gauge
+                    ),
                     "CALENDAR_WORKING_DAYS": len(get_working_days_in_week(plan_week)),
                     "ACTUAL_WORKING_DAYS": get_working_days_by_factory(mc_group, available_machines, week=plan_week, gauge=item_gauge)
                     if plan_week in (17, 32)
@@ -11708,12 +11718,23 @@ if "S9_ROUTING" in plan_df.columns:
     _other_cols = [c for c in plan_df.columns if c != "S9_ROUTING"]
     plan_df = plan_df[_other_cols + ["S9_ROUTING"]]
 
+# วันทำงานตามปฏิทินของทุกสัปดาห์ (รวมสัปดาห์ที่ไม่มีงานในแผน)
+# หน้าเว็บใช้คำนวณจำนวนเครื่องใหม่เมื่อลากงานข้ามสัปดาห์:
+#   actual_wd(w) = w in (17,32) ? WD_W32/8 : max(1, WD_BASE - max(0, 6 - CAL_DAYS[w]))
+_week_days_df = pd.DataFrame(
+    [
+        {"WEEK": int(_w), "CAL_DAYS": len(get_working_days_in_week(int(_w)))}
+        for _w in sorted(calendar_week["WEEK"].unique())
+    ]
+)
+
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as _writer:
     plan_df.to_excel(_writer, sheet_name="PLAN", index=False)
     remaining_df.to_excel(_writer, sheet_name="REMAINING_JOBS", index=False)
     setup_tracking_df.to_excel(_writer, sheet_name="SETUP_TRACKING", index=False)
     _unplanned_df.to_excel(_writer, sheet_name="UNPLANNED", index=False)
     _cylinder_change_df.to_excel(_writer, sheet_name="CYLINDER_CHANGE", index=False)
+    _week_days_df.to_excel(_writer, sheet_name="WEEK_DAYS", index=False)
 
 # ใส่สีให้ PLAN sheet: เหลือง=CYLINDER_CHANGE, แดง=S9_ROUTING
 _need_color = _cyl_trigger_keys or (

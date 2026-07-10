@@ -65,6 +65,7 @@ export const api = {
   planLoad: () => req('GET', '/api/plan/load'),
   planAva: () => req('GET', '/api/plan/ava'),
   planBookingMc: () => req('GET', '/api/plan/booking-mc'),
+  planWeekDays: () => req('GET', '/api/plan/week-days'),
   planDownloadUrl: () => '/api/plan/download',
   // order color (Datamining → Booking ระดับ ITEM Color — แก้ไข + export)
   orderColorLatest: () => req('GET', '/api/order-color'),

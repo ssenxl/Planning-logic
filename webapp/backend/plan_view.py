@@ -296,6 +296,30 @@ def booking_mc_by_item_week() -> dict:
     return out
 
 
+def week_days() -> dict:
+    """วันทำงานตามปฏิทินของทุกสัปดาห์ จากชีท WEEK_DAYS → { week(str): cal_days }
+
+    หน้าเว็บใช้คำนวณจำนวนเครื่องใหม่เมื่อลากงานข้ามสัปดาห์ (สัปดาห์ที่ไม่มีงานในแผน
+    ก็ต้องรู้วันทำงาน) — ไฟล์แผนเก่าที่ไม่มีชีทนี้จะได้ {} แล้วหน้าเว็บจะไม่คำนวณใหม่"""
+    p = latest_path()
+    if p is None:
+        return {}
+    try:
+        import pandas as pd
+        df = pd.read_excel(p, sheet_name="WEEK_DAYS")
+    except Exception:
+        return {}
+    if not {"WEEK", "CAL_DAYS"} <= set(df.columns):
+        return {}
+    out: dict = {}
+    for _, r in df.iterrows():
+        wk = _wk_str(r["WEEK"])
+        if wk is None:
+            continue
+        out[wk] = int(_num(r["CAL_DAYS"]) or 0)
+    return out
+
+
 def ava_by_week() -> dict:
     """เครื่องว่าง (AVA) ต่อ (CAT×เกจ×สัปดาห์) จากชีท SUMMARY_MC_REMAIN ของ booking_final ล่าสุด
     → { week(str): { "CAT|GUAGE": {"remain": int, "total": int, "used": int} } }
