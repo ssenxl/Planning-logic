@@ -503,10 +503,11 @@ button {
   margin-right: 2px;
 }
 
-/* emoji บอกประเภทเครื่อง: ➕ ใช้เครื่องร่วม / 🆕 setup ใหม่ / 🔁 carry เครื่องเดิม */
+/* emoji บอกประเภทเครื่อง: ➕ ใช้เครื่องร่วม / 🔧 setup ใหม่ / 📦 carry จาก booking / ⏩ วิ่งต่อ */
 .gbar-mc {
-  font-size: 10px;
-  margin-right: 3px;
+  font-size: 12px;
+  line-height: 1;
+  margin-right: 4px;
   flex: none;
 }
 

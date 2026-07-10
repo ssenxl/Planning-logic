@@ -45,17 +45,20 @@ const LOAD_TYPES = [
 ]
 
 // ประเภทเครื่องของแถวแผน → emoji ติดหน้า item บนบล็อก
-// ➕ ใช้เครื่องร่วมกับแถวอื่น (MC_SHARED > 0) — ไม่กินเครื่องเพิ่ม ไม่ต้อง setup
-// 🆕 setup เครื่องใหม่ (NEW_MC > 0) — กินเครื่องจากพูล + เสียเวลา setup
-// 🔁 carry เครื่องเดิมจากสัปดาห์ก่อน (CARRYOVER_MC > 0) — ไม่ต้อง setup
+// ➕ ใช้เครื่องร่วมกับแถวอื่นใน (item, เครื่อง, สัปดาห์) เดียวกัน — ไม่กินเครื่องเพิ่ม
+// 🔧 setup เครื่องใหม่ — กินเครื่องจากพูล + เสียเวลา setup
+// 📦 carry เครื่องจาก booking — มีงานถักไอเทมนี้อยู่บนเครื่องแล้ว แค่เติม order เข้าไป
+// ⏩ carry เครื่องของแผนเองจากสัปดาห์ก่อน — เครื่องเดิมวิ่งต่อเนื่อง ไม่ต้อง setup
 const MC_KINDS = {
-  shared: { icon: '➕', label: 'เติมเข้าเครื่องเดิม (ใช้เครื่องร่วม ไม่กินเครื่องเพิ่ม)' },
-  setup: { icon: '🆕', label: 'setup เครื่องใหม่' },
-  carry: { icon: '🔁', label: 'carry เครื่องเดิม (ไม่ต้อง setup)' },
+  shared: { icon: '➕', label: 'ใช้เครื่องร่วมกับแถวอื่น (ไม่กินเครื่องเพิ่ม)' },
+  setup: { icon: '🔧', label: 'setup เครื่องใหม่' },
+  booking: { icon: '📦', label: 'carry เครื่องจาก booking (มีงานถักอยู่แล้ว)' },
+  carry: { icon: '⏩', label: 'เครื่องเดิมวิ่งต่อจากสัปดาห์ก่อน' },
 }
-function mcKind(newMc, carryMc, sharedMc) {
+function mcKind(newMc, carryMc, sharedMc, bookingMc) {
   if (sharedMc > 0) return 'shared'
   if (newMc > 0) return 'setup'
+  if (bookingMc > 0) return 'booking'
   if (carryMc > 0) return 'carry'
   return ''
 }
@@ -96,7 +99,8 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, onMoveWe
       week: at('PLAN_WEEK'), item: at('ITEM_CODE'), qty: at('PRODUCE_QTY'),
       reqmc: at('REQUIRED_MC'), factory: at('FACTORY_TYPE'), cat: at('CAT'),
       newmc: at('NEW_MC'), gauge: at('MC_GUAGE'), actualmc: at('ACTUAL_MC'),
-      carrymc: at('CARRYOVER_MC'), sharedmc: at('MC_SHARED'), remark: at('REMARK'),
+      carrymc: at('CARRYOVER_MC'), sharedmc: at('MC_SHARED'),
+      bookingmc: at('MC_BOOKING'), remark: at('REMARK'),
     }
   }, [columns])
 
@@ -201,7 +205,7 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, onMoveWe
         ck: colorKey(row),
         qty: ci.qty >= 0 ? norm(row[ci.qty]) : '',
         actualmc: ci.actualmc >= 0 ? norm(row[ci.actualmc]) : '',
-        mc: mcKind(num(ci.newmc), num(ci.carrymc), num(ci.sharedmc)),
+        mc: mcKind(num(ci.newmc), num(ci.carrymc), num(ci.sharedmc), num(ci.bookingmc)),
         remark: ci.remark >= 0 ? norm(row[ci.remark]) : '',
       })
     }

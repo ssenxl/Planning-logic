@@ -8496,6 +8496,7 @@ def _run_planning_loop() -> list:
                             "CARRYOVER_MC": 0 if _fill_shared_owner else _fill_avail_mc,
                             "NEW_MC": 0,
                             "MC_SHARED": _fill_avail_mc if _fill_shared_owner else 0,
+                            "MC_BOOKING": _bk_mc_at_fill_week,  # เครื่องที่ booking ถักไอเทมนี้อยู่แล้ว
                             "REMARK": (
                                 f"เติมเข้าเครื่องเดิม — ใช้เครื่อง {_fill_avail_mc} ตัวร่วมกับ SO {_fill_shared_owner} ({_fill_mc_group}) ไม่ใช้เครื่องเพิ่ม ไม่ต้อง setup"
                                 if _fill_shared_owner
@@ -10391,6 +10392,18 @@ def _run_planning_loop() -> list:
             item_gauge = str(order.get("MC_GUAGE", "")).strip()
             print(f"[DEBUG DUPLICATE] Adding plan for {item}+{plan_week}+{mc_group}")
 
+            # เครื่องที่ booking ถักไอเทมนี้อยู่แล้วในสัปดาห์นี้ (carry มาจาก booking ไม่ใช่ setup ใหม่)
+            _row_booking_mc = (
+                0
+                if _s9_active
+                else int(
+                    booking_mc_by_week.get(_ck(item, mc_group, item_gauge), {}).get(
+                        week_index(plan_week), 0
+                    )
+                    or 0
+                )
+            )
+
             plans.append(
                 {
                     "ITEM_CODE": item,
@@ -10406,16 +10419,13 @@ def _run_planning_loop() -> list:
                     "CARRYOVER_MC": carryover_mc,  # เครื่องที่ carry-over จาก week ก่อน
                     "NEW_MC": new_mc,  # เครื่องใหม่ที่ setup week นี้
                     "MC_SHARED": 0,  # แถวนี้ประกาศเครื่องเอง (ไม่ได้ใช้เครื่องร่วมกับแถวอื่น)
+                    "MC_BOOKING": _row_booking_mc,  # เครื่องที่ booking ถักไอเทมนี้อยู่แล้วในสัปดาห์นี้
                     "REMARK": _build_plan_remark(
                         "COMKN" if _s9_active else mc_group,
                         carryover_mc,
                         new_mc,
                         setup_days_used,
-                        booking_mc=0
-                        if _s9_active
-                        else booking_mc_by_week.get(
-                            _ck(item, mc_group, item_gauge), {}
-                        ).get(week_index(plan_week), 0),
+                        booking_mc=_row_booking_mc,
                     ),
                     "FACTORY_WORKING_DAYS": get_working_days_by_factory(
                         mc_group, available_machines, week=plan_week, gauge=item_gauge
