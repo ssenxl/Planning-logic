@@ -91,13 +91,19 @@ EXCLUDE_MC_GROUP = [
     "COMKN",
     "F-CL",
     "CL",
+    "F-TSD",
+]
+
+# FQC: ไม่มีเครื่องใน MasterMC → วางแผนไม่ได้ แต่ต้องการโชว์ยอดใช้เครื่องในชีท AVA_MC
+# จึงปล่อยให้ไหลผ่านการคำนวณ แล้วตัดทิ้งก่อนเขียนชีท DETAIL (Planning.py อ่านชีทนี้)
+FQC_MC_GROUP = [
     "FQCCL-NP",
     "FQCCL-OM",
     "FQC-Omnoi",
     "FQC-Phet",
     "FQC",
-    "F-TSD",
 ]
+FQC_MC_CAT = {"FQC", "FQC-CL"}
 
 KEEP_COLUMNS = [
     "CAT",
@@ -765,6 +771,13 @@ df["MC_USE"] = np.where(
 )
 df["MC_USE_CEIL"] = np.ceil(df["MC_USE"]).fillna(0).astype(int)
 
+# เก็บ CAP หลังปรับ 20/24 ไว้ก่อน drop — ใช้เป็นคอลัมน์ CAP ในชีท AVA_MC_ITEM
+_CAP_ADJ_SNAP = (
+    df.groupby(["MC_GROUP", "GUAGE", "ITEM_CODE"], as_index=False)["_CAP_ADJ"]
+    .max()
+    .rename(columns={"_CAP_ADJ": "CAP"})
+)
+
 # drop temp columns
 df = df.drop(columns=["_CAP_ADJ", "_mc_use_ceil_pass1"])
 
@@ -1158,7 +1171,19 @@ _ava_idx_df = pd.concat(
         _kp_all[["MC_CAT", "GUAGE"]],
     ],
     ignore_index=True,
-).drop_duplicates().sort_values(["MC_CAT", "GUAGE"])
+).drop_duplicates()
+# IMPORT = ผ้านำเข้า ไม่ได้ถักเอง → ไม่ต้องโชว์ในชีท AVA (ยังคงอยู่ใน DETAIL เหมือนเดิม)
+_AVA_HIDE_CAT = {"IMPORT"}
+# FQC ไม่ใช่เครื่องถักใน MasterMC → ดันไปไว้ล่างสุดของชีท ไม่ให้แทรกกลางกลุ่ม DOUBLE/SINGLE
+_AVA_BOTTOM_CAT = set(FQC_MC_CAT)
+_ava_idx_df = _ava_idx_df[
+    ~_ava_idx_df["MC_CAT"].astype(str).str.strip().str.upper().isin(_AVA_HIDE_CAT)
+]
+_ava_idx_df["_ORD"] = _ava_idx_df["MC_CAT"].astype(str).str.strip().str.upper().isin(_AVA_BOTTOM_CAT).astype(int)
+_ava_idx_df = (
+    _ava_idx_df.sort_values(["_ORD", "MC_CAT", "GUAGE"])
+    .drop(columns="_ORD")
+)
 _ava_idx = pd.MultiIndex.from_frame(_ava_idx_df)
 
 _ava_base = _ava_idx_df.copy()
@@ -1246,14 +1271,89 @@ else:
 _ava_sub_excel_rows = [4 + _p for _p in _sub_pos]
 
 # =========================
+# AVA_MC_ITEM — แตกรายละเอียดระดับ ITEM
+# index: MC_CAT | MC | GUAGE | ITEM | TYPE | CAP
+#   TYPE = FQC ถ้ามาจากเครื่องกลุ่ม FQC, ไม่งั้น NORMAL
+#   CAP  = CAP_KNIT หลังปรับ 20/24 (_CAP_ADJ)
+# บล็อกรายสัปดาห์: Total mc / Dif / %ava = ค่าระดับ MC_CAT+GUAGE (เท่ากับชีท AVA_MC)
+#                  KP / MC_USE          = ค่าของ item แถวนั้น
+# =========================
+ITEM_SHEET = "AVA_MC_ITEM"
+
+_it = df[["MC_CAT", "MC_GROUP", "GUAGE", "ITEM_CODE", "WEEK", "KP_WEIGHT", "MC_USE_CEIL"]].copy()
+_it = _it[~_it["MC_CAT"].astype(str).str.strip().str.upper().isin(_AVA_HIDE_CAT)]
+_it = _it.merge(_CAP_ADJ_SNAP, on=["MC_GROUP", "GUAGE", "ITEM_CODE"], how="left")
+_it["TYPE"] = np.where(_it["MC_GROUP"].isin(FQC_MC_GROUP), "FQC", "NORMAL")
+_it["MC_CAT"] = _ava_cat_disp(_it["MC_CAT"])
+_it["GUAGE"] = _it["GUAGE"].map(_norm_gauge_ava)
+_it["MC"] = _it["MC_GROUP"].astype(str).str.strip().str.upper()
+_it["ITEM"] = _it["ITEM_CODE"].astype(str).str.strip()
+_it["CAP"] = pd.to_numeric(_it["CAP"], errors="coerce").fillna(0).round(2)
+
+_IT_KEYS = ["MC_CAT", "MC", "GUAGE", "ITEM", "TYPE", "CAP"]
+_it_wk = (
+    _it.groupby(_IT_KEYS + ["WEEK"], as_index=False)
+    .agg(KP=("KP_WEIGHT", "sum"), MC_USE=("MC_USE_CEIL", "sum"))
+)
+
+_it_idx_df = _it_wk[_IT_KEYS].drop_duplicates()
+# FQC / IMPORT ไปล่างสุดเหมือนชีท AVA_MC
+_it_idx_df["_ORD"] = _it_idx_df["MC_CAT"].astype(str).str.strip().str.upper().isin(_AVA_BOTTOM_CAT).astype(int)
+_it_idx_df = _it_idx_df.sort_values(["_ORD", "MC_CAT", "GUAGE", "MC", "ITEM"]).drop(columns="_ORD")
+_it_idx = pd.MultiIndex.from_frame(_it_idx_df)
+
+# Total mc ระดับ MC_CAT+GUAGE (ชุดเดียวกับชีท AVA_MC)
+_it_base = _it_idx_df.copy()
+_it_base["_CATKEY"] = _ava_catkey(_it_base["MC_CAT"].astype(str).str.strip().str.upper())
+_it_base["_GKEY"] = _it_base["GUAGE"].astype(str).str.strip()
+_it_base = _it_base.merge(
+    _ava_master_tot[["_CATKEY", "_GKEY", "Total mc"]], on=["_CATKEY", "_GKEY"], how="left"
+)
+_it_base["Total mc"] = _it_base["Total mc"].fillna(0)
+
+_it_blocks = []
+for _wk in ava_weeks:
+    _iw = _it_wk[_it_wk["WEEK"] == _wk][_IT_KEYS + ["KP", "MC_USE"]]
+    _gw = _use_all[_use_all["WEEK"] == _wk][["_CATKEY", "_GKEY", "MC_USE_Cat"]]
+    _m = _it_base.merge(_iw, on=_IT_KEYS, how="left").merge(_gw, on=["_CATKEY", "_GKEY"], how="left")
+    _m["KP"] = _m["KP"].fillna(0)
+    _m["MC_USE"] = _m["MC_USE"].fillna(0)
+    _m["MC_USE_Cat"] = _m["MC_USE_Cat"].fillna(0)
+    # Dif/%ava = ระดับ MC_CAT+GUAGE (เครื่องว่างของกลุ่ม ไม่ใช่ของ item)
+    _m["Dif"] = _m["Total mc"] - _m["MC_USE_Cat"]
+    _m["%ava"] = (_m["Dif"] / _m["Total mc"]).where(_m["Total mc"] != 0)
+    _blk = (
+        _m.set_index(_IT_KEYS)[["Total mc", "KP", "MC_USE", "Dif", "%ava"]]
+        .reindex(_it_idx)
+    )
+    _blk.columns = pd.MultiIndex.from_product([[f"WEEK {_wk}"], _blk.columns])
+    _it_blocks.append(_blk)
+
+item_wide = (
+    pd.concat(_it_blocks, axis=1)
+    if _it_blocks
+    else pd.DataFrame(index=_it_idx)
+)
+
+# =========================
 # SAVE
 # =========================
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# FQC โชว์เฉพาะชีท AVA_MC (สร้างเสร็จแล้วด้านบน) — ชีทที่ Planning.py/webapp อ่านต้องไม่มี FQC
+_detail_out = df[~df["MC_GROUP"].isin(FQC_MC_GROUP)]
+print(f"🧹 ตัด FQC ออกจากชีท DETAIL: {len(df) - len(_detail_out)} แถว (เหลือ {len(_detail_out)})")
+
+def _drop_fqc_cat(_d):
+    if _d.empty or "MC_CAT" not in _d.columns:
+        return _d
+    return _d[~_d["MC_CAT"].astype(str).str.strip().str.upper().isin(FQC_MC_CAT)]
+
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
-    df.to_excel(writer, sheet_name="DETAIL", index=False)
-    summary.to_excel(writer, sheet_name="SUMMARY_MC_REMAIN", index=False)
-    reserved_summary.to_excel(writer, sheet_name="MC_RESERVED", index=False)
-    reserved_weekly_summary.to_excel(writer, sheet_name="MC_RESERVED_WEEKLY", index=False)
+    _detail_out.to_excel(writer, sheet_name="DETAIL", index=False)
+    _drop_fqc_cat(summary).to_excel(writer, sheet_name="SUMMARY_MC_REMAIN", index=False)
+    _drop_fqc_cat(reserved_summary).to_excel(writer, sheet_name="MC_RESERVED", index=False)
+    _drop_fqc_cat(reserved_weekly_summary).to_excel(writer, sheet_name="MC_RESERVED_WEEKLY", index=False)
     ava_wide.to_excel(writer, sheet_name=AVA_SHEET)
     # freeze คอลัมน์ A-B (MC_CAT, GUAGE) + แถวหัวตาราง ให้ค้างเวลาเลื่อนดู week ทางขวา
     _ws = writer.sheets[AVA_SHEET]
@@ -1304,8 +1404,36 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
             _e = _cell.border
             _cell.border = Border(left=_e.left, top=_e.top, bottom=_e.bottom, right=_rb)
 
+    # ---------- ชีท AVA_MC_ITEM (ระดับ item) ----------
+    item_wide.to_excel(writer, sheet_name=ITEM_SHEET)
+    _wsi = writer.sheets[ITEM_SHEET]
+    _wsi.freeze_panes = "G4"                 # ค้าง 6 คอลัมน์ index (MC_CAT..CAP)
+    _i_first, _i_last = 4, 3 + len(item_wide)
+    _I_BASE = 7                              # คอลัมน์แรกของบล็อก week (A-F = index)
+    for _r in range(_i_first, _i_last + 1):
+        for _wi in range(_n_weeks):
+            _b = _I_BASE + _wi * 5
+            _wsi.cell(row=_r, column=_b).number_format = _NUM_FMT       # Total mc
+            _wsi.cell(row=_r, column=_b + 1).number_format = "#,##0.00" # KP
+            _wsi.cell(row=_r, column=_b + 2).number_format = _NUM_FMT   # MC_USE
+            _wsi.cell(row=_r, column=_b + 3).number_format = _NUM_FMT   # Dif
+            _pa = _wsi.cell(row=_r, column=_b + 4)                       # %ava
+            _pa.number_format = _PCT_FMT
+            if isinstance(_pa.value, (int, float)) and _pa.value <= 0.20:
+                _pa.font = Font(color="FFFF0000")
+        _wsi.cell(row=_r, column=6).number_format = "#,##0.00"           # CAP
+    for _wi in range(_n_weeks):
+        _bcol = _I_BASE + _wi * 5 + 4
+        for _r in range(1, _i_last + 1):
+            _cell = _wsi.cell(row=_r, column=_bcol)
+            _e = _cell.border
+            _cell.border = Border(left=_e.left, top=_e.top, bottom=_e.bottom, right=_rb)
+
 print("✅ AVA MC FINAL COMPLETE (COLLAR REMOVED)")
 print("Saved:", OUTPUT_FILE)
 print("DETAIL rows:", len(df))
 print("SUMMARY rows:", len(summary))
 print(f"{AVA_SHEET} rows:", len(ava_wide), "weeks:", ava_weeks)
+print(f"{ITEM_SHEET} rows:", len(item_wide),
+      "| FQC:", int((_it_idx_df['TYPE'] == 'FQC').sum()),
+      "| NORMAL:", int((_it_idx_df['TYPE'] == 'NORMAL').sum()))
