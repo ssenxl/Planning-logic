@@ -1,5 +1,5 @@
 :root {
-  --bg: #f4f5fb;
+  --bg: #d6e9fb;
   --panel: #ffffff;
   --line: #e7e8f1;
   --line-soft: #eef0f7;
@@ -31,9 +31,11 @@ body {
   margin: 0;
   font-family: 'Sarabun', 'Segoe UI', Tahoma, system-ui, sans-serif;
   background:
-    radial-gradient(1200px 600px at 100% -10%, #ecebfb 0%, transparent 55%),
-    radial-gradient(1000px 500px at -10% 0%, #eaf1fb 0%, transparent 50%),
+    radial-gradient(1200px 620px at 100% -10%, #a9cef2 0%, transparent 55%),
+    radial-gradient(1000px 520px at -10% 5%, #bfe0f8 0%, transparent 50%),
+    linear-gradient(160deg, #dcecfe 0%, #c2ddf7 48%, #a6caf0 100%),
     var(--bg);
+  background-attachment: fixed;
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
 }
@@ -1293,6 +1295,35 @@ button.ghost.sm:hover {
   align-items: flex-start;
 }
 
+/* header หน้าแผนผลิต: เรียงลงล่างทั้งหมด ชิดซ้าย */
+.editbar.plan-head {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.editbar.plan-head .actions {
+  flex-wrap: wrap;
+}
+
+.editbar.plan-head .run-hint {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+/* ปุ่มดาวน์โหลด Excel หน้าแผนผลิต — เขียวเด่น */
+.editbar.plan-head .actions .dl {
+  background: #16a34a;
+  color: #fff;
+  border-color: #12833d;
+  box-shadow: 0 2px 8px rgba(22, 163, 74, .35);
+}
+
+.editbar.plan-head .actions .dl:hover {
+  background: #12833d;
+  border-color: #0f7235;
+}
+
 .knitplan .dot {
   color: #c0496a;
 }
@@ -1325,6 +1356,37 @@ button.ghost.sm:hover {
   font-weight: 600;
 }
 
+/* ฝั่งขวาแถบ Gantt: legend (สัญลักษณ์สี) + ปุ่มซ่อน/แสดง */
+.gantt-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.gantt-bar-right .gload-legend {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: none;
+}
+
+/* dropdown เลือกฟิลด์บนบล็อก — ลอยเป็น popover ไม่ดันแถบ Gantt */
+.gantt-bar-right .gantt-fields {
+  position: relative;
+}
+
+.gantt-bar-right .gfield-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  max-width: 340px;
+  padding: 9px 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 22px rgba(20, 22, 45, .16);
+}
+
 .gantt {
   padding: 10px 12px;
 }
@@ -1332,10 +1394,102 @@ button.ghost.sm:hover {
 .gantt-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 8px;
+}
+
+.gantt-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.gantt-foot-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ปุ่มกรองโหลด (นอกตาราง) — เลือกให้ตารางโชว์เฉพาะประเภทงานที่กด */
+.gload-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.gload-filter-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.gfilter-btn {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.gfilter-btn:hover {
+  border-color: var(--pri);
+  color: var(--pri);
+}
+
+.gfilter-btn.active {
+  background: var(--pri);
+  border-color: var(--pri);
+  color: #fff;
+}
+
+/* legend อธิบายสีของแถบโหลด */
+.gload-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: 10px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+
+.glg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.glg-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex: 0 0 auto;
+}
+
+.glg-dot.old {
+  background: linear-gradient(180deg, #2fb968 0%, #1e9a52 100%);
+}
+
+.glg-dot.new {
+  background: #83c98a;
+}
+
+.glg-dot.free {
+  background: linear-gradient(180deg, #c6cdd9 0%, #b3bccc 100%);
+}
+
+.glg-dot.over {
+  background: linear-gradient(180deg, #d24437 0%, #b1291d 100%);
 }
 
 .gantt-legend {
@@ -1398,6 +1552,7 @@ button.ghost.sm:hover {
 .gantt-wk {
   min-width: 150px;
   text-align: center;
+  background: #e8eaf0;
 }
 
 /* คอลัมน์หัวแถวฝั่งซ้าย (เครื่อง/เกจ/CAT) — sticky ซ้าย */
@@ -1425,6 +1580,39 @@ button.ghost.sm:hover {
 .gantt-rsvcol {
   text-align: center;
   white-space: normal;
+}
+
+/* หัวคอลัมน์ "กันเครื่อง" = ฟ้าอ่อน ตัวหนังสือน้ำเงินเข้ม */
+.gantt-ghead.gantt-rsvcol {
+  background: linear-gradient(180deg, #d6e9fb 0%, #bcd8f4 100%);
+  color: #1c4e80;
+}
+
+/* มุมซ้ายบนสุด = ป้าย "Factory/Week" (ครอบคลุมความกว้างคอลัมน์หัวแถวทั้งหมด) */
+.gantt-weekcorner {
+  text-align: center;
+  background: #e8eaf0;
+}
+
+/* แถวหัวคอลัมน์ (Category/Guage/Machine/กันเครื่อง) ที่ย้ายลงมา — pin ค้างทั้งบนและซ้าย
+   ทุกช่องเป็นฟ้าอ่อนเหมือนกันหมด */
+.gantt-colhead th.gantt-glabel {
+  position: sticky;
+  z-index: 7;
+  background: linear-gradient(180deg, #d6e9fb 0%, #bcd8f4 100%);
+  color: #1c4e80;
+}
+
+.gantt-colhead-cell {
+  position: sticky;
+  z-index: 4;
+  background: #e8eaf0;
+  border-bottom: 2px solid var(--line);
+}
+
+/* ข้อมูลหัวแถว (Category/Guage/Machine/กันเครื่อง) จัดกึ่งกลาง — ยกเว้นป้ายแถวสรุปโหลด */
+.gantt-grid tbody tr:not(.gantt-load-row) th.gantt-glabel {
+  text-align: center;
 }
 
 .rsvtag {
@@ -1526,7 +1714,7 @@ button.ghost.sm:hover {
 .gantt-load-row .gantt-glabel {
   background: #eef0f8;
   font-size: 11px;
-  color: var(--muted);
+  color: var(--ink);
 }
 
 .gantt-load-cell {
@@ -1549,9 +1737,9 @@ button.ghost.sm:hover {
   flex: 1 1 auto;
   min-width: 28px;
   display: flex;
-  height: 8px;
+  height: 20px;
   border-radius: 999px;
-  background: #e6e9f2;
+  background: #eef0f6;
   overflow: hidden;
 }
 
@@ -1559,25 +1747,49 @@ button.ghost.sm:hover {
   background: #eef0f6;
 }
 
+/* แต่ละส่วนกว้างตามสัดส่วนจริง (flex-grow = ค่าจำนวนเครื่อง) + ตัวเลขอยู่กึ่งกลางในแถบ */
 .loadbar .seg {
   height: 100%;
+  flex-basis: 0;
+  min-width: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
-/* เก่า = น้ำเงินอ่อน, ใหม่ = น้ำเงินเข้ม → ทั้งคู่คือ "เครื่องที่ถูกใช้" ต่างกันที่ความเข้ม */
+/* เดิมใช้ = เขียวเข้ม (ตัวขาว), วันนี้ใช้ = เขียวอ่อน (ตัวเขียวเข้ม), ว่าง = เทา */
 .loadbar .seg.old {
-  background: #c7d2fe;
+  background: linear-gradient(180deg, #2fb968 0%, #1e9a52 100%);
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, .18);
 }
 
 .loadbar .seg.new {
-  background: var(--pri);
+  background: #83c98a;
+  color: #fff;
 }
 
+.loadbar .seg.free {
+  background: linear-gradient(180deg, #c6cdd9 0%, #b3bccc 100%);
+  color: #59637a;
+}
+
+/* เกิน = แดงเข้ม ตัวหนังสือขาว */
 .loadbar.over .seg.old {
-  background: #f5b7b1;
+  background: linear-gradient(180deg, #d24437 0%, #b1291d 100%);
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, .22);
 }
 
 .loadbar.over .seg.new {
-  background: #e15759;
+  background: linear-gradient(180deg, #e05a4d 0%, #c33a2d 100%);
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, .22);
 }
 
 /* ป้ายตัวเลขกว้างคงที่ + ชิดขวา → แท่ง (.loadbar flex:1) เหลือที่เท่ากันทุกช่อง แท่งเลยยาวเท่ากัน */
@@ -1598,6 +1810,12 @@ button.ghost.sm:hover {
 
 .loadlbl.over {
   color: #c0392b;
+}
+
+/* จำนวน job รวมของประเภทนั้น — โชว์ต่อท้าย label แถวโหลด เช่น "โหลด OM · 13 job" */
+.loadjobs-total {
+  font-weight: 500;
+  color: #d24437;
 }
 
 .loadtxt {
@@ -1674,7 +1892,8 @@ button.ghost.sm:hover {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: .2px;
-  color: rgba(255, 255, 255, .85);
+  color: inherit;
+  opacity: .85;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1683,7 +1902,8 @@ button.ghost.sm:hover {
 .gbar-tag::before {
   content: '·';
   margin-right: 4px;
-  color: rgba(255, 255, 255, .5);
+  color: inherit;
+  opacity: .6;
 }
 
 /* วางงานเลยสัปดาห์ที่ต้องถักเสร็จ (TARGET_KNIT) → ป้าย RDD แดง (ส่งไม่ทัน) */
@@ -1708,6 +1928,7 @@ button.ghost.sm:hover {
 }
 
 .gfield-toggle,
+.gfoot-toggle,
 .gfield-reset {
   font-size: 11px;
   font-weight: 600;
@@ -1720,6 +1941,7 @@ button.ghost.sm:hover {
 }
 
 .gfield-toggle:hover,
+.gfoot-toggle:hover,
 .gfield-reset:hover {
   border-color: var(--pri);
   color: var(--pri);
@@ -2036,13 +2258,14 @@ button.ghost.sm:hover {
 .editbar button,
 .schedcard button {
   padding: 9px 18px;
-  border: 1px solid var(--line);
+  border: 1px solid #b8c6e0;
   border-radius: 9px;
   background: #fff;
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
   color: var(--ink);
+  box-shadow: 0 1px 3px rgba(30, 40, 80, .12);
 }
 
 .actions button:hover:not(:disabled),
@@ -2073,6 +2296,15 @@ button.primary:hover:not(:disabled),
 button:disabled {
   opacity: .5;
   cursor: not-allowed;
+}
+
+/* ปุ่ม disabled ในแถบ action: พื้นเทาทึบแทน opacity (กันพื้นฟ้าทะลุแล้วดูสีแปลก) */
+.actions button:disabled,
+.editbar button:disabled {
+  opacity: 1;
+  background: #eef1f6;
+  color: #9aa3b5;
+  box-shadow: none;
 }
 
 /* filter bar */
@@ -2799,7 +3031,7 @@ table.grid th {
 }
 
 table.grid tbody tr:nth-child(even) td {
-  background: #fafbfe;
+  background: transparent;
 }
 
 table.grid tbody tr:hover td {
@@ -2906,7 +3138,7 @@ body.col-resizing {
 }
 
 .gridwrap table.grid tbody tr:nth-child(even) td.frozen {
-  background: #fafbfe;
+  background: #fff;
 }
 
 .gridwrap table.grid tbody tr:hover td.frozen {
@@ -2959,10 +3191,12 @@ table.grid.outputs th {
   color: var(--pri);
   text-decoration: none;
   font-weight: 700;
-  border: 1px solid var(--line);
+  border: 1px solid #b8c6e0;
   padding: 5px 12px;
   border-radius: 8px;
   display: inline-block;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(30, 40, 80, .12);
 }
 
 .dl:hover {

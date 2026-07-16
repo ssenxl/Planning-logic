@@ -7,11 +7,33 @@ const PALETTE = ['#4e79a7', '#f28e2b', '#59a14f', '#e15759', '#76b7b2',
   '#a0cbe8', '#ffbe7d', '#8cd17d', '#ff9d9a', '#86bcb6',
   '#f1ce63', '#d4a6c8', '#fabfd2', '#d7b5a6', '#79706e']
 
+// ไล่เฉดสีตามประเภท CAT (เข้มสุด → อ่อนสุด): DOUBLE = Teal, SINGLE = ส้ม → เหลืองอ่อน
+const CAT_GRAD = {
+  DOUBLE: ['#004d40', '#00695c', '#00796b', '#00897b', '#009688',
+    '#26a69a', '#4db6ac', '#80cbc4', '#b2dfdb', '#e0f2f1'],
+  SINGLE: ['#006064', '#00838f', '#0097a7', '#00acc1', '#00bcd4',
+    '#26c6da', '#4dd0e1', '#80deea', '#b2ebf2', '#e0f7fa'],
+}
+const _hexRgb = h => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255] }
+const _rgbHex = a => '#' + a.map(x => Math.round(x).toString(16).padStart(2, '0')).join('')
+const _lerpHex = (a, b, t) => { const A = _hexRgb(a), B = _hexRgb(b); return _rgbHex([0, 1, 2].map(i => A[i] + (B[i] - A[i]) * t)) }
+// ไล่ข้ามหลายสต็อป: t∈[0,1] → เลือกช่วงในอาเรย์แล้ว lerp ต่อ
+const _lerpStops = (stops, t) => {
+  if (stops.length <= 1) return stops[0]
+  const x = t * (stops.length - 1)
+  const i = Math.min(stops.length - 2, Math.floor(x))
+  return _lerpHex(stops[i], stops[i + 1], x - i)
+}
+// สีตัวอักษรที่อ่านออกบนพื้นสีนั้น (พื้นสว่าง → ตัวเข้ม, พื้นเข้ม → ตัวขาว)
+const readableText = h => { const [r, g, b] = _hexRgb(h); return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.62 ? '#1f2430' : '#fff' }
+// จับกลุ่มแบบ prefix เพื่อรองรับการสะกดต่างกัน (SINGLE / SINGEL / SINGLE TUBE, DOUBLE ฯลฯ)
+const catGroupOf = key => { const u = String(key).toUpperCase(); return u.includes('DOUB') ? 'DOUBLE' : u.includes('SING') ? 'SINGLE' : null }
+
 // คอลัมน์ที่ใช้เป็น "หัวแถว" ฝั่งซ้าย (เรียงซ้าย→ขวา) + ป้ายภาษาไทย + ความกว้าง(px)
 const GROUP_DEF = [
-  { col: 'CAT', label: 'CAT', width: 76 },
+  { col: 'CAT', label: 'Category', width: 92 },
   { col: 'MC_GUAGE', label: 'Guage', width: 64 },
-  { col: 'MC_GROUP', label: 'เครื่อง', width: 96 },
+  { col: 'MC_GROUP', label: 'Machine', width: 96 },
 ]
 
 // คอลัมน์หัวแถวเพิ่มเติม (ไม่ได้มาจาก grid) — เครื่องที่กันไว้ให้ POLY/COTTON ของกลุ่ม CAT|เกจ
@@ -52,10 +74,10 @@ function itemPoolType(item) {
  *   onMoveWeek(idx, weekStr)        — เรียกเมื่อผู้ใช้ลากบล็อกไปสัปดาห์ใหม่
  */
 // ประเภทงาน (ตรงกับ REMAINING_JOBS) + ป้ายแสดงผล
-const LOAD_TYPES = [
-  { key: 'OM', label: 'OM' },
-  { key: 'PHET_DOUBLE', label: 'PHET DOUBLE' },
-  { key: 'PHET_SINGLE', label: 'PHET SINGLE' },
+export const LOAD_TYPES = [
+  { key: 'OM', label: 'OM', long: 'OMNOI' },
+  { key: 'PHET_DOUBLE', label: 'PHET DOUBLE', long: 'PHET (DOUBLE)' },
+  { key: 'PHET_SINGLE', label: 'PHET SINGLE', long: 'PHET (SINGLE)' },
 ]
 
 // ประเภทเครื่องของแถวแผน → emoji ติดหน้า item บนบล็อก
@@ -69,7 +91,7 @@ const MC_KINDS = {
   outsource: { icon: '🧵', label: 'จ้างทอ (ไม่ใช้เครื่องในบ้าน)' },
   setup: { icon: '🔧', label: 'setup เครื่องใหม่' },
   onExisting: { icon: '📦', label: 'เติมเข้าเครื่องที่วิ่งอยู่ (ไม่ใช้เครื่องเพิ่ม ไม่ต้อง setup)' },
-  carry: { icon: '⏩', label: 'เครื่องเดิมวิ่งต่อจากสัปดาห์ก่อน' },
+  carry: { icon: '⏩', label: 'Continue' },
 }
 function mcKind(newMc, carryMc, sharedMc, bookingMc, outsource) {
   if (outsource) return 'outsource'
@@ -103,7 +125,7 @@ function classifyType(factory, cat) {
 // ─── ข้อมูลเสริมบนบล็อก (chip ติ๊กเปิด/ปิด) ───────────────────────────────
 // user ต่างคนดูข้อมูลคนละอย่าง → ให้ติ๊กเองว่าจะโชว์อะไรบนบล็อก แล้วจำไว้ใน localStorage
 // build(v) : v(col) = ค่าคอลัมน์ของแถวนั้น → คืน string ที่จะโชว์ ('' = ไม่โชว์)
-const BAR_FIELDS = [
+export const BAR_FIELDS = [
   { key: 'sc', label: 'SC', build: v => v('SC_SO_NO') },
   { key: 'mc', label: 'เครื่องที่ใช้', build: v => { const m = v('ACTUAL_MC'); return Number(m) > 0 ? `${m} เครื่อง` : '' } },
   { key: 'po', label: 'PO', build: v => v('PO_NO') },
@@ -116,7 +138,7 @@ const BAR_FIELDS = [
 ]
 // v2 = ชุดฟิลด์ใหม่ (แยก SC/PO, default = SC + เครื่องที่ใช้) — key ใหม่เพื่อล้างค่าที่ user เคยติ๊กไว้ในชุดเก่า
 const BAR_FIELDS_KEY = 'knitplan.gantt.barFields.v2'
-const BAR_FIELDS_DEFAULT = { sc: true, mc: true }
+export const BAR_FIELDS_DEFAULT = { sc: true, mc: true }
 
 // RDD_WEEK / FG_WEEK เก็บเป็น YYYYWW (เช่น 202632) → คืนเลขสัปดาห์ล้วน (32) ไว้แสดงผล
 function rddWeekNo(v) {
@@ -130,12 +152,15 @@ function isLateRdd(v, week) {
   const t = Number(v('TARGET_KNIT'))
   return Number(t) > 0 && week !== '' && Number(week) > t
 }
-function loadBarFields() {
+export function loadBarFields() {
   try {
     const s = JSON.parse(localStorage.getItem(BAR_FIELDS_KEY))
     if (s && typeof s === 'object') return s
   } catch { /* ค่าเสีย → ใช้ default */ }
   return BAR_FIELDS_DEFAULT
+}
+export function saveBarFields(fields) {
+  try { localStorage.setItem(BAR_FIELDS_KEY, JSON.stringify(fields)) } catch { /* โควตาเต็ม — ข้ามได้ */ }
 }
 
 // ─── Panel รายละเอียดงาน (คลิกบล็อก) ────────────────────────────────────
@@ -189,7 +214,7 @@ const PANEL_GROUPS = [
 ]
 const PANEL_KNOWN = new Set(PANEL_GROUPS.flatMap(g => g.fields.map(f => f[0])))
 
-export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingMc = {}, poolMap = {}, onMoveWeek, colorRows, onRemove, onEditQty, onSplit, lockBefore = null }) {
+export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingMc = {}, poolMap = {}, onMoveWeek, colorRows, onRemove, onEditQty, onSplit, lockBefore = null, loadFilter = null, setLoadFilter = () => {}, barFields = BAR_FIELDS_DEFAULT }) {
   const [dragIdx, setDragIdx] = useState(null)
   const [overWeek, setOverWeek] = useState(null)
   // double click บล็อก → แก้ตัวเลขจำนวน (กก.) inline แล้วส่งค่าใหม่ผ่าน onEditQty(idx, qty)
@@ -198,15 +223,11 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
   // คลิกบล็อก 1 ครั้ง → เปิด panel รายละเอียด (idx ของแถวใน grid)
   const [selIdx, setSelIdx] = useState(null)
   const [showOther, setShowOther] = useState(false)   // กาง "คอลัมน์อื่นๆ" ใน panel
-  // ฟิลด์ที่ user ติ๊กให้โชว์บนบล็อก (จำไว้ข้ามรอบใช้งาน)
-  const [barFields, setBarFields] = useState(loadBarFields)
-  const [showFieldBar, setShowFieldBar] = useState(false)
+  // barFields (ฟิลด์ที่โชว์บนบล็อก) + loadFilter → สถานะยกไปไว้ที่ KnitPlan (ปุ่มอยู่แถบบน)
+  // ย่อ/ขยาย คำอธิบาย (hint + legend) ใต้ตาราง — เริ่มต้นย่อไว้ กดค่อยโชว์
+  const [showFoot, setShowFoot] = useState(false)
   // สัปดาห์ที่ล็อก (freeze) — โชว์ได้แต่ลาก/ถอด/วางไม่ได้
   const isLocked = (w) => lockBefore != null && Number(w) < Number(lockBefore)
-
-  useEffect(() => {
-    try { localStorage.setItem(BAR_FIELDS_KEY, JSON.stringify(barFields)) } catch { /* โควตาเต็ม — ข้ามได้ */ }
-  }, [barFields])
 
   // Esc = ปิด panel รายละเอียด
   useEffect(() => {
@@ -338,6 +359,19 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
       a.vals.join('|').localeCompare(b.vals.join('|'), 'th', { numeric: true }))
   }, [rows, groups, supported, avaCatI, avaGaugeI, mcGroupI])
 
+  // ประเภทโหลด (OM / PHET_DOUBLE / PHET_SINGLE) ของแต่ละแถว gantt
+  // ใช้ classifyType เดียวกับแถวสรุปโหลด → กด label แถวโหลดแล้วกรองแถวงานให้ตรงกัน
+  // งานที่ classify ไม่เข้าประเภท (เช่น จ้างทอ) ไม่มีใน map → ถูกซ่อนเมื่อเปิดกรอง
+  const rowType = useMemo(() => {
+    const m = new Map()
+    if (!supported) return m
+    for (const { row } of rows) {
+      const t = classifyType(ci.factory >= 0 ? row[ci.factory] : '', ci.cat >= 0 ? row[ci.cat] : '')
+      if (t) m.set(rowKey(row), t)
+    }
+    return m
+  }, [rows, ci, groups, supported])
+
   // ค่าที่ใช้แยกสี (เรียงเพื่อ map สีคงที่)
   const colorKeys = useMemo(() => {
     if (!supported) return []
@@ -346,10 +380,21 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
     return [...s].sort((a, b) => a.localeCompare(b, 'th', { numeric: true }))
   }, [rows, colorCols, supported])
 
-  const colorOf = (key) => {
-    const i = colorKeys.indexOf(key)
-    return PALETTE[(i < 0 ? 0 : i) % PALETTE.length]
-  }
+  // สีพื้นของแต่ละ key: ไล่เฉดภายในกลุ่ม DOUBLE / SINGLE ตามลำดับ colorKeys (sort แล้ว)
+  // เช่น DOUBLE หลายเกจ → น้ำเงินเข้ม (เกจแรก) ค่อยๆ อ่อนลงเป็นฟ้า (เกจท้าย)
+  const colorMap = useMemo(() => {
+    const m = new Map()
+    const buckets = { DOUBLE: [], SINGLE: [] }
+    for (const k of colorKeys) { const g = catGroupOf(k); if (g) buckets[g].push(k) }
+    for (const g of ['DOUBLE', 'SINGLE']) {
+      const arr = buckets[g]
+      arr.forEach((k, i) => m.set(k, _lerpStops(CAT_GRAD[g], arr.length <= 1 ? 0 : i / (arr.length - 1))))
+    }
+    return m
+  }, [colorKeys])
+  const colorOf = (key) => colorMap.get(key)
+    || PALETTE[(colorKeys.indexOf(key) < 0 ? 0 : colorKeys.indexOf(key)) % PALETTE.length]
+  const textOf = (key) => readableText(colorOf(key))
 
   // จัดงานลงช่อง (rowKey × week)
   const cells = useMemo(() => {
@@ -397,6 +442,20 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
     }
     return m
   }, [rows, ci, supported])
+
+  // capacity สูงสุด (จำนวน job ที่ทำได้สูงสุด) ต่อประเภท — จาก REMAINING_JOBS.CAPACITY (คงที่ 13/33/44)
+  // โชว์บน label แถวสรุปโหลด เช่น "โหลด OM · สูงสุด 13 job"
+  const capByType = useMemo(() => {
+    const m = {}
+    for (const w in load) {
+      const wk = load[w] || {}
+      for (const t of Object.keys(wk)) {
+        const c = wk[t] ? wk[t].cap : null
+        if (c != null && c !== '' && (m[t] == null || c > m[t])) m[t] = c
+      }
+    }
+    return m
+  }, [load])
 
   // เครื่องที่ "แผนจองเพิ่มจากพูล" ต่อ (สัปดาห์ × CAT|เกจ) — live ตามที่ลาก → ใช้คิดเครื่องว่าง
   //
@@ -456,17 +515,21 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
   const loadRowRefs = useRef([])
   const clickTimer = useRef(null)
   const [loadTops, setLoadTops] = useState([])
+  const [colHeadTop, setColHeadTop] = useState(0)   // ตำแหน่ง sticky ของแถวหัวคอลัมน์ (ใต้แถวสรุปโหลด)
+  // แถวสรุปโหลดที่มองเห็น — กรอง OM ก็เหลือเฉพาะแถว OM (แถวงานด้านล่างก็กรองตามชุดเดียวกัน)
+  const visLoadTypes = loadFilter ? LOAD_TYPES.filter(t => t.key === loadFilter) : LOAD_TYPES
   useLayoutEffect(() => {
     const headH = headRef.current ? headRef.current.offsetHeight : 0
     const tops = []
     let acc = headH
-    for (let i = 0; i < LOAD_TYPES.length; i++) {
+    for (let i = 0; i < visLoadTypes.length; i++) {
       tops[i] = acc
       acc += loadRowRefs.current[i] ? loadRowRefs.current[i].offsetHeight : 0
     }
     setLoadTops(prev =>
       (prev.length === tops.length && prev.every((v, i) => v === tops[i])) ? prev : tops)
-  }, [weeks, gantRows, groups, load])
+    setColHeadTop(acc)   // หัวคอลัมน์ pin ต่อท้ายแถวสรุปโหลด
+  }, [weeks, gantRows, groups, load, loadFilter])
 
   // แถวที่เลือกอยู่ (panel รายละเอียด) — ถ้าแถวถูกลบ/ตัวกรองซ่อนไป panel จะหายไปเอง
   const selRow = useMemo(
@@ -516,108 +579,60 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
 
   return (
     <div className="gantt">
-      <div className="gantt-head">
-        <span className="hint small" style={{ padding: 0 }}>
-          ลากบล็อกไปคอลัมน์สัปดาห์อื่นเพื่อเปลี่ยน <b>PLAN_WEEK</b> — <b>คลิก</b>บล็อกเพื่อดูรายละเอียดครบทุกช่อง, <b>double click</b> เพื่อแก้จำนวน
-        </span>
-
-        <div className="gantt-fields">
-          <button className="gfield-toggle" onClick={() => setShowFieldBar(s => !s)}
-            title="เลือกว่าจะให้บล็อกโชว์ข้อมูลอะไรบ้าง">
-            ⚙ ข้อมูลบนบล็อก ({BAR_FIELDS.filter(f => barFields[f.key]).length})
-          </button>
-          {showFieldBar && (
-            <div className="gfield-list">
-              {BAR_FIELDS.map(f => (
-                <label key={f.key} className={'gfield-chip' + (barFields[f.key] ? ' on' : '')}>
-                  <input type="checkbox" checked={!!barFields[f.key]}
-                    onChange={e => setBarFields(s => ({ ...s, [f.key]: e.target.checked }))} />
-                  {f.label}
-                </label>
-              ))}
-              <button className="gfield-reset" onClick={() => setBarFields(BAR_FIELDS_DEFAULT)}>ค่าเริ่มต้น</button>
-            </div>
-          )}
-        </div>
-        {ci.sharedmc >= 0 && (
-          <div className="gantt-legend">
-            <span className="glegend-title">เครื่อง:</span>
-            {Object.entries(MC_KINDS).map(([k, v]) => (
-              <span key={k} className="glegend" title={v.label}>
-                <b className="gbar-mc">{v.icon}</b>{v.label}
-              </span>
-            ))}
-          </div>
-        )}
-        {colorCols.length > 0 && (
-          <div className="gantt-legend">
-            <span className="glegend-title">สีตาม CAT / Guage:</span>
-            {colorKeys.map(k => (
-              <span key={k} className="glegend">
-                <i style={{ background: colorOf(k) }} />{k}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-
       <div className="gantt-scroll">
         <table className="gantt-grid">
           <thead>
             <tr ref={headRef}>
-              {groups.map((g, n) => (
-                <th key={g.col}
-                  className={'gantt-glabel gantt-ghead' + (!showRsv && n === groups.length - 1 ? ' gantt-glast' : '')}
-                  style={{ left: g.left, width: g.width, minWidth: g.width }}>
-                  {g.label}
-                </th>
-              ))}
-              {showRsv && (
-                <th className="gantt-glabel gantt-ghead gantt-glast gantt-rsvcol"
-                  style={{ left: groupsW, width: RSV_COL.width, minWidth: RSV_COL.width }}
-                  title="เครื่องที่กันไว้ให้งาน POLY / COTTON ของกลุ่ม CAT|เกจ นี้ (ใช้แทนงานปกติไม่ได้)">
-                  🔒{RSV_COL.label}
-                </th>
-              )}
+              <th className="gantt-glabel gantt-ghead gantt-glast gantt-weekcorner"
+                colSpan={groups.length + (showRsv ? 1 : 0)}
+                style={{ left: 0, width: groupsW + (showRsv ? RSV_COL.width : 0), minWidth: groupsW + (showRsv ? RSV_COL.width : 0) }}>
+                Factory/Week
+              </th>
               {weeks.map(w => <th key={w} className={'gantt-wk' + (isLocked(w) ? ' locked' : '')}>{isLocked(w) && '🔒'}W{w}</th>)}
             </tr>
           </thead>
           <tbody>
-            {LOAD_TYPES.map((t, ti) => (
+            {visLoadTypes.map((t, ti) => (
               <tr key={t.key} className="gantt-load-row" ref={el => { loadRowRefs.current[ti] = el }}>
-                <th className="gantt-glabel gantt-glast" style={{ left: 0, top: loadTops[ti], zIndex: 5 }}
+                <th className="gantt-glabel gantt-glast"
+                  style={{ left: 0, top: loadTops[ti], zIndex: 5 }}
                   colSpan={groups.length + (showRsv ? 1 : 0)}>
-                  โหลด {t.label}
+                  {t.long || t.label}
+                  {capByType[t.key] != null &&
+                    <span className="loadjobs-total"> · สูงสุด {capByType[t.key]} job</span>}
                 </th>
                 {weeks.map(w => {
                   const info = (load[w] && load[w][t.key]) || {}
-                  const cap = info.cap
+                  // ไม่มี cap รายสัปดาห์ → ใช้ความจุรวมของประเภท (capByType คงที่) เป็นตัวสำรอง
+                  // → สัปดาห์ที่ไม่มีงานก็รู้ว่า "ว่าง = เต็มความจุ" แสดงเลขในแถบเทาได้
+                  const cap = (info.cap != null && info.cap !== '') ? info.cap : capByType[t.key]
                   const old = info.old || 0
                   // ใหม่(live) = job จาก booking (คงที่) + ผลรวม NEW_MC ของแถวที่วางจริง (ขยับตามการลาก)
                   const nw = Math.max(0, (info.bookingNew || 0) + (planNewByWeekType[w + '|' + t.key] || 0))
                   const total = old + nw
                   const hasCap = cap != null && cap !== ''
                   const over = hasCap && total > cap
-                  const oldPct = hasCap && cap > 0 ? Math.min(100, (old / cap) * 100) : 0
-                  const newPct = hasCap && cap > 0 ? Math.min(100 - oldPct, (nw / cap) * 100) : (nw > 0 && !hasCap ? 100 : 0)
                   const empty = old === 0 && nw === 0 && !hasCap
                   const free = hasCap ? cap - total : null
-                  // ป้าย = ตัวเลขที่ใช้ตัดสินใจได้ทันที (ยังลากงานมาวางได้อีกกี่เครื่อง)
-                  const label = !hasCap ? `ใช้ ${total}`
-                    : over ? `เกิน ${total - cap}`
-                      : free === 0 ? 'เต็ม'
-                        : `ว่าง ${free}`
                   const tip = `${t.label} • สัปดาห์ ${w}\nแผนเดิม ${old} + ใหม่ ${nw} = ใช้ ${total}`
                     + (hasCap ? ` / ทั้งหมด ${cap}\n${over ? `⚠ เกินเครื่องที่มี ${total - cap}` : `ว่าง ${free}`}` : '')
                   return (
                     <td key={w} className="gantt-load-cell" style={{ top: loadTops[ti] }}>
-                      {empty ? <span className="loadtxt dim">–</span> : (
-                        <div className="loadwrap" title={tip}>
-                          <div className={'loadbar' + (over ? ' over' : '') + (hasCap ? '' : ' nocap')}>
-                            <span className="seg old" style={{ width: oldPct + '%' }} />
-                            <span className="seg new" style={{ width: newPct + '%' }} />
+                      {empty ? (
+                        <div className="loadwrap" title={`${t.label} • สัปดาห์ ${w}\nไม่มีงาน`}>
+                          <div className="loadbar nocap">
+                            <span className="seg free" style={{ flexGrow: 1 }} />
                           </div>
-                          <span className={'loadlbl' + (over ? ' over' : '') + (!over && free === 0 ? ' full' : '')}>{label}</span>
+                        </div>
+                      ) : (
+                        <div className="loadwrap" title={tip}>
+                          {/* แถบสัดส่วน: เดิม(เขียวอ่อน) + วันนี้(เขียวเข้ม) + ว่าง(เทา) — ตัวเลขอยู่ในแถบ */}
+                          <div className={'loadbar' + (over ? ' over' : '') + (hasCap ? '' : ' nocap')}>
+                            {old > 0 && <span className="seg old" style={{ flexGrow: old }}>{old}</span>}
+                            {nw > 0 && <span className="seg new" style={{ flexGrow: nw }}>{nw}</span>}
+                            {hasCap && free > 0 && <span className="seg free" style={{ flexGrow: free }}>{free}</span>}
+                          </div>
+                          {over && <span className="loadlbl over">เกิน {total - cap}</span>}
                         </div>
                       )}
                     </td>
@@ -625,7 +640,25 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
                 })}
               </tr>
             ))}
-            {gantRows.map(r => (
+            {/* หัวคอลัมน์ (ย้ายลงมาจากบนสุด) — pin ต่อท้ายแถวสรุปโหลด อยู่เหนือแถวงาน */}
+            <tr className="gantt-colhead">
+              {groups.map((g, n) => (
+                <th key={g.col}
+                  className={'gantt-glabel gantt-ghead' + (!showRsv && n === groups.length - 1 ? ' gantt-glast' : '')}
+                  style={{ left: g.left, top: colHeadTop, width: g.width, minWidth: g.width }}>
+                  {g.label}
+                </th>
+              ))}
+              {showRsv && (
+                <th className="gantt-glabel gantt-ghead gantt-glast gantt-rsvcol"
+                  style={{ left: groupsW, top: colHeadTop, width: RSV_COL.width, minWidth: RSV_COL.width }}
+                  title="เครื่องที่กันไว้ให้งาน POLY / COTTON ของกลุ่ม CAT|เกจ นี้ (ใช้แทนงานปกติไม่ได้)">
+                  🔒{RSV_COL.label}
+                </th>
+              )}
+              {weeks.map(w => <td key={w} className="gantt-colhead-cell" style={{ top: colHeadTop }} />)}
+            </tr>
+            {(loadFilter ? gantRows.filter(r => rowType.get(r.key) === loadFilter) : gantRows).map(r => (
               <tr key={r.key}>
                 {groups.map((g, n) => (
                   <th key={g.col}
@@ -718,7 +751,7 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
                             onDragEnd={locked ? undefined : () => { setDragIdx(null); setOverWeek(null) }}
                             onClick={() => onBarClick(j)}
                             onDoubleClick={() => onBarDblClick(j, locked)}
-                            style={isColor ? undefined : { background: colorOf(j.ck) }}
+                            style={isColor ? undefined : { background: colorOf(j.ck), color: textOf(j.ck) }}
                             title={`${j.item}${sc ? ` • SC ${sc}` : ''}\n${r.vals.join(' • ')} • สัปดาห์ ${w}${j.qty !== '' ? `\nจำนวน ${j.qty}` : ''}${j.actualmc !== '' ? ` • ใช้ ${j.actualmc} เครื่อง` : ''}${Number(j.setup) > 0 ? ` • setup ${j.setup} วัน` : ''}${j.mc ? `\n${MC_KINDS[j.mc].icon} ${MC_KINDS[j.mc].label}` : ''}${j.remark ? `\n${j.remark}` : ''}\nสี: ${j.ck}${isColor ? '\n★ งานสี (ต้องย้อม)' : ''}${j.lateRdd ? '\n⚠ วางเลยสัปดาห์ RDD' : ''}\n👆 คลิกเพื่อดูรายละเอียดครบ${onEditQty && !locked && j.qty !== '' ? ' • double click เพื่อแก้จำนวน' : ''}${locked ? '\n🔒 สัปดาห์ freeze — แก้ไม่ได้' : ''}`}>
                             {locked && <span className="gbar-star">🔒</span>}
                             {isColor && !locked && <span className="gbar-star">★</span>}
@@ -749,6 +782,40 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="gantt-foot">
+        <button className="gfoot-toggle" onClick={() => setShowFoot(s => !s)}
+          title="คำอธิบายการใช้งาน + ความหมายของสี/เครื่อง">
+          {showFoot ? '▾' : '▸'} คำอธิบาย / สัญลักษณ์
+        </button>
+        {showFoot && (
+          <div className="gantt-foot-body">
+            <span className="hint small" style={{ padding: 0 }}>
+              ลากบล็อกไปคอลัมน์สัปดาห์อื่นเพื่อเปลี่ยน <b>PLAN_WEEK</b> — <b>คลิก</b>บล็อกเพื่อดูรายละเอียดครบทุกช่อง, <b>double click</b> เพื่อแก้จำนวน
+            </span>
+            {ci.sharedmc >= 0 && (
+              <div className="gantt-legend">
+                <span className="glegend-title">เครื่อง:</span>
+                {Object.entries(MC_KINDS).map(([k, v]) => (
+                  <span key={k} className="glegend" title={v.label}>
+                    <b className="gbar-mc">{v.icon}</b>{v.label}
+                  </span>
+                ))}
+              </div>
+            )}
+            {colorCols.length > 0 && (
+              <div className="gantt-legend">
+                <span className="glegend-title">สีตาม CAT / Guage:</span>
+                {colorKeys.map(k => (
+                  <span key={k} className="glegend">
+                    <i style={{ background: colorOf(k) }} />{k}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {selRow && (

@@ -243,14 +243,34 @@ def load_by_week() -> dict:
     return out
 
 
+def _booking_ok(p: Path) -> bool:
+    """ไฟล์ booking_final ใช้ได้ = เปิดเป็น xlsx ได้ + มีชีท SUMMARY_MC_REMAIN
+    บาง run ของ AVA_MC ล้มเหลว เขียนไฟล์เปล่า ~2KB (ไม่ใช่ zip ด้วยซ้ำ) → ต้องข้าม
+    ไม่งั้น _latest คว้าไฟล์เสียมา แล้ว ava/reserved ว่างทั้งที่ไฟล์ก่อนหน้าดีอยู่
+    → เครื่องว่าง + คอลัมน์ 🔒 หายไปทั้งหน้า"""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(p, read_only=True)
+        try:
+            return "SUMMARY_MC_REMAIN" in wb.sheetnames
+        finally:
+            wb.close()
+    except Exception:
+        return False
+
+
 def _latest_booking_path() -> Path | None:
-    """ไฟล์ booking_final_ready_*.xlsx ล่าสุด (ผลจาก AVA_MC — มีชีท SUMMARY_MC_REMAIN)"""
+    """ไฟล์ booking_final_ready_*.xlsx ที่ "ใช้ได้" ใหม่สุด (ผลจาก AVA_MC — มีชีท SUMMARY_MC_REMAIN)
+    ไล่จากใหม่→เก่า ข้ามไฟล์เสีย/เขียนไม่ครบ แล้วถอยไปไฟล์ดีที่ใหม่รองลงมา"""
     d = config.OUTPUT_DIR
     if not d.exists():
         return None
     files = sorted(d.glob("booking_final_ready*.xlsx"),
                    key=lambda p: p.stat().st_mtime, reverse=True)
-    return files[0] if files else None
+    for p in files:
+        if _booking_ok(p):
+            return p
+    return None
 
 
 def _gkey(g) -> str:

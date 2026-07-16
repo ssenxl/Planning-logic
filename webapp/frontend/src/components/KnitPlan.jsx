@@ -5,14 +5,14 @@ import {
   ROWNUM_W, isIdName, numericCols, fmtNum, autoColWidths, makeColResizer,
 } from './ColumnFilter.jsx'
 import { makeWorkDayResolver } from '../workday.js'
-import PlanGantt from './PlanGantt.jsx'
+import PlanGantt, { LOAD_TYPES, BAR_FIELDS, BAR_FIELDS_DEFAULT, loadBarFields, saveBarFields } from './PlanGantt.jsx'
 import OutsourceAdvisor from './OutsourceAdvisor.jsx'
 import CylinderAdvisor from './CylinderAdvisor.jsx'
 
 // คอลัมน์ที่มี dropdown กรองด่วนบนแถบค้นหา (ใช้ตัวกรองชุดเดียวกับปุ่ม ▾ ที่หัวคอลัมน์)
 const QUICK_COLS = [
   { col: 'CAT', label: 'CAT' },
-  { col: 'MC_GUAGE', label: 'เกจ' },
+  { col: 'MC_GUAGE', label: 'Gauge' },
 ]
 
 function fmtSize(b) {
@@ -23,6 +23,23 @@ function fmtSize(b) {
 function fmtTime(ts) {
   if (!ts) return '-'
   return new Date(ts * 1000).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+// ยิง fetch ซ้ำถ้าพลาด หรือได้ค่าที่ยัง "ไม่พร้อม" (ตรวจด้วย ok) — กัน ava/load ค้างว่างถาวร
+// เพราะพลาดจังหวะเดียวตอนโหลด: server อ่าน Excel ก้อนใหญ่ตอน cold start อาจตอบช้า/พลาด
+// คำขอที่ยิงพร้อมกัน แล้วโค้ดเดิม catch → setAva({}) ทำให้เครื่อง/คอลัมน์ 🔒 หายทั้งที่ข้อมูลมี
+async function retry(fn, { tries = 3, delay = 700, ok = () => true } = {}) {
+  let last
+  for (let i = 0; i < tries; i++) {
+    try {
+      last = await fn()
+      if (ok(last) || i === tries - 1) return last
+    } catch (e) {
+      if (i === tries - 1) throw e
+    }
+    await new Promise(r => setTimeout(r, delay * (i + 1)))
+  }
+  return last
 }
 
 export default function KnitPlan({ active = true }) {
@@ -39,6 +56,10 @@ export default function KnitPlan({ active = true }) {
   const [editKey, setEditKey] = useState(null) // ช่องที่กำลังแก้ (โชว์ค่าดิบไม่มี comma)
   const [runStatus, setRunStatus] = useState({})
   const [showGantt, setShowGantt] = useState(true)
+  const [loadFilter, setLoadFilter] = useState(null)   // กรองประเภทโหลด Gantt (ปุ่มอยู่แถบบน)
+  const [barFields, setBarFields] = useState(loadBarFields)   // ฟิลด์ที่โชว์บนบล็อก Gantt (ปุ่มอยู่แถบ Gantt)
+  const [showFieldBar, setShowFieldBar] = useState(false)
+  useEffect(() => { saveBarFields(barFields) }, [barFields])
   const [showOutsource, setShowOutsource] = useState(false)
   const [showCylinder, setShowCylinder] = useState(false)
   const [load, setLoad] = useState({})
@@ -62,14 +83,16 @@ export default function KnitPlan({ active = true }) {
     try { setRunStatus(await api.runStatus()) } catch { }
   }
   async function loadLoad() {
-    try { setLoad(await api.planLoad()) } catch { setLoad({}) }
+    try { setLoad(await retry(() => api.planLoad())) } catch { setLoad({}) }
   }
   async function loadAva() {
-    try { setAva(await api.planAva()) } catch { setAva({}) }
-    try { setPoolMap(await api.planPoolMap()) } catch { setPoolMap({}) }
-    try { setBookingMc(await api.planBookingMc()) } catch { setBookingMc({}) }
-    try { setWeekDays(await api.planWeekDays()) } catch { setWeekDays({}) }
-    try { setWorkdayData(await api.workday()) } catch { setWorkdayData(null) }
+    // ava ควรมีข้อมูลเมื่อมีไฟล์แผน → ถ้าได้ว่าง ลองซ้ำก่อน (กันเครื่อง/คอลัมน์ 🔒 หายชั่วคราว)
+    const notEmpty = o => o && Object.keys(o).length > 0
+    try { setAva(await retry(() => api.planAva(), { ok: notEmpty })) } catch { setAva({}) }
+    try { setPoolMap(await retry(() => api.planPoolMap())) } catch { setPoolMap({}) }
+    try { setBookingMc(await retry(() => api.planBookingMc())) } catch { setBookingMc({}) }
+    try { setWeekDays(await retry(() => api.planWeekDays())) } catch { setWeekDays({}) }
+    try { setWorkdayData(await retry(() => api.workday())) } catch { setWorkdayData(null) }
   }
   async function loadSheet(sheet) {
     setLoading(true); setMsg('')
@@ -385,15 +408,8 @@ export default function KnitPlan({ active = true }) {
 
   return (
     <div className="knitplan">
-      <div className="editbar">
-        <div>
-          <h2>แผนผลิต {dirty && <span className="dot">●</span>}</h2>
-          <div className="data-selected-meta">
-            {meta?.exists
-              ? `${meta.name} • อัปเดตล่าสุด ${fmtTime(meta.mtime)} • ${fmtSize(meta.size)}`
-              : 'ยังไม่มีไฟล์แผน — กดรันแผนเพื่อสร้าง'}
-          </div>
-        </div>
+      <div className="editbar plan-head">
+        <h2>แผนผลิต {dirty && <span className="dot">●</span>}</h2>
         <div className="actions">
           {grid && grid.sheets && grid.sheets.length > 1 && (
             <select value={grid.sheet} onChange={e => changeSheet(e.target.value)}>
@@ -402,19 +418,15 @@ export default function KnitPlan({ active = true }) {
           )}
           <button className="primary" onClick={runPlan} disabled={isRunning}>▶ รันแผนใหม่</button>
           <button className="outsource-btn" onClick={() => setShowOutsource(true)}>🧵 จ้างทอ (AI)</button>
-          <button className="cylinder-btn" onClick={() => setShowCylinder(true)}>🔩 เปลี่ยนกระบอก (AI)</button>
+          <button className="cylinder-btn" onClick={() => setShowCylinder(true)}>🔩 Change Cylinder</button>
           <button onClick={save} disabled={!grid || saving || !dirty}>
             {saving ? 'กำลังบันทึก...' : '💾 บันทึก'}
           </button>
           {meta?.exists && <a className="dl" href={api.planDownloadUrl(meta.mtime)}>⬇ ดาวน์โหลด Excel</a>}
           <button onClick={refresh}>รีเฟรช</button>
+          <span className={'badge ' + (isRunning ? 'run' : 'idle')}>{runLabel}</span>
+          {isRunning && runStatus.progress != null && <small className="run-hint">ความคืบหน้า {runStatus.progress}%</small>}
         </div>
-      </div>
-
-      <div className="map-runbox">
-        <span className={'badge ' + (isRunning ? 'run' : 'idle')}>{runLabel}</span>
-        {isRunning && runStatus.progress != null && <small>ความคืบหน้า {runStatus.progress}%</small>}
-        <small>ปุ่ม <b>รันแผนใหม่</b> จะรัน pipeline ตั้งแต่ AVA_MC → Planning แล้วโหลดแผนล่าสุดให้อัตโนมัติ</small>
       </div>
 
       {grid && (
@@ -433,10 +445,23 @@ export default function KnitPlan({ active = true }) {
               </select>
             </label>
           ))}
-          <span className="count">แสดง {visible.length} / {grid.rows.length} แถว</span>
-          {hasFilter ? (
+          {!!hasFilter && (
             <button className="clearf" onClick={() => { setSearch(''); setFilters({}) }}>ล้างตัวกรองทั้งหมด</button>
-          ) : <span className="hint small" style={{ padding: 0 }}>กด ▾ ที่หัวคอลัมน์เพื่อกรอง</span>}
+          )}
+          {ganttReady && (
+            <div className="gload-filter">
+              <span className="gload-filter-label">Select</span>
+              <button className={'gfilter-btn' + (loadFilter === null ? ' active' : '')}
+                onClick={() => setLoadFilter(null)}>ทั้งหมด</button>
+              {LOAD_TYPES.map(t => (
+                <button key={t.key}
+                  className={'gfilter-btn' + (loadFilter === t.key ? ' active' : '')}
+                  onClick={() => setLoadFilter(f => (f === t.key ? null : t.key))}>
+                  {t.long || t.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -444,9 +469,39 @@ export default function KnitPlan({ active = true }) {
         <div className="gantt-section">
           <div className="gantt-bar">
             <b>Gantt แผนผลิต (เครื่อง × สัปดาห์)</b>
-            <button onClick={() => setShowGantt(s => !s)}>{showGantt ? 'ซ่อน' : 'แสดง'}</button>
+            <div className="gantt-bar-right">
+              {showGantt && (
+                <div className="gantt-fields">
+                  <button className="gfield-toggle" onClick={() => setShowFieldBar(s => !s)}
+                    title="เลือกว่าจะให้บล็อกโชว์ข้อมูลอะไรบ้าง">
+                    ⚙ ข้อมูลบนบล็อก ({BAR_FIELDS.filter(f => barFields[f.key]).length})
+                  </button>
+                  {showFieldBar && (
+                    <div className="gfield-list">
+                      {BAR_FIELDS.map(f => (
+                        <label key={f.key} className={'gfield-chip' + (barFields[f.key] ? ' on' : '')}>
+                          <input type="checkbox" checked={!!barFields[f.key]}
+                            onChange={e => setBarFields(s => ({ ...s, [f.key]: e.target.checked }))} />
+                          {f.label}
+                        </label>
+                      ))}
+                      <button className="gfield-reset" onClick={() => setBarFields(BAR_FIELDS_DEFAULT)}>ค่าเริ่มต้น</button>
+                    </div>
+                  )}
+                </div>
+              )}
+              {showGantt && (
+                <span className="gload-legend">
+                  <span className="glg"><i className="glg-dot old" />แผนเก่า</span>
+                  <span className="glg"><i className="glg-dot new" />แผนใหม่</span>
+                  <span className="glg"><i className="glg-dot free" />ว่าง</span>
+                  <span className="glg"><i className="glg-dot over" />เต็ม</span>
+                </span>
+              )}
+              <button onClick={() => setShowGantt(s => !s)}>{showGantt ? 'ซ่อน' : 'แสดง'}</button>
+            </div>
           </div>
-          {showGantt && <PlanGantt columns={grid.columns} rows={visible} load={load} ava={ava} bookingMc={bookingMc} poolMap={poolMap} onMoveWeek={moveJob} onEditQty={editQty} onSplit={splitJob} onRemove={delRow} />}
+          {showGantt && <PlanGantt columns={grid.columns} rows={visible} load={load} ava={ava} bookingMc={bookingMc} poolMap={poolMap} onMoveWeek={moveJob} onEditQty={editQty} onSplit={splitJob} onRemove={delRow} loadFilter={loadFilter} setLoadFilter={setLoadFilter} barFields={barFields} />}
         </div>
       )}
 
