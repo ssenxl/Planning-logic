@@ -4,6 +4,76 @@ import React, { useLayoutEffect, useMemo, useRef, useState } from 'react'
 export const norm = (v) => (v === '' || v == null) ? '' : String(v)
 export const label = (v) => v === '' ? '(ว่าง)' : v
 
+// ---- helpers ตารางกริด (ใช้ร่วม DATA + แผนผลิต) ----
+export const ROWNUM_W = 46
+
+// คอลัมน์ที่เป็น "รหัส/เลขที่/สัปดาห์/เกจ" — ชิดขวาได้แต่ห้ามใส่ comma
+export const isIdName = (name) => /(?:^|_)(?:NO|CODE|ID|SO|WEEK|GUAGE|GAUGE|YEAR)(?:_|$)/i.test(String(name))
+
+// เซ็ตของ index คอลัมน์ที่ค่าไม่ว่างทุกช่องเป็นตัวเลข (sample ได้ N แถวแรกเพื่อความเร็ว)
+export function numericCols(grid, sample = Infinity) {
+  const s = new Set()
+  if (!grid) return s
+  const lim = Math.min(grid.rows.length, sample)
+  grid.columns.forEach((c, ci) => {
+    let hasVal = false, allNum = true
+    for (let i = 0; i < lim; i++) {
+      const v = grid.rows[i][ci]
+      if (v === '' || v == null) continue
+      hasVal = true
+      if (isNaN(Number(v))) { allNum = false; break }
+    }
+    if (hasVal && allNum) s.add(ci)
+  })
+  return s
+}
+
+// แสดงค่าตัวเลขพร้อม comma หลักพัน (คงทศนิยม); ค่าที่ไม่ใช่ตัวเลขคืนเดิม
+export function fmtNum(v) {
+  const s = norm(v)
+  if (s === '') return s
+  const n = Number(s)
+  return isNaN(n) ? s : n.toLocaleString('en-US', { maximumFractionDigits: 6 })
+}
+
+// ความกว้างเริ่มต้นของแต่ละคอลัมน์ — คำนวณจากหัว + เนื้อหา (64–320px)
+export function autoColWidths(grid, sample = 60) {
+  const w = {}
+  if (!grid) return w
+  const lim = Math.min(grid.rows.length, sample)
+  grid.columns.forEach((c, ci) => {
+    let maxLen = String(c).length
+    for (let i = 0; i < lim; i++) {
+      const l = norm(grid.rows[i][ci]).length
+      if (l > maxLen) maxLen = l
+    }
+    w[ci] = Math.max(64, Math.min(320, maxLen * 8 + 26))
+  })
+  return w
+}
+
+// สร้าง handler ลากปรับกว้างคอลัมน์ ci — เรียกจาก onMouseDown ของที่จับ
+export function makeColResizer(colW, setColW) {
+  return (e, ci) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startW = colW[ci] ?? 120
+    const move = ev => {
+      const nw = Math.max(48, startW + (ev.clientX - startX))
+      setColW(w => ({ ...w, [ci]: nw }))
+    }
+    const up = () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+      document.body.classList.remove('col-resizing')
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+    document.body.classList.add('col-resizing')
+  }
+}
+
 const matchSearch = (row, s) =>
   !s || row.some(c => String(c ?? '').toLowerCase().includes(s))
 

@@ -45,9 +45,19 @@ export const api = {
   sheet: (name, sheet) => req('GET', `/api/masters/${encodeURIComponent(name)}/${encodeURIComponent(sheet)}`),
   saveSheet: (name, sheet, columns, rows) =>
     req('PUT', `/api/masters/${encodeURIComponent(name)}/${encodeURIComponent(sheet)}`, { columns, rows }),
+  // work day (วันทำงานตามกลุ่มเครื่อง + ยุบสัปดาห์)
+  workday: () => req('GET', '/api/workday'),
+  saveWorkday: (defaults, weeks, merges) => req('PUT', '/api/workday', { defaults, weeks, merges }),
+  seedWorkday: () => req('POST', '/api/workday/seed'),
   // schedule
   schedule: () => req('GET', '/api/schedule'),
   saveSchedule: (schedule) => req('PUT', '/api/schedule', { schedule }),
+  // database (ดูไฟล์ข้อมูลต้นทางในโปรเจกต์ read-only)
+  database: () => req('GET', '/api/database'),
+  databaseSheet: (file, sheet) =>
+    req('GET', `/api/database/sheet?file=${encodeURIComponent(file)}` +
+      (sheet ? `&sheet=${encodeURIComponent(sheet)}` : '')),
+  databaseDownloadUrl: (file) => `/api/database/download?file=${encodeURIComponent(file)}`,
   // outputs
   outputs: () => req('GET', '/api/outputs'),
   outputsBooking: () => req('GET', '/api/outputs/booking'),
@@ -57,21 +67,24 @@ export const api = {
   mapItemSheet: (file, sheet) =>
     req('GET', `/api/map-item/sheet?file=${encodeURIComponent(file)}` +
       (sheet ? `&sheet=${encodeURIComponent(sheet)}` : '')),
-  mapItemDownloadUrl: (file) => `/api/map-item/download?file=${encodeURIComponent(file)}`,
+  mapItemDownloadUrl: (file, v) =>
+    `/api/map-item/download?file=${encodeURIComponent(file)}` + (v ? `&t=${Math.round(v)}` : ''),
   // plan (แผนผลิตล่าสุด — แก้ไข + export กลับ Excel)
   planLatest: () => req('GET', '/api/plan'),
   planSheet: (sheet) => req('GET', '/api/plan/sheet' + (sheet ? `?sheet=${encodeURIComponent(sheet)}` : '')),
   planSave: (sheet, columns, rows) => req('PUT', '/api/plan/sheet', { sheet, columns, rows }),
   planLoad: () => req('GET', '/api/plan/load'),
   planAva: () => req('GET', '/api/plan/ava'),
+  planPoolMap: () => req('GET', '/api/plan/pool-map'),
   planBookingMc: () => req('GET', '/api/plan/booking-mc'),
   planWeekDays: () => req('GET', '/api/plan/week-days'),
-  planDownloadUrl: () => '/api/plan/download',
+  // v = mtime ของไฟล์ — บังคับให้ URL เปลี่ยนหลังบันทึก เบราว์เซอร์จะได้ไม่หยิบไฟล์เก่าจากแคช
+  planDownloadUrl: (v) => '/api/plan/download' + (v ? `?t=${Math.round(v)}` : ''),
   // order color (Datamining → Booking ระดับ ITEM Color — แก้ไข + export)
   orderColorLatest: () => req('GET', '/api/order-color'),
   orderColorSheet: (sheet) => req('GET', '/api/order-color/sheet' + (sheet ? `?sheet=${encodeURIComponent(sheet)}` : '')),
   orderColorSave: (sheet, columns, rows) => req('PUT', '/api/order-color/sheet', { sheet, columns, rows }),
-  orderColorDownloadUrl: () => '/api/order-color/download',
+  orderColorDownloadUrl: (v) => '/api/order-color/download' + (v ? `?t=${Math.round(v)}` : ''),
   orderColorAdvise: () => req('POST', '/api/order-color/advise'),
   orderColorCatHistory: () => req('GET', '/api/order-color/cat-history'),
   orderColorPlan: () => req('GET', '/api/order-color/plan'),
@@ -97,4 +110,12 @@ export const api = {
   },
   // จ้างทอ (AI) — แนะนำ item ที่คุ้มค่าจะ outsource
   outsourceAdvise: () => req('POST', '/api/outsource/advise'),
+  // การแบ่งงานไปจ้างทอ (qty + สัปดาห์) — Planning.py อ่านไปใช้ตอนรันแผน
+  outsourceSplitGet: () => req('GET', '/api/outsource/split'),
+  outsourceSplitSave: (item_code, outsource_qty, start_week) =>
+    req('POST', '/api/outsource/split', { item_code, outsource_qty, start_week }),
+  outsourceSplitDelete: (item_code) =>
+    req('DELETE', '/api/outsource/split/' + encodeURIComponent(item_code)),
+  // เปลี่ยนกระบอก (AI) — แนะนำว่าควรเปลี่ยนกระบอกให้ item ไหนเพื่อปลดล็อกงานที่ติดเครื่อง
+  cylinderAdvise: () => req('POST', '/api/cylinder/advise'),
 }

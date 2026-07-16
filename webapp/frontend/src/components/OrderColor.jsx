@@ -50,6 +50,7 @@ export default function OrderColor() {
   const [catFilter, setCatFilter] = useState('')   // ดูทีละ CAT ('' = ยังไม่เลือก)
   const [pLoad, setPLoad] = useState({})
   const [pAva, setPAva] = useState({})
+  const [poolMap, setPoolMap] = useState({})   // map เครื่อง→พูล (SKP vs SKPTA/SKPLE)
   const [planning, setPlanning] = useState(false)
   const [aiAdvice, setAiAdvice] = useState(null)   // { summary, ranking, ai, note }
   const [aiLoading, setAiLoading] = useState(false)
@@ -124,11 +125,12 @@ export default function OrderColor() {
     try {
       // default = ทุก item จาก booking (ไม่ใช่แผนที่บาง) → ลาก/ถอดได้บน PlanGantt
       // โหลด job ใช้ booking-load (baseline 0 — job คิด live จาก NEW_MC ของแถว ขยับตามการย้าย)
-      const [d, ld, av] = await Promise.all([
-        api.orderColorBookingGantt(), api.orderColorBookingLoad(), api.orderColorBookingAva()])
+      const [d, ld, av, pm] = await Promise.all([
+        api.orderColorBookingGantt(), api.orderColorBookingLoad(), api.orderColorBookingAva(),
+        api.planPoolMap().catch(() => ({}))])
       setBasePlan(d); setChoices({}); setOverrides({}); setRemoved(new Set()); setQtyEdits({}); setCatFilter('')
       setAiAdvice(null); setAiPreview(null)
-      setPLoad(ld || {}); setPAva(av || {})
+      setPLoad(ld || {}); setPAva(av || {}); setPoolMap(pm || {})
     } catch (e) {
       setMsg('สร้าง Gantt ไม่ได้: ' + e.message); setBasePlan(null)
     } finally { setPlanning(false) }
@@ -154,7 +156,15 @@ export default function OrderColor() {
     () => new Set((basePlan?.color_codes || []).map(c => String(c).trim().toUpperCase())),
     [basePlan])
   const isColorRow = (row) => cidx.item >= 0 && colorCodeSet.has(String(row[cidx.item] ?? '').trim().toUpperCase())
-  const cgKey = (row) => String(row[cidx.cat] ?? '').trim() + '|' + gnorm(row[cidx.gauge])
+  // cgView = cat|gauge (ใช้จัดกลุ่ม/กรองแท็บ) · cgKey = key ต่อพูล (ใช้หาเครื่องว่าง/ถอดงาน)
+  //   พูลแยก เช่น SKP กับ SKPTA/SKPLE ต้องคิดเครื่องแยกกัน → ต้องใช้ pool key ตาม poolMap
+  const cgView = (row) => String(row[cidx.cat] ?? '').trim() + '|' + gnorm(row[cidx.gauge])
+  const poolKeyOf = (cat, gauge, mcgroup) => {
+    const cg = String(cat ?? '').trim() + '|' + gnorm(gauge)
+    const mg = String(mcgroup ?? '').trim().toUpperCase()
+    return (mg && poolMap[cg + '|' + mg]) || cg
+  }
+  const cgKey = (row) => poolKeyOf(row[cidx.cat], row[cidx.gauge], cidx.mcg >= 0 ? row[cidx.mcg] : '')
 
   function occAt(rows, w, cg) {
     let s = 0
@@ -376,7 +386,7 @@ export default function OrderColor() {
       const wx = work.find(x => x.bi === m.idx)
       if (!wx) continue
       const curWeek = Number(wx.row[cidx.week])
-      const cg = String(m.cat).trim() + '|' + gnorm(m.gauge)
+      const cg = poolKeyOf(m.cat, m.gauge, cidx.mcg >= 0 ? wx.row[cidx.mcg] : '')
       const editFrom = Number(basePlan.edit_from ?? 0)
       const deadline = m.deadline
       const remain = remainAt(workRows, curWeek, cg)
@@ -502,7 +512,7 @@ export default function OrderColor() {
   const catFilterLabel = catFilter ? catFilter.split('|')[0] + ' · เกจ ' + (catFilter.split('|')[1] || '-') : ''
 
   const viewRows = useMemo(
-    () => catFilter ? planRows.filter(x => cgKey(x.row) === catFilter) : planRows,
+    () => catFilter ? planRows.filter(x => cgView(x.row) === catFilter) : planRows,
     [planRows, catFilter, cidx])
   const swapView = useMemo(
     () => (catFilter ? swapList.filter(s => metaKey(s.meta.cat, s.meta.gauge) === catFilter) : swapList)
@@ -521,7 +531,7 @@ export default function OrderColor() {
     if (iNm < 0) return pLoad
     const other = {}
     for (const x of work) {
-      if (catFilter && cgKey(x.row) === catFilter) continue  // แถวกลุ่มที่ดูอยู่ — PlanGantt คิด live เอง
+      if (catFilter && cgView(x.row) === catFilter) continue  // แถวกลุ่มที่ดูอยู่ — PlanGantt คิด live เอง
       const t = jobTypeOf(iFac >= 0 ? x.row[iFac] : '', x.row[cidx.cat])
       if (!t) continue
       const w = String(x.row[cidx.week])
@@ -751,7 +761,7 @@ export default function OrderColor() {
                 อัปเดตล่าสุด {fmtTime(meta.mtime)} • {fmtSize(meta.size)}
               </div>
             )}
-            {meta.exists && <a className="dl" href={api.orderColorDownloadUrl()}>⬇ ดาวน์โหลดไฟล์</a>}
+            {meta.exists && <a className="dl" href={api.orderColorDownloadUrl(meta.mtime)}>⬇ ดาวน์โหลดไฟล์</a>}
           </div>
         )}
 
@@ -1035,7 +1045,7 @@ export default function OrderColor() {
               </div>
             )}
 
-            <PlanGantt columns={basePlan.columns} rows={viewRows} load={liveLoad} ava={pAva}
+            <PlanGantt columns={basePlan.columns} rows={viewRows} load={liveLoad} ava={pAva} poolMap={poolMap}
               colorRows={colorRows} onMoveWeek={planMoveWeek} onRemove={planRemove}
               onEditQty={(idx, q) => setQtyEdits(s => ({ ...s, [idx]: q }))}
               lockBefore={basePlan.edit_from} />

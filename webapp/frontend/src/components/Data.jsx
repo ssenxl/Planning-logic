@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api.js'
 import MapItem from './MapItem.jsx'
-import { ColumnFilter, columnFilterData, filterRows, norm } from './ColumnFilter.jsx'
+import {
+  ColumnFilter, columnFilterData, filterRows, norm,
+  ROWNUM_W, isIdName, numericCols, fmtNum, autoColWidths, makeColResizer,
+} from './ColumnFilter.jsx'
 
 function fmtSize(b) {
   if (b < 1024) return b + ' B'
@@ -33,6 +36,7 @@ export default function Data() {
   const [search, setSearch] = useState('')
   const [filters, setFilters] = useState({})
   const [openCol, setOpenCol] = useState(null)
+  const [colW, setColW] = useState({})
   const prevRunning = useRef(false)
 
   function withGroupMeta(list) {
@@ -167,6 +171,25 @@ export default function Data() {
   }, [grid, filters, search, openCol])
 
   const visible = useMemo(() => grid ? filterRows(grid, search, filters) : [], [grid, search, filters])
+
+  // คอลัมน์ที่ค่าไม่ว่างทุกช่องเป็นตัวเลข → ชิดขวา (num); ถ้าไม่ใช่รหัส/เลขที่ ก็ใส่ comma
+  const numCols = useMemo(() => numericCols(grid), [grid])
+
+  function cellText(v, ci) {
+    const s = norm(v)
+    if (s === '' || !numCols.has(ci)) return s
+    if (isIdName(grid.columns[ci])) return s
+    return fmtNum(s)
+  }
+
+  // ความกว้างเริ่มต้นของแต่ละคอลัมน์ — คำนวณอัตโนมัติจากหัว + เนื้อหา (ผู้ใช้ลากปรับได้)
+  useEffect(() => { setColW(autoColWidths(grid)) }, [grid])
+
+  const startResize = makeColResizer(colW, setColW)
+
+  const totalW = grid
+    ? ROWNUM_W + grid.columns.reduce((s, _, ci) => s + (colW[ci] || 120), 0)
+    : 0
 
   const hasFilter = search.trim() || Object.keys(filters).length
   const autoCfg = sched?.full
@@ -325,12 +348,18 @@ export default function Data() {
 
                 {grid && !loading && (
                   <div className="gridwrap">
-                    <table className="grid">
+                    <table className="grid" style={{ tableLayout: 'fixed', width: totalW }}>
+                      <colgroup>
+                        <col style={{ width: ROWNUM_W }} />
+                        {grid.columns.map((_, ci) => (
+                          <col key={ci} style={{ width: colW[ci] || 120 }} />
+                        ))}
+                      </colgroup>
                       <thead>
                         <tr>
                           <th className="rownum">#</th>
                           {grid.columns.map((c, ci) => (
-                            <th key={ci}>
+                            <th key={ci} className={ci === 0 ? 'frozen' : undefined}>
                               <div className="thcell">
                                 <span className="thlabel" title={c}>{c}</span>
                                 <button
@@ -338,6 +367,7 @@ export default function Data() {
                                   title="กรองคอลัมน์นี้"
                                   onClick={e => openColMenu(e, ci)}>▾</button>
                               </div>
+                              <span className="colresize" onMouseDown={e => startResize(e, ci)} />
                             </th>
                           ))}
                         </tr>
@@ -346,9 +376,14 @@ export default function Data() {
                         {visible.map(({ row, idx }) => (
                           <tr key={idx}>
                             <td className="rownum">{idx + 1}</td>
-                            {grid.columns.map((_, ci) => (
-                              <td key={ci} className="rocell">{norm(row[ci])}</td>
-                            ))}
+                            {grid.columns.map((_, ci) => {
+                              const raw = norm(row[ci])
+                              return (
+                                <td key={ci}
+                                  className={'rocell' + (ci === 0 ? ' frozen' : '') + (numCols.has(ci) ? ' num' : '')}
+                                  title={raw}>{cellText(row[ci], ci)}</td>
+                              )
+                            })}
                           </tr>
                         ))}
                         {!visible.length && (

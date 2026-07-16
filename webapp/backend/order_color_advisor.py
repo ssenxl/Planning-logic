@@ -60,6 +60,14 @@ def _gnorm(g):
         return s
 
 
+def _pool_key(pm, cat, gauge, mcgroup):
+    """key ที่ตรงกับ ava/plan_rows — พูลแยก (SKP vs SKPTA/SKPLE) ใช้ pool key เฉพาะพูล
+    ไม่งั้น = cat|gauge (pm = pool_map(): {'cat|gauge|MCGROUP': pool})"""
+    cg = f"{str(cat).strip()}|{_gnorm(gauge)}"
+    m = str(mcgroup or "").strip().upper()
+    return (pm.get(f"{cg}|{m}") if m else None) or cg
+
+
 def _col_index(columns, *names):
     up = [str(c).strip().upper() for c in columns]
     for n in names:
@@ -125,6 +133,7 @@ def _plan_index():
     i_cat = _col_index(cols, "CAT")
     i_gauge = _col_index(cols, "MC_GUAGE", "GUAGE")
     i_mcg = _col_index(cols, "MC_GROUP")
+    pm = plan_view.pool_map()   # map เครื่อง→พูล (แยก SKP vs SKPTA/SKPLE)
     by_code, rows = {}, []
     if min(i_item, i_week) < 0:
         return name, by_code, rows
@@ -141,7 +150,7 @@ def _plan_index():
         rec = {"week": week, "cat": cat, "gauge": gauge, "mcgroup": mcg}
         by_code.setdefault(code, []).append(rec)
         rows.append({"code": code, "week": week, "cat": cat, "gauge": gauge,
-                     "catgauge": f"{cat}|{gauge}"})
+                     "catgauge": _pool_key(pm, cat, gauge, mcg)})
     return name, by_code, rows
 
 
@@ -225,7 +234,8 @@ def analyze() -> dict:
     color_items = [v for v in items.values() if _dye_weeks(v["load_dye"])]
 
     plan_name, by_code, plan_rows = _plan_index()
-    ava = plan_view.ava_by_week()  # {week: {"CAT|GUAGE": {"remain":..}}}
+    ava = plan_view.ava_by_week()  # {week: {key: {"remain":..}}}  key = พูล (แยก SKP/SKPTA·SKPLE) หรือ cat|gauge
+    pm = plan_view.pool_map()      # map เครื่อง→พูล
     detail = _detail_info()
 
     # เซตของรหัสเต็มที่เป็น "งานสี" (ใช้ระบุ item ไม่มีสีตอนหาตัวขยับ)
@@ -269,16 +279,17 @@ def analyze() -> dict:
             plan_recs.extend(by_code.get(c, []))
         plan_weeks = sorted({p["week"] for p in plan_recs if p["week"] is not None})
 
-        # CAT/เกจ: จากแผนก่อน ไม่งั้นจาก DETAIL
-        cat = gauge = ""
+        # CAT/เกจ/เครื่อง: จากแผนก่อน ไม่งั้นจาก DETAIL
+        cat = gauge = mcg = ""
         if plan_recs:
-            cat, gauge = plan_recs[0]["cat"], plan_recs[0]["gauge"]
+            cat, gauge, mcg = plan_recs[0]["cat"], plan_recs[0]["gauge"], plan_recs[0].get("mcgroup", "")
         if not (cat and gauge):
             for c in codes:
                 if c in detail:
-                    cat, gauge, _mcg = detail[c]
+                    cat, gauge, mcg = detail[c]
                     break
-        catgauge = f"{cat}|{gauge}"
+        # key พูล (แยก SKP vs SKPTA/SKPLE) ให้ตรง ava/plan_rows — ไม่มองรวมกัน
+        catgauge = _pool_key(pm, cat, gauge, mcg)
 
         rec = {
             "item": v["item"], "ora": v["ora"], "tubular": v["tubular"],

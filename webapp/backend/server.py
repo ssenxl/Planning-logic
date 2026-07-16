@@ -17,6 +17,8 @@ from pydantic import BaseModel
 import config
 import runner
 import masters
+import database
+import workday
 import scheduler
 import auth
 import map_item_view
@@ -24,8 +26,14 @@ import plan_view
 import order_color_view
 import order_color_advisor
 import outsource_advisor
+import cylinder_advisor
 
 FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+
+# ไฟล์ Excel ที่ดาวน์โหลด "ห้ามแคช" — URL ดาวน์โหลดคงที่ ถ้าเบราว์เซอร์แคชไว้
+# ผู้ใช้จะได้ไฟล์เก่าหลังกดบันทึก (FileResponse ส่งแต่ etag/last-modified ไม่มี Cache-Control)
+NO_CACHE = {"Cache-Control": "no-store, must-revalidate", "Pragma": "no-cache"}
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 @asynccontextmanager
@@ -48,6 +56,8 @@ AUTH_OPEN_PATHS = {"/api/login", "/api/health"}
 def _is_download_path(path: str) -> bool:
     """endpoint ดาวน์โหลดไฟล์ — เปิดให้โหลดได้โดยไม่ต้องมี token
     (ใช้ลิงก์ <a href> โหลดตรงได้ทุกเมื่อ); ไม่รวม /api/outputs/booking ที่เป็น list"""
+    if path == "/api/database/download":
+        return True
     if path == "/api/map-item/download":
         return True
     if path == "/api/plan/download":
@@ -143,6 +153,44 @@ def api_master_save(name: str, sheet: str, req: SaveReq):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ---------------- Work Day (วันทำงานตามกลุ่มเครื่อง + ยุบสัปดาห์) ----------------
+@app.get("/api/workday")
+def api_workday_get():
+    try:
+        return workday.get_workday()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class WorkDayReq(BaseModel):
+    defaults: dict          # {"FACTORY|MC_CAT|GUAGE": วัน}
+    weeks: dict = {}        # {"FACTORY|MC_CAT|GUAGE|WEEK": วัน}
+    merges: dict = {}       # {"31": 32}
+
+
+@app.put("/api/workday")
+def api_workday_put(req: WorkDayReq):
+    try:
+        return workday.save_workday(req.defaults, req.weeks, req.merges)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/workday/seed")
+def api_workday_seed():
+    """สร้างชีท Work Day ครั้งแรกจาก Working Day ของ MasterMC (ไม่ทับค่าที่ตั้งไว้แล้ว)"""
+    try:
+        return workday.seed_from_mastermc()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ---------------- Schedule ----------------
 @app.get("/api/schedule")
 def api_schedule_get():
@@ -189,8 +237,7 @@ def api_output_download(fname: str):
     f = config.OUTPUT_DIR / fname
     if not f.exists() or f.parent != config.OUTPUT_DIR:
         raise HTTPException(status_code=404, detail="ไม่พบไฟล์")
-    return FileResponse(str(f), filename=fname,
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return FileResponse(str(f), filename=fname, media_type=XLSX_MIME, headers=NO_CACHE)
 
 
 @app.delete("/api/outputs/{fname}")
@@ -203,6 +250,32 @@ def api_output_delete(fname: str):
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"ลบไม่ได้: {e}")
     return {"ok": True, "deleted": fname}
+
+
+# ---------------- Database (ดูไฟล์ข้อมูลในโปรเจกต์ read-only) ----------------
+@app.get("/api/database")
+def api_database():
+    return database.list_datasets()
+
+
+@app.get("/api/database/sheet")
+def api_database_sheet(file: str, sheet: str = None):
+    try:
+        return database.read_grid(file, sheet)
+    except (KeyError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/database/download")
+def api_database_download(file: str):
+    try:
+        p = database._resolve(file)
+    except (KeyError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return FileResponse(str(p), filename=p.name,
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 # ---------------- Map Item (ผลลัพธ์ Datamining ↔ Booking) ----------------
@@ -227,8 +300,7 @@ def api_map_item_download(file: str):
         p = map_item_view._resolve(file)
     except (KeyError, FileNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return FileResponse(str(p), filename=p.name,
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return FileResponse(str(p), filename=p.name, media_type=XLSX_MIME, headers=NO_CACHE)
 
 
 # ---------------- Plan (แผนผลิตล่าสุด — แก้ไข + export) ----------------
@@ -273,6 +345,12 @@ def api_plan_ava():
     return plan_view.ava_by_week()
 
 
+@app.get("/api/plan/pool-map")
+def api_plan_pool_map():
+    # { "CAT|GUAGE|MC_GROUP": pool_key } เฉพาะกลุ่มที่แยกพูล (เช่น SKP vs SKPTA/SKPLE)
+    return plan_view.pool_map()
+
+
 @app.get("/api/plan/booking-mc")
 def api_plan_booking_mc():
     """เครื่องที่ booking ถักไอเทมนั้นอยู่แล้ว ต่อ (สัปดาห์ × ITEM|MC_GROUP|GUAGE)
@@ -291,8 +369,7 @@ def api_plan_download():
     p = plan_view.latest_path()
     if p is None:
         raise HTTPException(status_code=404, detail="ยังไม่มีไฟล์แผนผลิต")
-    return FileResponse(str(p), filename=p.name,
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return FileResponse(str(p), filename=p.name, media_type=XLSX_MIME, headers=NO_CACHE)
 
 
 # ---------------- Order Color (Datamining → Booking — แก้ไข + export) ----------------
@@ -332,8 +409,7 @@ def api_order_color_download():
     p = order_color_view.latest_path()
     if p is None:
         raise HTTPException(status_code=404, detail="ยังไม่มีไฟล์ Order Color")
-    return FileResponse(str(p), filename=p.name,
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return FileResponse(str(p), filename=p.name, media_type=XLSX_MIME, headers=NO_CACHE)
 
 
 @app.post("/api/order-color/advise")
@@ -447,6 +523,48 @@ def api_order_color_plan_export(req: OrderColorExportReq):
 def api_outsource_advise():
     try:
         return outsource_advisor.advise()
+    except (FileNotFoundError, KeyError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class OutsourceSplitReq(BaseModel):
+    item_code: str
+    outsource_qty: float = 0          # กก. ที่ส่งไปจ้างทอ (0 = ยกเลิกการแบ่ง)
+    start_week: int | None = None     # สัปดาห์ที่จ้างทอ (user กำหนดเอง)
+
+
+@app.get("/api/outsource/split")
+def api_outsource_split_get():
+    """การแบ่งจ้างทอที่ใช้อยู่ (ค้างจนกว่าจะลบ — รอบรันถัดไปใช้ค่านี้ด้วย)"""
+    return {"items": outsource_advisor.load_split(),
+            "weeks": outsource_advisor.plan_weeks()}
+
+
+@app.post("/api/outsource/split")
+def api_outsource_split_save(req: OutsourceSplitReq):
+    try:
+        return outsource_advisor.save_split(req.item_code, req.outsource_qty, req.start_week)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/outsource/split/{item_code:path}")
+def api_outsource_split_delete(item_code: str):
+    try:
+        return outsource_advisor.delete_split(item_code)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------- Cylinder Advisor (เปลี่ยนกระบอก AI) ----------------
+@app.post("/api/cylinder/advise")
+def api_cylinder_advise():
+    try:
+        return cylinder_advisor.advise()
     except (FileNotFoundError, KeyError) as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

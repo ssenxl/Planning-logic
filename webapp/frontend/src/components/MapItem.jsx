@@ -233,7 +233,7 @@ export default function MapItem({ embedded = false }) {
                     {grid.sheets.map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
                 )}
-                {sel.exists && <a className="dl" href={api.mapItemDownloadUrl(sel.id)}>⬇ ดาวน์โหลด</a>}
+                {sel.exists && <a className="dl" href={api.mapItemDownloadUrl(sel.id, sel.mtime)}>⬇ ดาวน์โหลด</a>}
               </div>
             </div>
 

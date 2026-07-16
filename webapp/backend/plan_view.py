@@ -348,6 +348,8 @@ def ava_by_week() -> dict:
     # (FACTORY ว่าง = grand-total ที่เป็นเครื่องชุดเดียวกับ pool → นับซ้ำ)
     # ถ้ามี pool row ให้ใช้ pool อย่างเดียว; ไม่มีค่อยใช้ non-pool
     has_fac = "FACTORY" in df.columns
+    has_pool = "MC_POOL" in df.columns
+    split = _split_pool_set()   # (cat|gauge) ที่แยกพูล → key ต่อพูล (เช่น SKP vs SKPTA/SKPLE)
     pool_acc: dict = {}
     np_acc: dict = {}
     for _, r in df.iterrows():
@@ -355,7 +357,10 @@ def ava_by_week() -> dict:
         if wk is None:
             continue
         cat = str(r["MC_CAT"]).strip()
-        key = f"{cat}|{gkey(r['GUAGE'])}"
+        cg = f"{cat}|{gkey(r['GUAGE'])}"
+        # กลุ่มที่แยกพูล → key = MC_POOL (เช่น "PHET|SKPLE , SKPTA 26G"); อื่นๆ = cat|gauge เดิม
+        mc_pool = str(r.get("MC_POOL", "")).strip() if has_pool else ""
+        key = mc_pool if (cg in split and mc_pool) else cg
         fac = str(r["FACTORY"]).strip() if has_fac else ""
         is_np = fac == "" or fac.lower() == "nan"
         acc = np_acc if is_np else pool_acc
@@ -390,9 +395,73 @@ def ava_by_week() -> dict:
     return out
 
 
+def _pool_gkey(g):
+    try:
+        return str(int(g))
+    except (TypeError, ValueError):
+        return str(g).strip()
+
+
+def _split_pool_set() -> set:
+    """(cat|gauge) ที่ถูกแยกเป็นหลายพูล (เช่น SINGLE-32|26 = SKP vs SKPTA/SKPLE)
+    เฉพาะกลุ่มนี้ที่ consumer ต้อง key ต่อพูล (MC_POOL); กลุ่มอื่น key = cat|gauge เหมือนเดิม
+    → backward-compatible: cat/gauge ที่ไม่ได้แยกพูลทำงานเหมือนเดิมทุกอย่าง"""
+    p = _latest_booking_path()
+    if p is None:
+        return set()
+    try:
+        import pandas as pd
+        df = pd.read_excel(p, sheet_name="SUMMARY_MC_REMAIN")
+    except Exception:
+        return set()
+    if "MC_POOL" not in df.columns:
+        return set()
+    pools_by_cg: dict = {}
+    for _, r in df.iterrows():
+        cat = str(r["MC_CAT"]).strip().upper()
+        # จำกัดการแยกพูลไว้ที่ SINGLE-32 (กลุ่ม SKP vs SKPTA/SKPLE) เท่านั้น
+        # cat อื่น (เช่น DOUBLE-34 ที่มีพูลข้ามโรงงาน) คงพฤติกรรมเดิม = รวม cat|gauge
+        if cat != "SINGLE-32":
+            continue
+        pool = str(r.get("MC_POOL", "")).strip()
+        if not pool:
+            continue
+        cg = f"{str(r['MC_CAT']).strip()}|{_pool_gkey(r['GUAGE'])}"
+        pools_by_cg.setdefault(cg, set()).add(pool)
+    return {cg for cg, pools in pools_by_cg.items() if len(pools) > 1}
+
+
+def pool_map() -> dict:
+    """{ "CAT|GUAGE|MC_GROUP": pool_key } เฉพาะ (cat,gauge) ที่แยกพูล
+    ให้หน้าเว็บ map เครื่องแต่ละตัว (SKP/SKPTA/SKPLE) → key ของ ava/reserved ที่ถูกพูล
+    (เครื่องที่ไม่มี entry = ใช้ key เดิม cat|gauge)"""
+    p = _latest_booking_path()
+    if p is None:
+        return {}
+    try:
+        import pandas as pd
+        df = pd.read_excel(p, sheet_name="MC_POOL_MAP")
+    except Exception:
+        return {}
+    if not {"MC_CAT", "GUAGE", "MC_GROUP", "MC_POOL"} <= set(df.columns):
+        return {}
+    split = _split_pool_set()
+    out: dict = {}
+    for _, r in df.iterrows():
+        cg = f"{str(r['MC_CAT']).strip()}|{_pool_gkey(r['GUAGE'])}"
+        if cg not in split:
+            continue
+        mg = str(r["MC_GROUP"]).strip().upper()
+        pool = str(r["MC_POOL"]).strip()
+        if mg and pool:
+            out[f"{cg}|{mg}"] = pool
+    return out
+
+
 def _reserved_by_cat() -> dict:
-    """เครื่องที่กันไว้ให้ POLY/COTTON ต่อ 'CAT|GUAGE' จากชีท MC_RESERVED ของ booking_final ล่าสุด
-    → { "CAT|GUAGE": {"poly": int, "cotton": int} }  (เครื่องกลุ่มนี้ใช้แทนงานปกติไม่ได้)"""
+    """เครื่องที่กันไว้ให้ POLY/COTTON ต่อ key พูล จากชีท MC_RESERVED ของ booking_final ล่าสุด
+    → { key: {"poly": int, "cotton": int} }  key = MC_POOL ถ้าแยกพูล ไม่งั้น CAT|GUAGE
+    (เครื่องกลุ่มนี้ใช้แทนงานปกติไม่ได้)"""
     p = _latest_booking_path()
     if p is None:
         return {}
@@ -404,15 +473,14 @@ def _reserved_by_cat() -> dict:
     if not {"MC_CAT", "GUAGE", "POLY", "COTTON"} <= set(df.columns):
         return {}
 
-    def gkey(g):
-        try:
-            return str(int(g))
-        except (TypeError, ValueError):
-            return str(g).strip()
-
+    gkey = _pool_gkey
+    has_pool = "MC_POOL" in df.columns
+    split = _split_pool_set()
     out: dict = {}
     for _, r in df.iterrows():
-        key = f"{str(r['MC_CAT']).strip()}|{gkey(r['GUAGE'])}"
+        cg = f"{str(r['MC_CAT']).strip()}|{gkey(r['GUAGE'])}"
+        mc_pool = str(r.get("MC_POOL", "")).strip() if has_pool else ""
+        key = mc_pool if (cg in split and mc_pool) else cg
         slot = out.setdefault(key, {"poly": 0, "cotton": 0})
         slot["poly"] += int(_num(r["POLY"]) or 0)
         slot["cotton"] += int(_num(r["COTTON"]) or 0)
@@ -434,18 +502,17 @@ def _reserved_used_by_cat_week() -> dict:
     if not {"MC_CAT", "GUAGE", "WEEK", "POLY_USED", "COTTON_USED"} <= set(df.columns):
         return {}
 
-    def gkey(g):
-        try:
-            return str(int(g))
-        except (TypeError, ValueError):
-            return str(g).strip()
-
+    gkey = _pool_gkey
+    has_pool = "MC_POOL" in df.columns
+    split = _split_pool_set()
     out: dict = {}
     for _, r in df.iterrows():
         wk = _wk_str(r["WEEK"])
         if wk is None:
             continue
-        key = f"{str(r['MC_CAT']).strip()}|{gkey(r['GUAGE'])}"
+        cg = f"{str(r['MC_CAT']).strip()}|{gkey(r['GUAGE'])}"
+        mc_pool = str(r.get("MC_POOL", "")).strip() if has_pool else ""
+        key = mc_pool if (cg in split and mc_pool) else cg
         slot = out.setdefault(wk, {}).setdefault(key, {"poly_used": 0, "cotton_used": 0})
         slot["poly_used"] += int(_num(r["POLY_USED"]) or 0)
         slot["cotton_used"] += int(_num(r["COTTON_USED"]) or 0)

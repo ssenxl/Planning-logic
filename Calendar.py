@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import configparser as _cp
 import pandas as pd
@@ -306,6 +307,96 @@ def load_calendar(file_path: Path | str, sheet_name: str = "Work day") -> pd.Dat
     df["DAY"] = df["DATE"].dt.day_name().str[:3]
 
     return df
+
+
+# =========================================================
+# WORK DAY — วันทำงานราย (Factory, MC_CAT, Guage) [+ ราย WEEK]
+# แหล่งเดียวของความจริง: ชีท "Work Day" ใน Calendar.xlsx
+#   Factory | MC_CAT | Guage | WEEK | WORK_DAY
+#   WEEK ว่าง  = ค่ามาตรฐานของกลุ่ม (ใช้ทุกสัปดาห์)
+#   WEEK มีเลข = ค่าเฉพาะสัปดาห์นั้น
+# ค่าที่กรอกใช้ตรง ๆ ไม่หักวันหยุดซ้ำ
+# =========================================================
+WORKDAY_SHEET = "Work Day"
+WEEK_MERGE_SHEET = "Week Merge"
+DEFAULT_WORK_DAYS = 6.0
+
+
+def _norm_key(v) -> str:
+    s = str(v).strip().upper()
+    if s in ("NAN", "NONE"):
+        return ""
+    if re.fullmatch(r"\d+\.0+", s):  # 12.0 → 12 (Guage อ่านจาก Excel เป็น float)
+        return s.split(".", 1)[0]
+    return s
+
+
+def _num(v):
+    try:
+        f = float(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+    return None if pd.isna(f) else f
+
+
+def load_workday(file_path: Path | str | None = None) -> dict:
+    """อ่านชีท Work Day → {"default": {(fac,cat,gauge): วัน}, "week": {(fac,cat,gauge,week): วัน}}
+    ไม่มีชีท/อ่านไม่ได้ → คืน dict ว่าง (ทุกกลุ่มจะใช้ DEFAULT_WORK_DAYS)"""
+    src = file_path or _CALENDAR_LOCAL_PATH
+    out = {"default": {}, "week": {}}
+    try:
+        df = pd.read_excel(src, sheet_name=WORKDAY_SHEET)
+    except Exception:
+        return out
+
+    df.columns = [str(c).strip() for c in df.columns]
+    cols = {str(c).strip().upper(): c for c in df.columns}
+    need = ("FACTORY", "MC_CAT", "GUAGE", "WORK_DAY")
+    if any(k not in cols for k in need):
+        return out
+
+    for _, r in df.iterrows():
+        key = (_norm_key(r[cols["FACTORY"]]), _norm_key(r[cols["MC_CAT"]]), _norm_key(r[cols["GUAGE"]]))
+        days = _num(r[cols["WORK_DAY"]])
+        if days is None or not any(key):
+            continue
+        wk = _num(r[cols["WEEK"]]) if "WEEK" in cols else None
+        if wk is None:
+            out["default"][key] = days
+        else:
+            out["week"][key + (int(wk),)] = days
+    return out
+
+
+def load_week_merge(file_path: Path | str | None = None) -> dict:
+    """อ่านชีท Week Merge (ยุบสัปดาห์ ใช้ทั้งระบบ) → {week: target_week} หลังคลาย chain แล้ว
+    เช่น W31 ยุบเข้า W32 → {31: 32} : งานไม่ลง W31, วันทำงาน W32 = W31 + W32"""
+    src = file_path or _CALENDAR_LOCAL_PATH
+    try:
+        df = pd.read_excel(src, sheet_name=WEEK_MERGE_SHEET)
+    except Exception:
+        return {}
+
+    cols = {str(c).strip().upper(): c for c in df.columns}
+    if "WEEK" not in cols or "MERGE_TO" not in cols:
+        return {}
+
+    raw = {}
+    for _, r in df.iterrows():
+        src_w, dst_w = _num(r[cols["WEEK"]]), _num(r[cols["MERGE_TO"]])
+        if src_w is None or dst_w is None or int(src_w) == int(dst_w):
+            continue
+        raw[int(src_w)] = int(dst_w)
+
+    # คลาย chain (31→32, 32→33 ⇒ 31→33) และตัดวงจร
+    out = {}
+    for w in raw:
+        seen, cur = {w}, raw[w]
+        while cur in raw and cur not in seen:
+            seen.add(cur)
+            cur = raw[cur]
+        out[w] = cur
+    return out
 
 
 def calendar_week_map(calendar_df: pd.DataFrame) -> pd.DataFrame:

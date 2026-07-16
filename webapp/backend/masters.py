@@ -5,7 +5,7 @@ masters.py — อ่าน/เขียนไฟล์ Master (.xlsx) ราย
 """
 import re
 import shutil
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -14,6 +14,10 @@ from config import master_files
 
 _INT_RE = re.compile(r"^-?(0|[1-9][0-9]*)$")
 _FLOAT_RE = re.compile(r"^-?(0|[1-9][0-9]*|0?)\.[0-9]+$")
+# ค่าวันที่ที่ backend ส่งให้ frontend เป็น ISO string — ต้องแปลงกลับเป็นวันที่จริงตอนเขียน
+_ISO_DT_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?)?$"
+)
 
 
 def list_masters() -> list:
@@ -73,11 +77,18 @@ def _coerce(v):
     """แปลงค่าจาก grid (string) → ชนิดที่เหมาะ; เก็บรหัสที่มี leading zero เป็น string"""
     if v is None:
         return None
-    if isinstance(v, (int, float)):
+    if isinstance(v, (int, float, date, datetime)):
         return v
     s = str(v).strip()
     if s == "":
         return None
+    m = _ISO_DT_RE.match(s)
+    if m:
+        y, mo, d, hh, mi, ss = m.groups()
+        # ไม่มีเวลา หรือเวลาเป็น 00:00:00 → เก็บเป็น date (Excel โชว์เป็นวันที่ ไม่ใช่ข้อความ)
+        if not hh or (int(hh), int(mi), int(ss or 0)) == (0, 0, 0):
+            return date(int(y), int(mo), int(d))
+        return datetime(int(y), int(mo), int(d), int(hh), int(mi), int(ss or 0))
     if _INT_RE.match(s):
         try:
             return int(s)

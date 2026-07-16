@@ -500,21 +500,24 @@ button {
 
 .gbar-star {
   font-size: 10px;
-  margin-right: 2px;
+  flex: none;
 }
 
 /* emoji บอกประเภทเครื่อง: 🔧 setup ใหม่ / 📦 เติมเข้าเครื่องเดิม / ⏩ เครื่องเดิมวิ่งต่อ */
 .gbar-mc {
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1;
-  margin-right: 4px;
   flex: none;
 }
 
+/* ปุ่มถอดงาน — ลอยทับมุมขวาตอน hover เท่านั้น (ถ้าอยู่ในแถวจะไปเบียดพื้นที่ item/จำนวน) */
 .gbar-del {
-  margin-left: auto;
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: none;
   border: none;
-  background: rgba(0, 0, 0, .25);
+  background: rgba(0, 0, 0, .45);
   color: #fff;
   border-radius: 50%;
   width: 15px;
@@ -523,11 +526,124 @@ button {
   font-size: 10px;
   cursor: pointer;
   padding: 0;
-  flex: 0 0 auto;
+}
+
+.gbar:hover .gbar-del {
+  display: block;
 }
 
 .gbar-del:hover {
   background: #c0392b;
+}
+
+/* ปุ่มแบ่งงานในการ์ดรายละเอียด (ไม่อยู่บนบล็อก — กันเผลอกดโดน) */
+.jobsplit {
+  padding: 0 16px 8px;
+}
+
+.jobsplit-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.jobsplit-btn {
+  width: 100%;
+  border: 1px dashed #2d6cdf;
+  background: #eef4ff;
+  color: #2d6cdf;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.jobsplit-btn:hover {
+  background: #dfeaff;
+}
+
+.jobdel-btn {
+  width: 100%;
+  border: 1px dashed #c0392b;
+  background: #fdecea;
+  color: #c0392b;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.jobdel-btn:hover {
+  background: #f9d9d4;
+}
+
+.jobsplit-form {
+  border: 1px solid #cfd6e4;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fafbfe;
+}
+
+.gsplit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.gsplit-row input {
+  width: 74px;
+  height: 26px;
+  border: 1px solid #cfd6e4;
+  border-radius: 6px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.gsplit-row select {
+  height: 26px;
+  border: 1px solid #cfd6e4;
+  border-radius: 6px;
+  padding: 0 6px;
+  font-size: 13px;
+}
+
+.gsplit-hint {
+  font-size: 11px;
+  color: #8a6d1a;
+  background: #fff6e0;
+  border-radius: 6px;
+  padding: 5px 8px;
+  margin-top: 8px;
+}
+
+.gsplit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.gsplit-ok,
+.gsplit-cancel {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.gsplit-ok {
+  background: #2d6cdf;
+  color: #fff;
+  font-weight: 600;
+}
+
+.gsplit-cancel {
+  background: #e7ebf2;
+  color: #333;
 }
 
 /* ตัวเลือก CAT (ดูทีละ CAT) */
@@ -1280,7 +1396,7 @@ button.ghost.sm:hover {
 }
 
 .gantt-wk {
-  min-width: 84px;
+  min-width: 150px;
   text-align: center;
 }
 
@@ -1304,12 +1420,47 @@ button.ghost.sm:hover {
   z-index: 8;
 }
 
+/* คอลัมน์ "กันเครื่อง" — ยอดเครื่องที่ล็อกไว้ให้ POLY/COTTON ของกลุ่ม CAT|เกจ */
+/* ชิปยาว ("Cotton = 4") — ถ้ามีทั้ง Poly และ Cotton ให้ตกบรรทัดแทนดันคอลัมน์กว้าง */
+.gantt-rsvcol {
+  text-align: center;
+  white-space: normal;
+}
+
+.rsvtag {
+  display: inline-block;
+  margin: 1px 2px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.rsvtag.poly {
+  background: #e3f0fd;
+  color: #1a5fa8;
+  border: 1px solid #b8d8f5;
+}
+
+.rsvtag.cotton {
+  background: #fdf3e0;
+  color: #a86a12;
+  border: 1px solid #f2ddb4;
+}
+
+.rsvtag.dim {
+  color: var(--muted);
+  opacity: 0.5;
+  font-weight: 400;
+}
+
 .gantt-cell {
   position: relative;
   vertical-align: top;
   padding: 3px;
   padding-top: 15px;
-  min-width: 84px;
+  min-width: 150px;
   background: #fff;
 }
 
@@ -1343,9 +1494,17 @@ button.ghost.sm:hover {
   pointer-events: none;
 }
 
+/* เต็มพอดี (0) = เหลือง — ยังไม่ผิด แต่วางเพิ่มไม่ได้ */
 .cellava.none {
-  color: #c0392b;
-  background: #fdecea;
+  color: #8a6d1f;
+  background: #fff4d6;
+}
+
+/* วางเกินเครื่องที่มี = แดง เน้นกว่า "เต็ม" (พื้นอ่อน + ขอบแดง เพื่อไม่ให้ชิป 🔒 ข้างในจม) */
+.cellava.over {
+  color: #b42318;
+  background: #ffe4e1;
+  box-shadow: inset 0 0 0 1px #d9534f;
 }
 
 /* ชิปเครื่องที่กันไว้ให้ POLY/COTTON (ใช้แทนงานปกติไม่ได้) */
@@ -1379,58 +1538,72 @@ button.ghost.sm:hover {
   border-bottom: 2px solid var(--line);
 }
 
-.loadbar {
+/* แถบ (ซ้าย) + ตัวเลข (ขวา) วางคู่กัน — ไม่ทับกัน เลยอ่านง่ายกว่าเอาเลขไปทับแถบ */
+.loadwrap {
   display: flex;
-  height: 7px;
+  align-items: center;
+  gap: 6px;
+}
+
+.loadbar {
+  flex: 1 1 auto;
+  min-width: 28px;
+  display: flex;
+  height: 8px;
   border-radius: 999px;
-  background: #e3e6f0;
+  background: #e6e9f2;
   overflow: hidden;
-  margin-bottom: 2px;
 }
 
 .loadbar.nocap {
-  background: #eef0f8;
+  background: #eef0f6;
 }
 
 .loadbar .seg {
   height: 100%;
 }
 
+/* เก่า = น้ำเงินอ่อน, ใหม่ = น้ำเงินเข้ม → ทั้งคู่คือ "เครื่องที่ถูกใช้" ต่างกันที่ความเข้ม */
 .loadbar .seg.old {
-  background: #b0b7cc;
+  background: #c7d2fe;
 }
 
 .loadbar .seg.new {
   background: var(--pri);
 }
 
-.loadbar.over {
-  box-shadow: 0 0 0 1.5px #e15759;
+.loadbar.over .seg.old {
+  background: #f5b7b1;
 }
 
 .loadbar.over .seg.new {
   background: #e15759;
 }
 
+/* ป้ายตัวเลขกว้างคงที่ + ชิดขวา → แท่ง (.loadbar flex:1) เหลือที่เท่ากันทุกช่อง แท่งเลยยาวเท่ากัน */
+.loadlbl {
+  flex: 0 0 46px;
+  width: 46px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  color: #3c4763;
+  white-space: nowrap;
+}
+
+.loadlbl.full {
+  color: #8a6d1f;
+}
+
+.loadlbl.over {
+  color: #c0392b;
+}
+
 .loadtxt {
   font-size: 11px;
   font-weight: 700;
   color: var(--muted);
-}
-
-.loadtxt .ln-new {
-  color: var(--pri);
-}
-
-.loadtxt .ln-old {
-  color: #98a0b8;
-  font-weight: 600;
-  margin: 0 1px;
-}
-
-.loadtxt.over,
-.loadtxt.over .ln-new {
-  color: #c0392b;
 }
 
 .loadtxt.dim {
@@ -1443,14 +1616,19 @@ button.ghost.sm:hover {
   box-shadow: inset 0 0 0 2px var(--pri);
 }
 
+/* บล็อกงาน = บรรทัดเดียว สูงเท่ากันทุกบล็อกเสมอ (ไม่ตัดบรรทัด แม้ SC/ชื่อ item ยาวไม่เท่ากัน)
+   เนื้อหาที่ล้น → ตัดท้ายด้วย … ; รายละเอียดครบดูที่ panel (คลิกบล็อก) */
 .gbar {
+  position: relative;
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
-  justify-content: space-between;
   gap: 4px;
+  height: 30px;
+  overflow: hidden;
   color: #fff;
   border-radius: 5px;
-  padding: 3px 6px;
+  padding: 0 6px;
   margin-bottom: 3px;
   cursor: grab;
   box-shadow: 0 1px 2px rgba(0, 0, 0, .2);
@@ -1464,25 +1642,276 @@ button.ghost.sm:hover {
   opacity: .4;
 }
 
+/* item = ตัวหลัก ยอมให้หดและตัดท้ายก่อนใคร (ป้ายอื่นสั้นและตายตัวกว่า) */
 .gbar-item {
+  flex: 1 1 auto;
+  min-width: 34px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
-  font-size: 11px;
+  font-size: 12px;
 }
 
+/* จำนวน (กก.) — ชิดขวาสุดเสมอ ให้ไล่สายตาเทียบข้ามบล็อกได้ */
 .gbar-qty {
-  flex-shrink: 0;
-  font-size: 10px;
-  background: rgba(255, 255, 255, .28);
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, .26);
   border-radius: 999px;
   padding: 0 6px;
+  line-height: 16px;
+}
+
+/* ข้อมูลเสริมบนบล็อก (SC, เครื่องที่ใช้, ...) — ข้อความบางๆ ต่อท้าย item ในบรรทัดเดียวกัน
+   ไม่ทำเป็นชิปทึบ/ไม่ตัดบรรทัด เพราะทำให้บล็อกอ้วนและสูงไม่เท่ากัน
+   (ฟิลด์ไหนโชว์ user ติ๊กเองที่หัว Gantt — ที่เหลือดูใน panel) */
+.gbar-tag {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .2px;
+  color: rgba(255, 255, 255, .85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gbar-tag::before {
+  content: '·';
+  margin-right: 4px;
+  color: rgba(255, 255, 255, .5);
+}
+
+/* วางงานเลยสัปดาห์ที่ต้องถักเสร็จ (TARGET_KNIT) → ป้าย RDD แดง (ส่งไม่ทัน) */
+.gbar-tag.warn {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #fff;
+  color: var(--fail);
+}
+
+/* บล็อกที่เปิด panel รายละเอียดอยู่ */
+.gbar.selected {
+  box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--ink);
+}
+
+/* ── แถบเลือกฟิลด์ที่โชว์บนบล็อก ─────────────────────────────── */
+.gantt-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.gfield-toggle,
+.gfield-reset {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.gfield-toggle:hover,
+.gfield-reset:hover {
+  border-color: var(--pri);
+  color: var(--pri);
+}
+
+.gfield-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.gfield-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.gfield-chip.on {
+  border-color: var(--pri);
+  background: var(--pri-soft);
+  color: var(--pri-d);
+}
+
+.gfield-chip input {
+  margin: 0;
+  accent-color: var(--pri);
+}
+
+/* ── Panel รายละเอียดงาน (คลิกบล็อก) ─────────────────────────── */
+.jobpanel {
+  position: fixed;
+  top: 84px;
+  right: 18px;
+  z-index: 60;
+  width: 340px;
+  max-height: calc(100vh - 110px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.jobpanel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--pri-soft);
+}
+
+.jobpanel-item {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.jobpanel-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.jobpanel-close {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.jobpanel-close:hover {
+  background: rgba(30, 32, 60, .08);
+  color: var(--ink);
+}
+
+.jobpanel-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 14px 0;
+}
+
+.jobflag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--line-soft);
+  color: var(--muted);
+}
+
+.jobflag.setup {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.jobflag.warn {
+  background: #ffe4e9;
+  color: var(--fail);
+}
+
+.jobflag.core {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.jobpanel-body {
+  padding: 10px 14px 14px;
+  overflow-y: auto;
+}
+
+.jobsec {
+  margin-top: 10px;
+}
+
+.jobsec h4 {
+  margin: 0 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.jobdl {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 2px 8px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.jobdl.wide {
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+.jobdl dt {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jobdl dd {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.jobdl.wide dd {
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.jobdl dd.warn {
+  color: var(--fail);
+}
+
+.jobmore {
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--pri);
+  cursor: pointer;
 }
 
 /* input แก้จำนวน (กก.) บนบล็อก — เปิดด้วย double click, Enter = ตกลง, Esc = ยกเลิก */
 .gbar-qty-edit {
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  margin-left: auto;
+  height: 15px;
   width: 58px;
   font-size: 10px;
   border: 1px solid rgba(0, 0, 0, .3);
@@ -1673,6 +2102,43 @@ button:disabled {
   box-shadow: 0 0 0 4px var(--pri-ring);
 }
 
+/* dropdown กรองด่วน (CAT / เกจ) บนแถบค้นหา */
+.filterbar .quickf {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fafbff;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.filterbar .quickf.on {
+  border-color: var(--pri);
+  background: var(--pri-soft);
+  color: var(--pri);
+}
+
+.filterbar .quickf select {
+  border: none;
+  background: transparent;
+  padding: 4px 6px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  max-width: 180px;
+}
+
+.filterbar .quickf select:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--pri-ring);
+}
+
 .filterbar .count {
   color: var(--muted);
   font-size: 13px;
@@ -1717,29 +2183,22 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* ช่องเปลี่ยนชื่อคอลัมน์ — โผล่เฉพาะตอนสั่ง "เปลี่ยนชื่อ" เท่านั้น กันพิมพ์ทับโดยไม่ตั้งใจ */
 .thinput {
-  border: 1px solid transparent;
-  background: transparent;
+  border: 1px solid var(--pri);
+  background: #fff;
   font-weight: 700;
   font-size: 12px;
   color: #3a3d5c;
   width: 100%;
   min-width: 50px;
-  padding: 3px 4px;
+  padding: 3px 5px;
   border-radius: 5px;
-  cursor: text;
-}
-
-.thinput:hover {
-  border-color: var(--line);
-  background: #fff;
 }
 
 .thinput:focus {
   outline: none;
-  background: #fff;
-  box-shadow: inset 0 0 0 2px var(--pri);
-  border-color: transparent;
+  box-shadow: 0 0 0 3px var(--pri-ring);
 }
 
 .funnel {
@@ -1767,22 +2226,398 @@ button:disabled {
   border-color: var(--pri);
 }
 
-.coldel {
-  border: none;
+/* ===== ตารางแก้ Master ===== */
+
+/* กินพื้นที่ว่างเมื่อคอลัมน์รวมแคบกว่าจอ (ไม่ให้เหลือช่องโหว่ข้างขวา) */
+.masters table.grid {
+  min-width: 100%;
+}
+
+/* คอลัมน์ปุ่มลบแถว — ห้าม sticky เหมือน .rownum ไม่งั้นเลื่อนแนวนอนแล้วไปติดขอบซ้าย */
+.masters .actcol {
+  background: #f3f4fb;
+  text-align: center;
+  padding: 0 !important;
+}
+
+.masters tbody tr:hover .actcol {
+  background: #e9eaff;
+}
+
+/* หัวคอลัมน์: คลิก = เรียงลำดับ, ดับเบิลคลิก = เปลี่ยนชื่อ */
+.masters .thsort {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid transparent;
   background: transparent;
-  color: #c0496a;
-  cursor: pointer;
-  font-size: 11px;
-  line-height: 1;
-  padding: 2px 4px;
+  padding: 3px 4px;
   border-radius: 5px;
-  opacity: .45;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  font-size: 12px;
+  color: #3a3d5c;
+  text-align: left;
+}
+
+.masters .thsort:hover {
+  background: #fff;
+  border-color: var(--line);
+}
+
+.masters .thsort .thlabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.masters .sarrow {
+  color: var(--pri);
+  font-size: 9px;
   flex-shrink: 0;
 }
 
-.coldel:hover {
-  opacity: 1;
+/* ปุ่มเมนู ⋮ (เปลี่ยนชื่อ / แทรก / ลบคอลัมน์) — แทนปุ่ม ✕ เดิมที่กดพลาดง่าย */
+.masters .kebab {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 5px;
+  padding: 0 3px;
+  font-size: 11px;
+  line-height: 16px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.masters .kebab:hover {
+  border-color: var(--pri);
+  color: var(--pri);
+  background: var(--pri-soft);
+}
+
+/* ที่จับลากปรับความกว้างคอลัมน์ */
+.masters .resizer {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  width: 9px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+
+.masters .resizer:hover {
+  background: linear-gradient(90deg, transparent 3px, var(--pri) 3px, var(--pri) 5px, transparent 5px);
+}
+
+body.col-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.masters .thcell {
+  position: relative;
+  gap: 3px;
+}
+
+/* freeze คอลัมน์แรก + เลขแถว ตอนเลื่อนดูคอลัมน์ขวา */
+.masters table.grid th {
+  z-index: 2;
+}
+
+.masters th.frz {
+  position: sticky;
+  left: 46px;
+  z-index: 3;
+}
+
+.masters th.rownum {
+  z-index: 4;
+}
+
+.masters td.frz {
+  position: sticky;
+  left: 46px;
+  z-index: 1;
+  background: #fff;
+}
+
+.masters tbody tr:nth-child(even) td.frz {
+  background: #fafbfe;
+}
+
+.masters tbody tr:hover td.frz {
+  background: var(--pri-soft);
+}
+
+/* เซลล์ที่แก้แล้วยังไม่บันทึก */
+.masters td.chg,
+.masters tbody tr:nth-child(even) td.chg,
+.masters tbody tr:hover td.chg {
+  background: #fff5d6;
+  box-shadow: inset 2px 0 0 #e8a33d;
+}
+
+.masters tr.newrow td.rownum {
+  color: var(--ok);
+  font-weight: 800;
+}
+
+.masters .gridhelp {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.masters .chgdot {
+  display: inline-block;
+  width: 20px;
+  height: 10px;
+  border-radius: 3px;
+  background: #fff5d6;
+  box-shadow: inset 2px 0 0 #e8a33d;
+  vertical-align: -1px;
+}
+
+/* chip แสดงตัวกรอง/การเรียงที่ใช้อยู่ */
+.masters .chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.masters .fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 5px 4px 10px;
+  border: 1px solid var(--pri);
+  background: var(--pri-soft);
+  color: var(--pri);
+  border-radius: 999px;
+  font-size: 12px;
+  max-width: 320px;
+}
+
+.masters .fchip b {
+  font-weight: 700;
+}
+
+.masters .fchip.sortchip {
+  border-color: var(--line);
+  background: #f3f4fb;
+  color: #3a3d5c;
+}
+
+.masters .fchip button {
+  border: none;
+  background: rgba(255, 255, 255, .7);
+  color: inherit;
+  cursor: pointer;
+  border-radius: 50%;
+  width: 17px;
+  height: 17px;
+  line-height: 1;
+  font-size: 10px;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.masters .fchip button:hover {
+  background: #fff;
+  color: var(--fail);
+}
+
+/* เมนู ⋮ ของคอลัมน์ */
+.colmenu {
+  position: fixed;
+  z-index: 60;
+  width: 210px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+}
+
+.colmenu .cmhead {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  padding: 4px 8px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.colmenu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.colmenu button:hover {
+  background: var(--pri-soft);
+  color: var(--pri);
+}
+
+.colmenu button.danger {
+  color: var(--fail);
+}
+
+.colmenu button.danger:hover {
   background: #ffe4e9;
+  color: var(--fail);
+}
+
+.colmenu .cmsep {
+  height: 1px;
+  background: var(--line);
+  margin: 5px 4px;
+}
+
+/* dialog เพิ่มคอลัมน์ (แทน prompt() ของเบราว์เซอร์) */
+.mini-dlg {
+  width: min(380px, 100%);
+  align-self: center;
+  background: #fff;
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: var(--shadow-lg);
+  animation: modalpop .15s ease-out;
+}
+
+.mini-dlg h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.mini-dlg input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  font-size: 14px;
+}
+
+.mini-dlg input:focus {
+  outline: none;
+  border-color: var(--pri);
+  box-shadow: 0 0 0 4px var(--pri-ring);
+}
+
+.mini-dlg .dlgbtns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.mini-dlg .dlgbtns button {
+  padding: 8px 16px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ปุ่ม "คืนค่าเดิม" */
+.actions button.ghost {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.actions button.ghost:hover {
+  border-color: var(--fail);
+  color: var(--fail);
+  background: #ffe4e9;
+}
+
+/* sidebar: ค้นหา + ยุบ/ขยายไฟล์ */
+.sheetsearch {
+  width: 100%;
+  padding: 8px 11px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fafbff;
+  font-size: 13px;
+}
+
+.sheetsearch:focus {
+  outline: none;
+  border-color: var(--pri);
+  background: #fff;
+  box-shadow: 0 0 0 3px var(--pri-ring);
+}
+
+button.filename {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 4px 2px;
+}
+
+button.filename:hover .fname {
+  color: var(--pri);
+}
+
+button.filename .caret {
+  font-size: 9px;
+  color: var(--muted);
+  padding: 2px 3px;
+  border-radius: 4px;
+}
+
+button.filename .caret:hover {
+  background: var(--pri-soft);
+  color: var(--pri);
+}
+
+/* ไฟล์ที่กดชื่อแล้วเปิดชีทได้เลย (ชีทเดียว หรือชีทที่ pipeline ใช้) — ไฮไลต์เมื่อกำลังเปิดอยู่ */
+button.filename.active {
+  background: var(--pri-soft);
+  border-radius: 9px;
+}
+
+button.filename.active .fname {
+  color: var(--pri-d);
+}
+
+button.filename .fname {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.filename .scount {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  background: #eceefb;
+  border-radius: 999px;
+  padding: 1px 7px;
 }
 
 /* filter popup */
@@ -2030,7 +2865,82 @@ table.grid td.rocell {
   padding: 5px 8px;
   min-width: 58px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--ink);
+}
+
+/* ===== ตาราง DATA: freeze คอลัมน์แรก + ลากปรับกว้าง ===== */
+/* หมายเหตุ: table.grid th เป็น position:sticky อยู่แล้ว จึงเป็น containing block ให้ที่จับลาก */
+
+/* ที่จับลากขอบขวาหัวคอลัมน์ */
+.gridwrap .colresize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+}
+
+.gridwrap .colresize:hover {
+  background: var(--pri-soft);
+}
+
+body.col-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* freeze คอลัมน์แรก (ITEM_CODE) ถัดจากเลขแถว */
+.gridwrap table.grid th.frozen,
+.gridwrap table.grid td.frozen {
+  position: sticky;
+  left: 46px;
+}
+
+.gridwrap table.grid td.frozen {
+  background: #fff;
+  z-index: 2;
+}
+
+.gridwrap table.grid tbody tr:nth-child(even) td.frozen {
+  background: #fafbfe;
+}
+
+.gridwrap table.grid tbody tr:hover td.frozen {
+  background: var(--pri-soft);
+}
+
+/* ลำดับชั้น: มุมซ้ายบน (#) > หัว frozen > หัวปกติ/เซลล์ frozen */
+.gridwrap table.grid th.frozen {
+  z-index: 3;
+}
+
+.gridwrap table.grid th.rownum {
+  z-index: 4;
+}
+
+.gridwrap table.grid td.rownum {
+  z-index: 2;
+}
+
+/* คอลัมน์ปุ่มลบ (ท้ายแถวหน้าแผนผลิต) — ห้าม sticky-left ไม่งั้นเลื่อนขวาสุดแล้วทับคอลัมน์ # */
+.gridwrap table.grid th.rownum.actcol,
+.gridwrap table.grid td.rownum.actcol {
+  position: static;
+  z-index: auto;
+}
+
+/* ตารางแผนผลิตเป็นช่องแก้ไข (input) — ชิดขวาตัวเลขต้องตั้งที่ input ไม่ใช่ td */
+.gridwrap table.grid td.num input {
+  text-align: right;
+}
+
+/* fixed layout คุมความกว้างด้วย colgroup — input ต้องยอมแคบตามคอลัมน์ (ไม่ยึด min-width เดิม) */
+.gridwrap table.grid td input {
+  min-width: 0;
 }
 
 table.grid.outputs {
@@ -2547,6 +3457,97 @@ table.grid b.late { color: #d1373b; }
   background: #e9ddff;
 }
 
+/* ช่องกรอกการแบ่งจ้างทอ (กก. + สัปดาห์) ในตารางแนะนำ */
+.os-qty {
+  width: 110px;
+  padding: 6px 8px;
+  text-align: right;
+  font-weight: 700;
+  border: 2px solid #b9a3ec;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.os-qty:focus {
+  outline: none;
+  border-color: #6b3fc4;
+  box-shadow: 0 0 0 3px rgba(107, 63, 196, 0.15);
+}
+
+.os-week {
+  width: 104px;
+  padding: 6px 8px;
+  border: 2px solid #b9a3ec;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.os-actions {
+  white-space: nowrap;
+}
+
+.os-actions button {
+  padding: 4px 8px;
+}
+
+/* คอลัมน์เหตุผลยาว — จำกัดความกว้างไม่ให้ดันตารางล้นกรอบ */
+.os-table .reason {
+  max-width: 280px;
+  white-space: normal;
+}
+
+/* แถวที่บันทึกจ้างทอไว้แล้ว (มีผลทุกรอบรันจนกว่าจะยกเลิก) */
+.row-outsourced {
+  background: #f7f2ff;
+}
+
+/* ---------- เปลี่ยนกระบอก (AI) ---------- */
+.cylinder-btn {
+  background: #e7f3ff;
+  border: 1px solid #b9dcff;
+  color: #1f6feb;
+  font-weight: 700;
+}
+
+.cylinder-btn:hover {
+  background: #d5e9ff;
+}
+
+/* แถวที่เปลี่ยนกระบอกไม่ได้ (ไม่มีเครื่องว่าง หรือกระบอกสำรองหมด) */
+.cyl-blocked {
+  background: #fff7f5;
+}
+
+/* ประโยคปฏิบัติการ — คอลัมน์หลักที่ผู้ใช้อ่านเพื่อตัดสินใจ */
+.cyl-action {
+  min-width: 320px;
+  line-height: 1.45;
+}
+
+.cyl-blocked .cyl-action {
+  color: #c0392b;
+}
+
+.tag-ok,
+.tag-block {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.tag-ok {
+  background: #e3f7e8;
+  color: #217a3c;
+}
+
+.tag-block {
+  background: #ffe3e3;
+  color: #c0392b;
+}
+
 /* modal ป๊อปอัพ */
 .modal-backdrop {
   position: fixed;
@@ -2562,7 +3563,7 @@ table.grid b.late { color: #d1373b; }
 
 .modal-box {
   position: relative;
-  width: min(1100px, 100%);
+  width: min(1400px, 100%);
   animation: modalpop 0.15s ease-out;
 }
 
@@ -2592,7 +3593,1225 @@ table.grid b.late { color: #d1373b; }
   color: #c0392b;
 }
 
+/* ---------------- มุมมองปฏิทิน (ชีท Calendar) ---------------- */
+.viewtoggle {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+  margin-right: 4px;
+}
+
+.viewtoggle button,
+.editbar .viewtoggle button {
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.viewtoggle button + button {
+  border-left: 1px solid var(--line);
+}
+
+.viewtoggle button.on,
+.editbar .viewtoggle button.on {
+  background: var(--pri-soft);
+  color: var(--pri-d);
+}
+
+.calview {
+  margin-top: 12px;
+}
+
+.calbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.calyear {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.calyear button {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.calyear button:hover:not(:disabled) {
+  border-color: var(--pri);
+  color: var(--pri);
+}
+
+.calyear span {
+  min-width: 110px;
+  text-align: center;
+}
+
+.calstat b.off   { color: var(--fail); }
+.calstat b.work  { color: var(--ok); }
+.calstat b.pend  { color: var(--run); }
+
+.callegend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 12px;
+}
+
+.callegend .lg {
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+}
+
+.callegend .lg + .lg { margin-left: 8px; }
+.callegend .lg.off      { background: var(--fail); border-color: var(--fail); }
+.callegend .lg.sun      { background: #f1f2f8; border-color: #dcdeeb; }
+.callegend .lg.work     { background: #fff; }
+.callegend .lg.pending  { background: #fff; border: 2px solid var(--run); }
+
+.calmonths {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.calmonth {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  padding: 10px;
+}
+
+.calmhead {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+
+.calgrid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.caldow {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  padding-bottom: 2px;
+}
+
+.caldow.wknd { color: #fda4af; }
+
+.calday {
+  padding: 5px 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+}
+
+.calday.work:hover {
+  background: var(--pri-soft);
+  border-color: var(--pri);
+}
+
+.calday.off {
+  background: var(--fail);
+  border-color: var(--fail);
+  color: #fff;
+}
+
+.calday.off:hover { background: #be123c; }
+
+/* วันอาทิตย์ที่หยุด = หยุดประจำ ไม่ต้องเน้นสีแดง (ยังคลิกสลับเป็นวันทำงานได้) */
+.calday.sun {
+  background: #f1f2f8;
+  border-color: #e4e6f0;
+  color: #9aa0bb;
+}
+
+.calday.sun:hover {
+  border-color: var(--pri);
+  color: var(--pri);
+}
+
+.calday.pending {
+  outline: 2px solid var(--run);
+  outline-offset: -2px;
+}
+
+.calday.today {
+  box-shadow: 0 0 0 2px var(--pri);
+}
+
+.calday.missing,
+.calday.out {
+  color: #c9cbd8;
+  background: transparent;
+  cursor: default;
+}
+
+.calday.missing { background: var(--line-soft); }
+
+/* ---------------- แผงวันทำงานตามกลุ่มเครื่อง ---------------- */
+.wdtoggle {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wdtoggle.on {
+  background: var(--pri-soft);
+  color: var(--pri-d);
+  border-color: var(--pri);
+}
+
+.wdpanel {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  padding: 14px;
+}
+
+.wdbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.wdtitle {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.wdpanel .msg.err { background: #fef2f2; color: var(--fail); border: 1px solid #fecaca; }
+.wdpanel .msg.ok  { background: #f0fdf4; color: var(--ok); border: 1px solid #bbf7d0; }
+
+.wdbody {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .wdbody { grid-template-columns: 1fr; }
+}
+
+.wdsearch {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.wdglist {
+  max-height: 420px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wdgitem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafbff;
+  cursor: pointer;
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.wdgitem:hover { border-color: var(--pri); background: var(--pri-soft); }
+.wdgitem.on { background: linear-gradient(120deg, var(--pri), #6366f1); color: #fff; border-color: transparent; }
+.wdgitem.on .wdgdef { color: #fff; }
+.wdgname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wdgdef { color: var(--muted); font-weight: 600; white-space: nowrap; }
+
+/* tree: Factory → MC_CAT → Guage (ยุบ-กางได้ + เลือกหลายกลุ่ม) */
+.wdfac { display: flex; flex-direction: column; gap: 3px; }
+.wdcat { display: flex; flex-direction: column; gap: 3px; margin-left: 10px; }
+.wdhdr {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 8px; border-radius: 7px; cursor: pointer;
+  background: #eef1fb; font-size: 12.5px; font-weight: 700; color: var(--ink);
+  user-select: none;
+}
+.wdhdr:hover { background: var(--pri-soft); }
+.wdhdr.sub { background: #f4f5fb; font-weight: 600; font-size: 12px; }
+.wdtree-toggle { width: 12px; color: var(--muted); font-size: 10px; }
+.wdhdrname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wdhdrcount {
+  min-width: 18px; text-align: center; font-size: 10.5px; font-weight: 700;
+  color: var(--muted); background: #fff; border-radius: 9px; padding: 1px 6px;
+}
+.wdchk { width: 15px; height: 15px; cursor: pointer; accent-color: var(--pri); flex: none; }
+.wditemrow { display: flex; align-items: center; gap: 7px; margin-left: 20px; }
+.wditemrow .wdgitem { flex: 1; }
+
+.wdseltitle {
+  font-size: 12.5px; font-weight: 700; color: var(--pri);
+  margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line);
+}
+
+/* ยุบสัปดาห์ — ระดับปฏิทินรวม (ใช้ทั้งระบบ) */
+.wdmergecal {
+  margin-bottom: 12px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: #fafbff;
+}
+.wdmergehead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; font-size: 13px; color: var(--ink); }
+.wdmgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); gap: 5px; }
+.wdmcell {
+  display: flex; flex-direction: column; gap: 4px; align-items: center;
+  padding: 5px 4px; border: 1px solid var(--line); border-radius: 7px; background: #fff;
+}
+.wdmcell.merged { background: #fff7ed; border-color: #fed7aa; }
+.wdmcell.recv { background: #ecfdf5; border-color: #a7f3d0; }
+.wdmwk { display: flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 700; color: var(--ink); }
+.wdmwk .tag { font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 5px; }
+.wdmwk .tag.o { background: #ffedd5; color: #c2410c; }
+.wdmwk .tag.e { background: #d1fae5; color: #047857; }
+
+.wddefault {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.wddefault input {
+  width: 70px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  text-align: right;
+}
+
+.wdwkgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 6px;
+  max-height: 380px;
+  overflow-y: auto;
+}
+
+.wdwk {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 6px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wdwk.chg { border-color: var(--run); background: #fffbeb; }
+.wdwk.merged { background: #fff7ed; border-color: #fed7aa; }
+.wdwk.recv { background: #ecfdf5; border-color: #a7f3d0; }
+
+.wdwkh {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.wdwkh .tag { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 6px; }
+.wdwkh .tag.o { background: #ffedd5; color: #c2410c; }
+.wdwkh .tag.e { background: #d1fae5; color: #047857; }
+
+.wdwk input {
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  text-align: right;
+  font-size: 12px;
+}
+
+.wdwk input:disabled { background: #f3f4f6; cursor: not-allowed; }
+
+.wdmerge { display: flex; gap: 4px; }
+.wdmerge button {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.wdmerge button:hover:not(:disabled) { border-color: #fb923c; color: #ea580c; background: #fff7ed; }
+.wdmerge button.on { background: #f97316; color: #fff; border-color: #f97316; }
+.wdmerge button:disabled { opacity: .3; cursor: default; }
+
+.wdsave {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.wdsave .hint { margin-right: auto; }
+.wdsave button { padding: 7px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid var(--line); background: #fff; }
+.wdsave button.primary { background: linear-gradient(120deg, var(--pri), #6366f1); color: #fff; border-color: transparent; }
+
+.wdnote { margin-top: 8px; }
+
 @keyframes modalpop {
   from { opacity: 0; transform: translateY(-8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+/* ---------- Lock_MC: มุมมองการ์ด "กันเครื่อง" ---------- */
+.lockview { margin-top: 12px; }
+
+.lockbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  font-size: 13px;
+  color: var(--muted);
+}
+.lockbar .lktotal { color: var(--ink); font-size: 14px; }
+.lockbar .lktotal b { color: var(--pri-d); font-size: 15px; }
+.lockbar .lktotal b.lknum { color: var(--run); }
+.lockbar .lkhint { flex: 1; min-width: 180px; }
+.lkaddbtn {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 9px;
+  background: linear-gradient(120deg, var(--pri), #6366f1);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+.lkaddbtn:hover { filter: brightness(1.05); }
+
+.lockempty {
+  margin-top: 14px;
+  padding: 26px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+.lockcards {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.lockcard {
+  position: relative;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--pri);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+.lockcard.dup { border-left-color: var(--run); }
+
+.lkdel {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+}
+.lkdel:hover { background: #fff1f3; border-color: var(--fail); color: var(--fail); }
+
+.lkrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.lkrow:last-of-type { margin-bottom: 0; }
+
+.lkfield { display: flex; flex-direction: column; gap: 4px; }
+.lkfield > span { font-size: 11px; color: var(--muted); font-weight: 600; }
+.lkfield.grow { flex: 1; min-width: 120px; }
+.lkfield.gauge { width: 90px; }
+.lkfield.note { width: 130px; }
+
+.lkfield input {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--ink);
+  width: 100%;
+}
+.lkfield input:focus {
+  outline: none;
+  border-color: var(--pri);
+  box-shadow: 0 0 0 3px var(--pri-ring);
+}
+.lkfield input.chg { background: #fffbeb; border-color: #f5c451; }
+
+.lkfield select.lksel {
+  padding: 7px 30px 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--ink);
+  width: 100%;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7090' d='M2 4l4 4 4-4z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+}
+.lkfield select.lksel:focus {
+  outline: none;
+  border-color: var(--pri);
+  box-shadow: 0 0 0 3px var(--pri-ring);
+}
+.lkfield select.lksel.chg { background-color: #fffbeb; border-color: #f5c451; }
+.lkfield select.lksel.wk { font-weight: 700; color: var(--pri-d); text-align: center; }
+
+.lkfield.wk { width: 96px; }
+.lkfield.wk .wkbox {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+.lkfield.wk .wkbox:focus-within { border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-ring); }
+.lkfield.wk .wprefix {
+  padding: 7px 8px;
+  background: var(--pri-soft);
+  color: var(--pri-d);
+  font-weight: 700;
+  font-size: 13px;
+}
+.lkfield.wk .wkbox input { border: 0; border-radius: 0; }
+.lkfield.wk .wkbox input:focus { box-shadow: none; }
+
+.lkfield.qty { width: 120px; }
+.lkfield.qty input.big {
+  font-size: 20px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--run);
+}
+
+.lkwarn {
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #b45309;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.lkwarn b { color: #9a3412; }
+
+.lkfield.item > span { color: var(--pri-d); }
+.lkfield.item input {
+  border-color: #c7d2fe;
+  background: #f5f7ff;
+}
+.lkfield.item input:focus { background: #fff; }
+
+.lockitemnote {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px dashed #c7d2fe;
+  border-radius: 10px;
+  background: var(--pri-soft);
+  color: var(--pri-d);
+  font-size: 13px;
+  line-height: 1.5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.lkitembtn {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--pri);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.lkitembtn:hover { background: var(--pri-d); }
+
+/* ---------------- มุมมองชีทกลุ่ม S9 (จ้างทอ) ---------------- */
+.s9view { margin-top: 12px; }
+
+.s9bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  font-size: 13px;
+  color: var(--muted);
+}
+.s9bar .s9total { color: var(--ink); font-size: 14px; }
+.s9bar .s9total b { color: var(--pri-d); font-size: 15px; }
+.s9bar .s9total b.s9num { color: var(--run); }
+.s9bar .s9hint { flex: 1; min-width: 160px; }
+.s9bar .s9warn {
+  padding: 5px 12px;
+  border-radius: 8px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #b45309;
+  font-size: 13px;
+}
+.s9bar .s9warn b { color: #9a3412; }
+.s9search {
+  flex: 1;
+  min-width: 200px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--ink);
+}
+.s9search:focus { outline: none; border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-ring); }
+.s9count { white-space: nowrap; }
+.s9count b { color: var(--pri-d); }
+.s9addbtn {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 9px;
+  background: linear-gradient(120deg, var(--pri), #6366f1);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: var(--shadow-sm);
+}
+.s9addbtn:hover { filter: brightness(1.05); }
+
+.s9empty {
+  margin-top: 14px;
+  padding: 26px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+/* MC S9 — การ์ด pool เครื่อง */
+.s9cards {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+.s9card {
+  position: relative;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--pri);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+.s9cardhead, .s9cardbody { display: flex; flex-wrap: wrap; gap: 10px; }
+.s9cardhead { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--line-soft); padding-right: 30px; }
+.s9field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 78px; }
+.s9field > span { font-size: 11px; color: var(--muted); font-weight: 600; }
+.s9field input {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--ink);
+  width: 100%;
+}
+.s9field input:focus { outline: none; border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-ring); }
+.s9field input.chg { background: #fffbeb; border-color: #f5c451; }
+
+.s9del {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  flex: none;
+}
+.s9del:hover { background: #fff1f3; border-color: var(--fail); color: var(--fail); }
+
+/* Item S9 / S9 Only — รายการแบบค้นหา */
+.s9rows {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 62vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.s9row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.s9row.newrow { border-color: #f5c451; background: #fffdf5; }
+.s9row input {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--ink);
+}
+.s9row input:focus { outline: none; border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-ring); }
+.s9row input.chg { background: #fffbeb; border-color: #f5c451; }
+.s9row .s9item { flex: 1; min-width: 140px; font-weight: 600; }
+.s9row .s9mg { width: 150px; }
+.s9row .s9g { width: 80px; }
+.s9row .s9del { position: static; }
+
+.s9more {
+  margin-top: 10px;
+  width: 100%;
+  padding: 9px;
+  border: 1px dashed var(--line);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--pri-d);
+  font-weight: 600;
+  cursor: pointer;
+}
+.s9more:hover { background: var(--pri-soft); }
+
+/* ---------------- มุมมองชีท config เล็ก (MC Special / Item Special / Spare / substitute) ---------------- */
+.cfgview { margin-top: 12px; }
+
+.cfgbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  font-size: 13px;
+  color: var(--muted);
+}
+.cfgbar .cfgtotal { color: var(--ink); font-size: 14px; }
+.cfgbar .cfgtotal b { color: var(--pri-d); }
+.cfgbar .cfgtotal b.cfgnum { color: var(--run); font-size: 15px; }
+.cfgbar .cfghint { flex: 1; min-width: 160px; }
+.cfgsearch {
+  flex: 1;
+  min-width: 200px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--ink);
+}
+.cfgsearch:focus { outline: none; border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-ring); }
+.cfgaddbtn {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 9px;
+  background: linear-gradient(120deg, var(--pri), #6366f1);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: var(--shadow-sm);
+}
+.cfgaddbtn:hover { filter: brightness(1.05); }
+
+.cfgempty {
+  margin-top: 14px;
+  padding: 26px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+/* การ์ด */
+.cfgcards {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+.cfgcard {
+  position: relative;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--pri);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+.cfgline { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+.cfgline:last-child { margin-bottom: 0; }
+.cfgline.nums { gap: 12px; }
+.cfgfield { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 72px; }
+.cfgfield > span { font-size: 11px; color: var(--muted); font-weight: 600; }
+.cfgfield input {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--ink);
+  width: 100%;
+}
+.cfgfield input:focus { outline: none; border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-ring); }
+.cfgfield input.chg { background: #fffbeb; border-color: #f5c451; }
+.cfgfield.title { margin-bottom: 10px; padding-right: 30px; }
+.cfgfield.title > span { color: var(--pri-d); }
+.cfgfield.title input { font-size: 16px; font-weight: 700; }
+.cfgfield.note { margin-top: 4px; }
+.cfgfield.num input.big { font-size: 20px; font-weight: 700; text-align: center; color: var(--pri-d); }
+.cfgfield.num.poly input.big { color: #2563eb; }
+.cfgfield.num.cotton input.big { color: #059669; }
+
+.cfgdel {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  flex: none;
+}
+.cfgdel:hover { background: #fff1f3; border-color: var(--fail); color: var(--fail); }
+
+/* Spare part — ลิสต์จัดกลุ่ม */
+.cfgrows { margin-top: 12px; max-height: 62vh; overflow-y: auto; padding-right: 4px; }
+.cfggroup { margin-bottom: 14px; }
+.cfggrouphead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  background: var(--pri-soft);
+  color: var(--pri-d);
+  font-weight: 700;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.cfggrouphead .cfggcount { font-weight: 500; color: var(--muted); margin-left: 6px; }
+.cfgrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  margin-bottom: 6px;
+}
+.cfgrow.newrow { border-color: #f5c451; background: #fffdf5; }
+.cfgcell {
+  flex: 1;
+  min-width: 90px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--ink);
+}
+.cfgcell:focus { outline: none; border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-ring); }
+.cfgcell.chg { background: #fffbeb; border-color: #f5c451; }
+.cfgsparebox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.cfgsparebox > span { font-size: 11px; color: var(--muted); font-weight: 600; }
+.cfgsparebox input.big {
+  width: 66px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--run);
+  background: #fff;
+}
+.cfgsparebox input.big:focus { outline: none; border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-ring); }
+.cfgsparebox input.big.chg { background: #fffbeb; border-color: #f5c451; }
+
+/* ---------------- มุมมองค้นหาชีทใหญ่ (Master_Item ฯลฯ) ---------------- */
+.lkupview { margin-top: 12px; }
+.lkupbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+.lkupsearch {
+  flex: 1;
+  min-width: 220px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--ink);
+}
+.lkupsearch:focus { outline: none; border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-ring); }
+.lkupcount { white-space: nowrap; font-size: 13px; color: var(--muted); }
+.lkupcount b { color: var(--pri-d); }
+.lkupaddbtn {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 9px;
+  background: linear-gradient(120deg, var(--pri), #6366f1);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: var(--shadow-sm);
+}
+.lkupaddbtn:hover { filter: brightness(1.05); }
+.lkuphint {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.lkuprows { margin-top: 12px; max-height: 64vh; overflow: auto; }
+.lkuphead, .lkuprow { display: flex; gap: 8px; align-items: center; }
+.lkuphead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 8px;
+  background: var(--pri-soft);
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+.lkuphcell {
+  flex: 1;
+  min-width: 120px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--pri-d);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lkuphact { width: 26px; flex: none; }
+.lkuprow {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  margin-bottom: 6px;
+}
+.lkuprow.newrow { border-color: #f5c451; background: #fffdf5; }
+.lkupcell {
+  flex: 1;
+  min-width: 120px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--ink);
+}
+.lkupcell:focus { outline: none; border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-ring); }
+.lkupcell.chg { background: #fffbeb; border-color: #f5c451; }
+.lkupdel {
+  width: 26px;
+  height: 30px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+}
+.lkupdel:hover { background: #fff1f3; border-color: var(--fail); color: var(--fail); }
+.lkupempty {
+  padding: 26px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.lkupmore {
+  margin-top: 10px;
+  width: 100%;
+  padding: 9px;
+  border: 1px dashed var(--line);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--pri-d);
+  font-weight: 600;
+  cursor: pointer;
+}
+.lkupmore:hover { background: var(--pri-soft); }
+
+/* ---------------- Master MC: ตารางตรึงคีย์ + คั่นกลุ่ม Factory ---------------- */
+.mmcview { margin-top: 12px; }
+.mmcbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 10px;
+}
+.mmcbar .mmctotal { font-size: 14px; color: var(--ink); }
+.mmcbar .mmctotal b { color: var(--pri-d); }
+.mmcbar .mmctotal b.mmcnum { color: var(--run); font-size: 15px; }
+.mmcsearch {
+  flex: 1;
+  min-width: 200px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--ink);
+}
+.mmcsearch:focus { outline: none; border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-ring); }
+.mmcaddbtn {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 9px;
+  background: linear-gradient(120deg, var(--pri), #6366f1);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: var(--shadow-sm);
+}
+.mmcaddbtn:hover { filter: brightness(1.05); }
+
+.mmcwrap {
+  overflow: auto;
+  max-height: 66vh;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.mmctable {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+.mmctable th, .mmctable td {
+  border-bottom: 1px solid var(--line-soft);
+  border-right: 1px solid var(--line-soft);
+  padding: 0;
+  background: var(--panel);
+  white-space: nowrap;
+}
+.mmctable thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 7px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--pri-d);
+  background: var(--pri-soft);
+  text-align: left;
+}
+/* คอลัมน์คีย์ที่ตรึงซ้าย (left มาจาก inline style) */
+.mmctable td.mmcfrz, .mmctable th.mmcfrz {
+  position: sticky;
+  z-index: 1;
+  box-shadow: 1px 0 0 var(--line);
+}
+.mmctable thead th.mmcfrz { z-index: 3; }
+.mmctable .mmcrownum {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 44px;
+  min-width: 44px;
+  text-align: center;
+  color: var(--muted);
+  padding: 4px 6px;
+  background: var(--bg);
+}
+.mmctable thead th.mmcrownum { z-index: 3; background: var(--pri-soft); }
+.mmctable tbody tr.newrow td { background: #fffdf5; }
+.mmctable tbody tr.newrow td.mmcrownum { background: #fdf6d8; }
+
+.mmctable td input {
+  width: 100%;
+  border: 0;
+  padding: 6px 8px;
+  font-size: 13px;
+  background: transparent;
+  color: var(--ink);
+}
+.mmctable td input:focus {
+  outline: none;
+  background: #fff;
+  box-shadow: inset 0 0 0 2px var(--pri);
+}
+.mmctable td input.chg { background: #fffbeb; }
+
+.mmctable .mmcgrouprow td { background: transparent; border-right: 0; padding: 0; }
+.mmcgroupcell { padding: 0 !important; }
+.mmcgroupinner {
+  position: sticky;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  margin: 8px 0 2px;
+  font-weight: 700;
+  color: var(--ink);
+  font-size: 13px;
+}
+.mmcgroupinner .mmcgcount { font-weight: 500; color: var(--muted); }
+
+.mmctable .mmcact { width: 34px; min-width: 34px; text-align: center; border-right: 0; }
+.mmcdel {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+}
+.mmcdel:hover { background: #fff1f3; border-color: var(--fail); color: var(--fail); }

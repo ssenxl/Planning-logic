@@ -12,9 +12,14 @@ outsource_advisor.py — แนะนำว่า item ไหน "คุ้ม�
 คัดเฉพาะ item ที่ "จ้างทอได้จริง" (S9 eligible / S9 only จาก MasterMC) เท่านั้น
 """
 import json
+from datetime import datetime
 
 import config
 import plan_view
+
+# ไฟล์การแบ่งงานไปจ้างทอที่ user ยืนยัน — Planning.py อ่านไฟล์นี้ตอนรันแผน (ดู _load_outsource_split)
+# ค้างอยู่จนกว่า user จะลบเอง (งานที่ส่งไปจ้างทอแล้ว แผนรอบถัดไปต้องไม่ดึงกลับมาทอในบ้าน)
+SPLIT_FILE = config.OUTPUT_DIR / "outsource_split.json"
 
 # น้ำหนักคะแนน (ใช้ shortlist เบื้องต้นก่อนส่งให้ LLM จัดอันดับสุดท้าย)
 _W_LATE = 10.0        # ต่อสัปดาห์ที่สาย
@@ -83,6 +88,107 @@ def _load_s9_eligibility() -> tuple:
     return s9_only, s9_elig
 
 
+def load_split() -> dict:
+    """การแบ่งจ้างทอที่บันทึกไว้ → { ITEM: {"outsource_qty":float,"start_week":int|None,"at":str} }"""
+    if not SPLIT_FILE.exists():
+        return {}
+    try:
+        data = json.loads(SPLIT_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    items = data.get("items") or {}
+    return {str(k).strip().upper(): v for k, v in items.items() if isinstance(v, dict)}
+
+
+def _write_split(items: dict) -> None:
+    SPLIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SPLIT_FILE.write_text(
+        json.dumps({"items": items}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def save_split(item_code: str, outsource_qty, start_week, user: str = "") -> dict:
+    """บันทึก/แก้การแบ่งจ้างทอของ item หนึ่ง (qty ≤ 0 = ลบรายการนั้น)"""
+    item = str(item_code).strip().upper()
+    if not item:
+        raise ValueError("ไม่ได้ระบุ item")
+    qty = _to_num(outsource_qty)
+    items = load_split()
+    if qty <= 0:
+        items.pop(item, None)
+        _write_split(items)
+        return {"ok": True, "removed": item, "items": items}
+
+    wk = _to_int(start_week)
+    if wk is None:
+        raise ValueError("ต้องระบุสัปดาห์ที่จ้างทอ")
+
+    # จ้างทอเกินของค้างจริงไม่ได้ (ค้างรวมของ item จากแผนล่าสุด)
+    pending = pending_by_item().get(item)
+    if pending is not None and qty > pending + 1e-6:
+        raise ValueError(f"จ้างทอ {qty:,.0f} กก. เกินของค้างของ {item} ({pending:,.0f} กก.)")
+
+    items[item] = {
+        "outsource_qty": round(qty, 2),
+        "start_week": wk,
+        "at": datetime.now().isoformat(timespec="seconds"),
+        "by": user or "",
+    }
+    _write_split(items)
+    return {"ok": True, "saved": item, "items": items}
+
+
+def delete_split(item_code: str) -> dict:
+    items = load_split()
+    items.pop(str(item_code).strip().upper(), None)
+    _write_split(items)
+    return {"ok": True, "items": items}
+
+
+def pending_by_item(grid: dict = None) -> dict:
+    """ปริมาณค้างผลิตรวมต่อ item จากชีท PLAN ของแผนล่าสุด → {ITEM: qty}
+
+    ⚠️ PLAN_QTY ของแต่ละแถว = ของที่ "ยังเหลือหลังแถวนี้" (ลดลงเรื่อยๆ ตามสัปดาห์)
+    ห้ามบวกรวมทุกแถว (จะนับซ้ำ) — ของค้างจริงต่อ order = ค่าสูงสุดของ (PLAN_QTY + PRODUCE_QTY)
+    คือยอดก่อนผลิตแถวแรก แล้วค่อยรวมทุก order (SC/SO) ของ item นั้น"""
+    if grid is None:
+        try:
+            grid = plan_view.read_grid()
+        except Exception:
+            return {}
+    cols, rows = grid.get("columns", []), grid.get("rows", [])
+    i_item = _col_index(cols, "ITEM_CODE")
+    i_qty = _col_index(cols, "PLAN_QTY", "PENDING_PLAN")
+    i_prod = _col_index(cols, "PRODUCE_QTY")
+    i_sc = _col_index(cols, "SC_SO_NO")
+    if i_item < 0 or i_qty < 0:
+        return {}
+    by_order: dict = {}
+    for r in rows:
+        if max(i_item, i_qty) >= len(r):
+            continue
+        item = str(r[i_item]).strip().upper()
+        if not item:
+            continue
+        sc = str(r[i_sc]).strip() if 0 <= i_sc < len(r) else ""
+        prod = _to_num(r[i_prod]) if 0 <= i_prod < len(r) else 0.0
+        total = _to_num(r[i_qty]) + prod
+        key = (item, sc)
+        by_order[key] = max(by_order.get(key, 0.0), total)
+    out: dict = {}
+    for (item, _sc), qty in by_order.items():
+        out[item] = out.get(item, 0.0) + qty
+    return out
+
+
+def plan_weeks() -> list:
+    """สัปดาห์ที่วางแผนจ้างทอได้ (จากเครื่องว่างของแผนล่าสุด) — ให้ frontend ทำ dropdown"""
+    try:
+        weeks = [int(w) for w in plan_view.ava_by_week().keys()]
+    except Exception:
+        return []
+    return sorted(set(weeks))
+
+
 def _col_index(columns, *names):
     """หา index คอลัมน์แรกที่ชื่อ (upper) ตรงกับ names — คืน -1 ถ้าไม่พบ"""
     up = [str(c).strip().upper() for c in columns]
@@ -116,6 +222,8 @@ def gather_candidates() -> dict:
 
     s9_only, s9_elig = _load_s9_eligibility()
     ava = plan_view.ava_by_week()  # {week: {"CAT|GUAGE": {"remain":..}}}
+    # ของค้างจริงต่อ item (ห้ามบวก PLAN_QTY ทุกแถว — นับซ้ำ ดู pending_by_item)
+    pending = pending_by_item(grid)
 
     agg: dict = {}
     for r in rows:
@@ -132,7 +240,6 @@ def gather_candidates() -> dict:
         week = _to_int(r[i_week]) if i_week < len(r) else None
         rdd = _to_int(r[i_rdd]) if 0 <= i_rdd < len(r) else None
         cat = str(r[i_cat]).strip() if 0 <= i_cat < len(r) else ""
-        qty = _to_num(r[i_qty]) if 0 <= i_qty < len(r) else 0.0
         cust = str(r[i_cust]).strip() if 0 <= i_cust < len(r) else ""
         mcg = str(r[i_mcg]).strip() if 0 <= i_mcg < len(r) else ""
 
@@ -151,7 +258,7 @@ def gather_candidates() -> dict:
             "mc_group": mcg, "qty": 0.0, "late_weeks": 0, "shortage": 0,
             "s9_only": item in s9_only, "weeks": set(),
         })
-        a["qty"] += qty
+        a["qty"] = pending.get(item, 0.0)
         a["late_weeks"] = max(a["late_weeks"], late)
         a["shortage"] = max(a["shortage"], shortage)
         if week is not None:
@@ -182,8 +289,17 @@ def gather_candidates() -> dict:
         })
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
+
+    # แนบการแบ่งจ้างทอที่ user บันทึกไว้ (ให้ช่องกรอกในหน้าเว็บโชว์ค่าที่ใช้อยู่)
+    split = load_split()
+    for c in candidates:
+        s = split.get(c["item_code"]) or {}
+        c["outsource_qty"] = _to_num(s.get("outsource_qty"))
+        c["start_week"] = _to_int(s.get("start_week"))
+
     return {"plan_name": plan_name, "candidates": candidates[:_MAX_SHORTLIST],
-            "total_eligible": len(candidates), "note": ""}
+            "total_eligible": len(candidates), "note": "",
+            "split": split, "weeks": plan_weeks()}
 
 
 _SYSTEM_PROMPT = (
@@ -216,13 +332,14 @@ def _call_llm(candidates: list) -> dict:
         "รายการ item ที่จ้างทอได้และมีแรงกดดัน (คำนวณตัวเลขมาแล้ว) — โปรดจัดอันดับความคุ้มค่า:\n"
         + json.dumps(candidates, ensure_ascii=False)
     )
+    # ไม่ส่ง temperature — โมเดลรุ่นใหม่ (เช่น gpt-5.x) รับเฉพาะค่า default และจะ error 400
+    # ทำให้ตกไปใช้ fallback เงียบๆ ทั้งที่ AI ใช้งานได้
     resp = client.chat.completions.create(
         model=cfg["model"],
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
         ],
-        temperature=0.2,
         response_format={"type": "json_object"},
     )
     content = resp.choices[0].message.content
@@ -265,4 +382,5 @@ def advise() -> dict:
 
     return {"plan_name": base["plan_name"], "candidates": cands,
             "total_eligible": base.get("total_eligible", len(cands)),
-            "summary": summary, "ai": ai_ok, "note": note}
+            "summary": summary, "ai": ai_ok, "note": note,
+            "split": base.get("split", {}), "weeks": base.get("weeks", [])}

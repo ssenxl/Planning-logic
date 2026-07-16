@@ -64,7 +64,11 @@ export default function App() {
       </header>
       <main className="content">
         {tab === 'dashboard' && <Dashboard />}
-        {tab === 'plan' && <KnitPlan />}
+        {/* หน้าแผนผลิต mount ค้างไว้เสมอ ซ่อนด้วย CSS ตอนไม่ได้อยู่ tab นี้
+            เพื่อไม่ให้ state (แผนที่แก้ค้าง + filter) หายเมื่อสลับ tab */}
+        <div style={{ display: tab === 'plan' ? undefined : 'none' }}>
+          <KnitPlan active={tab === 'plan'} />
+        </div>
         {tab === 'data' && <Data />}
         {tab === 'order-color' && <OrderColor />}
         {tab === 'masters' && <Masters />}

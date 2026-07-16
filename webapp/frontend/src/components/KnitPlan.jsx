@@ -1,8 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api.js'
-import { ColumnFilter, columnFilterData, filterRows, norm } from './ColumnFilter.jsx'
+import {
+  ColumnFilter, columnFilterData, filterRows, norm,
+  ROWNUM_W, isIdName, numericCols, fmtNum, autoColWidths, makeColResizer,
+} from './ColumnFilter.jsx'
+import { makeWorkDayResolver } from '../workday.js'
 import PlanGantt from './PlanGantt.jsx'
 import OutsourceAdvisor from './OutsourceAdvisor.jsx'
+import CylinderAdvisor from './CylinderAdvisor.jsx'
+
+// คอลัมน์ที่มี dropdown กรองด่วนบนแถบค้นหา (ใช้ตัวกรองชุดเดียวกับปุ่ม ▾ ที่หัวคอลัมน์)
+const QUICK_COLS = [
+  { col: 'CAT', label: 'CAT' },
+  { col: 'MC_GUAGE', label: 'เกจ' },
+]
 
 function fmtSize(b) {
   if (b < 1024) return b + ' B'
@@ -14,7 +25,7 @@ function fmtTime(ts) {
   return new Date(ts * 1000).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-export default function KnitPlan() {
+export default function KnitPlan({ active = true }) {
   const [meta, setMeta] = useState(null)         // ข้อมูลไฟล์แผนล่าสุด
   const [grid, setGrid] = useState(null)          // { sheet, sheets, columns, rows, name, mtime }
   const [loading, setLoading] = useState(false)
@@ -24,15 +35,22 @@ export default function KnitPlan() {
   const [search, setSearch] = useState('')
   const [filters, setFilters] = useState({})
   const [openCol, setOpenCol] = useState(null)
+  const [colW, setColW] = useState({})       // ความกว้างคอลัมน์ (ผู้ใช้ลากปรับได้)
+  const [editKey, setEditKey] = useState(null) // ช่องที่กำลังแก้ (โชว์ค่าดิบไม่มี comma)
   const [runStatus, setRunStatus] = useState({})
   const [showGantt, setShowGantt] = useState(true)
   const [showOutsource, setShowOutsource] = useState(false)
+  const [showCylinder, setShowCylinder] = useState(false)
   const [load, setLoad] = useState({})
   const [ava, setAva] = useState({})
+  // map เครื่อง→พูล (เช่น SKP vs SKPTA/SKPLE) สำหรับหา ava/reserved ต่อพูล
+  const [poolMap, setPoolMap] = useState({})
   // เครื่องที่ booking ถักไอเทมนั้นอยู่แล้ว ต่อ (สัปดาห์ × ITEM|MC_GROUP|GUAGE)
   const [bookingMc, setBookingMc] = useState({})
   // วันทำงานตามปฏิทินต่อสัปดาห์ — ใช้คำนวณเครื่องใหม่เมื่อลากงานข้ามสัปดาห์
   const [weekDays, setWeekDays] = useState({})
+  // payload วันทำงานตามกลุ่มเครื่อง (ชีท Work Day) — ใช้คำนวณวันทำงานราย (mc,gauge,week) ตอนลากงาน
+  const [workdayData, setWorkdayData] = useState(null)
   const prevRunning = useRef(false)
 
   async function loadMeta() {
@@ -48,8 +66,10 @@ export default function KnitPlan() {
   }
   async function loadAva() {
     try { setAva(await api.planAva()) } catch { setAva({}) }
+    try { setPoolMap(await api.planPoolMap()) } catch { setPoolMap({}) }
     try { setBookingMc(await api.planBookingMc()) } catch { setBookingMc({}) }
     try { setWeekDays(await api.planWeekDays()) } catch { setWeekDays({}) }
+    try { setWorkdayData(await api.workday()) } catch { setWorkdayData(null) }
   }
   async function loadSheet(sheet) {
     setLoading(true); setMsg('')
@@ -76,9 +96,15 @@ export default function KnitPlan() {
     loadRunStatus()
     loadLoad()
     loadAva()
+  }, [])
+
+  // polling สถานะการรัน — ทำงานเฉพาะตอนหน้าแผนถูกแสดง (active) เพื่อไม่ให้เปลืองตอนถูกซ่อน
+  useEffect(() => {
+    if (!active) return
+    loadRunStatus()
     const t = setInterval(loadRunStatus, 2000)
     return () => clearInterval(t)
-  }, [])
+  }, [active])
 
   // เมื่อรัน (โหมด plan) เสร็จ → โหลดแผนล่าสุดใหม่อัตโนมัติ
   useEffect(() => {
@@ -147,24 +173,25 @@ export default function KnitPlan() {
     setGrid(g => ({ ...g, rows: g.rows.filter((_, i) => i !== ri) }))
     setDirty(true)
   }
-  // วันทำงานจริงของแถวในสัปดาห์ w — ตรงกับ get_working_days_by_factory() ใน Planning.py
-  //   w == 17        → 8 วัน
-  //   w == 32        → WD_W32 (ต่อเครื่อง จาก REMARK ใน MasterMC)
-  //   นอกนั้น        → max(1, WD_BASE − max(0, 6 − วันทำงานตามปฏิทินของ w))
-  function actualWdAt(gv, w) {
-    const cal = Number(weekDays?.[String(w)]) || 0
-    if (!gv('WD_BASE') || !cal) return null   // ไฟล์แผนเก่าไม่มีข้อมูล
-    if (w === 17) return 8
-    if (w === 32) return gv('WD_W32')
-    return Math.max(1, gv('WD_BASE') - Math.max(0, 6 - cal))
+  // resolver วันทำงานราย (mc_group, gauge, week) จากชีท Work Day (แหล่งเดียว — user ปรับเอง)
+  // ตรงกับ WorkDay.get_working_days() ใน backend: ไม่มีกฎ 17/32, ไม่หักวันหยุด, รวมยุบสัปดาห์
+  const wdResolver = useMemo(
+    () => (workdayData ? makeWorkDayResolver(workdayData, (w) => Number(weekDays?.[String(w)]) || 0) : null),
+    [workdayData, weekDays]
+  )
+
+  // วันทำงานจริงของแถวในสัปดาห์ w — อ่านจากชีท Work Day ตาม (MC_GROUP, MC_GUAGE) ของแถว
+  function actualWdAt(mc, gauge, w) {
+    if (!wdResolver) return null            // ยังโหลด workday ไม่เสร็จ
+    return wdResolver.workDays(mc, gauge, w)
   }
 
   // กำลังผลิตของแถวถ้าอยู่สัปดาห์ w (กก.) โดยใช้เครื่องชุดเดิมที่แถวถืออยู่
   //   เครื่อง carry ได้วันทำงานเต็ม / เครื่อง setup ใหม่ได้ (วันทำงาน − setup ต่อเครื่อง)
   // ⚠️ ห้ามคำนวณ ACTUAL_MC ใหม่จาก PRODUCE_QTY — เครื่อง carry ถูกกำหนดโดยสัปดาห์ก่อนหน้า
   //    และอาจถือเครื่องเกินที่งานต้องการ ตัวเลขที่ถูกต้องต้องรันแผนใหม่เท่านั้น
-  function capacityAt(gv, w) {
-    const awd = actualWdAt(gv, w)
+  function capacityAt(gv, mc, gauge, w) {
+    const awd = actualWdAt(mc, gauge, w)
     if (awd == null) return null
     const n = gv('NEW_MC'), c = gv('CARRYOVER_MC')
     const setupPerMc = n > 0 ? gv('SETUP_DAYS') / n : 0
@@ -176,16 +203,18 @@ export default function KnitPlan() {
   function recalcRowForWeek(row, cols, week) {
     const ix = (n) => cols.indexOf(n)
     const gv = (n) => { const k = ix(n); return k >= 0 ? (Number(norm(row[k])) || 0) : 0 }
+    const gs = (n) => { const k = ix(n); return k >= 0 ? norm(row[k]) : '' }
     const set = (n, v) => { const k = ix(n); if (k >= 0) row[k] = v }
 
     const w = Number(week)
-    const awd = actualWdAt(gv, w)
+    const mc = gs('MC_GROUP'), gauge = gs('MC_GUAGE')
+    const awd = actualWdAt(mc, gauge, w)
     if (awd == null) return
     const n = gv('NEW_MC')
     const avail = n > 0 ? Math.max(0.5, awd - gv('SETUP_DAYS') / n) : awd
 
     set('CALENDAR_WORKING_DAYS', Number(weekDays[String(w)]) || 0)
-    set('FACTORY_WORKING_DAYS', w === 17 ? 8 : w === 32 ? gv('WD_W32') : gv('WD_BASE'))
+    set('FACTORY_WORKING_DAYS', wdResolver ? wdResolver.workDays(mc, gauge, null) : awd)
     set('ACTUAL_WORKING_DAYS', awd)
     set('AVAILABLE_DAYS', avail)
 
@@ -212,11 +241,12 @@ export default function KnitPlan() {
     const crossMc = mcGroup && mci >= 0 && String(mcGroup).trim().toUpperCase() !== curMc.trim().toUpperCase()
     if (crossMc && !window.confirm(`ยืนยันย้ายงาน ${item} จากเครื่อง ${curMc} → ${mcGroup} (สัปดาห์ ${week})?`)) return
 
-    // วันทำงานแต่ละสัปดาห์ไม่เท่ากัน (W32 = 10 วัน, W33 = 5 วัน) → เครื่องชุดเดิมอาจผลิตไม่ทัน
+    // วันทำงานแต่ละสัปดาห์ไม่เท่ากัน (ตามชีท Work Day) → เครื่องชุดเดิมอาจผลิตไม่ทัน
     const oldRow = grid.rows[ri]
     const gvOld = (n) => { const k = grid.columns.indexOf(n); return k >= 0 ? (Number(norm(oldRow[k])) || 0) : 0 }
     const sharedRow = gvOld('MC_SHARED') > 0
-    const cap = sharedRow ? null : capacityAt(gvOld, Number(week))
+    const gsOld = (n) => { const k = grid.columns.indexOf(n); return k >= 0 ? norm(oldRow[k]) : '' }
+    const cap = sharedRow ? null : capacityAt(gvOld, gsOld('MC_GROUP'), gsOld('MC_GUAGE'), Number(week))
     const need = gvOld('PRODUCE_QTY')
     if (cap != null && need > 0 && cap + 1e-6 < need) {
       const msg = `${item} → สัปดาห์ ${week}: เครื่องที่ถืออยู่ (carry ${gvOld('CARRYOVER_MC')} + ใหม่ ${gvOld('NEW_MC')}) `
@@ -246,12 +276,92 @@ export default function KnitPlan() {
     if (qci >= 0) setCell(ri, qci, qty)
   }
 
+  // แบ่งงาน 1 บล็อกออกเป็น 2 สัปดาห์: ลด PRODUCE_QTY ของแถวเดิม + สร้างแถวใหม่ (copy) จำนวนที่แบ่ง
+  // วางที่สัปดาห์ปลายทาง แล้ว recalc คอลัมน์ที่ผูกกับสัปดาห์ (วันทำงาน/booking) เหมือนตอนลาก
+  // ⚠️ ไม่คำนวณ ACTUAL_MC/SETUP ใหม่ — copy มาตามเดิม (ต้องรันแผนใหม่เพื่อได้เลขเครื่องที่ถูกต้อง)
+  function splitJob(ri, splitQty, week) {
+    if (!grid) return
+    const qci = grid.columns.indexOf('PRODUCE_QTY')
+    const wci = grid.columns.indexOf('PLAN_WEEK')
+    if (qci < 0) return
+    const row = grid.rows[ri]
+    const cur = Number(norm(row[qci])) || 0
+    const q = Math.round((Number(splitQty) || 0) * 100) / 100
+    if (!(q > 0) || q >= cur) {
+      window.alert(`แบ่งไม่ได้: จำนวนที่แบ่ง (${q}) ต้องมากกว่า 0 และน้อยกว่าจำนวนก้อนเดิม (${cur})`)
+      return
+    }
+    const ici = grid.columns.indexOf('ITEM_CODE')
+    const item = ici >= 0 ? norm(row[ici]) : ''
+    const left = Math.round((cur - q) * 100) / 100
+    const msg = `แบ่งงาน ${item}: ${q} กก. → สัปดาห์ ${week} (เหลือ ${left} กก. ที่สัปดาห์เดิม)\n\n`
+      + `⚠ จำนวนเครื่อง/setup จะ copy มาตามเดิม ไม่คำนวณใหม่ให้ — ต้องรันแผนใหม่เพื่อได้เลขเครื่องที่ถูกต้อง\n\n`
+      + `ยืนยันแบ่งหรือไม่?`
+    if (!window.confirm(msg)) return
+
+    setGrid(g => {
+      const rows = g.rows.slice()
+      const orig = rows[ri].slice()
+      orig[qci] = left
+      const copy = rows[ri].slice()
+      copy[qci] = q
+      if (wci >= 0) copy[wci] = week
+      recalcRowForWeek(copy, g.columns, week)
+      rows[ri] = orig
+      rows.splice(ri + 1, 0, copy)
+      return { ...g, rows }
+    })
+    setDirty(true)
+  }
+
   const colData = useMemo(() => {
     if (!grid || !openCol) return null
     return columnFilterData(grid, filters, search, openCol.ci)
   }, [grid, filters, search, openCol])
 
   const visible = useMemo(() => grid ? filterRows(grid, search, filters) : [], [grid, search, filters])
+
+  // คอลัมน์ตัวเลข (sample 200 แถวแรกพอ — ตารางนี้แก้ไขได้ คำนวณใหม่ทุกครั้งที่พิมพ์)
+  const numCols = useMemo(() => numericCols(grid, 200), [grid])
+
+  // ค่าที่โชว์ในช่อง: ตัวเลข (ไม่ใช่รหัส) ใส่ comma เฉพาะตอน "ไม่ได้แก้ช่องนี้"
+  function displayCell(cell, ci, key) {
+    if (editKey === key) return norm(cell)
+    if (numCols.has(ci) && !isIdName(grid.columns[ci])) return fmtNum(cell)
+    return norm(cell)
+  }
+
+  // ความกว้างเริ่มต้น — ตั้งครั้งเดียวต่อชุดคอลัมน์ (ไม่ reset ตอนพิมพ์แก้เซลล์)
+  const gridKey = grid ? `${grid.name}|${grid.sheet}|${grid.columns.length}` : ''
+  useEffect(() => { setColW(autoColWidths(grid)) }, [gridKey])
+
+  const startResize = makeColResizer(colW, setColW)
+  // มีคอลัมน์เลขแถวหัว-ท้าย (# และปุ่มลบ) รวม ROWNUM_W × 2
+  const totalW = grid
+    ? ROWNUM_W * 2 + grid.columns.reduce((s, _, ci) => s + (colW[ci] || 120), 0)
+    : 0
+
+  // dropdown กรองด่วน — ค่าที่เลือกได้ cascade ตามตัวกรองคอลัมน์อื่น + คำค้นหา (เหมือนป็อปอัพ ▾)
+  const quickCols = useMemo(() => {
+    if (!grid) return []
+    return QUICK_COLS.map(({ col, label }) => {
+      const ci = grid.columns.indexOf(col)
+      if (ci < 0) return null
+      const { available } = columnFilterData(grid, filters, search, ci)
+      const values = available
+        .map(a => a.value)
+        .sort((a, b) => String(a).localeCompare(String(b), 'th', { numeric: true }))
+      const sel = filters[ci]
+      // dropdown เลือกได้ทีละค่า — ถ้าถูกกรองหลายค่าจากปุ่ม ▾ ให้แสดงเป็น "(หลายค่า)"
+      const value = !sel ? '' : (sel.size === 1 ? Array.from(sel)[0] : '__multi__')
+      return { col, label, ci, values, value }
+    }).filter(Boolean)
+  }, [grid, filters, search])
+
+  function setQuickFilter(ci, v) {
+    if (v === '__multi__') return
+    applyFilter(ci, v === '' ? null : new Set([v]))
+  }
 
   const ganttReady = !!grid && grid.columns.includes('MC_GROUP') && grid.columns.includes('PLAN_WEEK')
   const hasFilter = search.trim() || Object.keys(filters).length
@@ -292,10 +402,11 @@ export default function KnitPlan() {
           )}
           <button className="primary" onClick={runPlan} disabled={isRunning}>▶ รันแผนใหม่</button>
           <button className="outsource-btn" onClick={() => setShowOutsource(true)}>🧵 จ้างทอ (AI)</button>
+          <button className="cylinder-btn" onClick={() => setShowCylinder(true)}>🔩 เปลี่ยนกระบอก (AI)</button>
           <button onClick={save} disabled={!grid || saving || !dirty}>
             {saving ? 'กำลังบันทึก...' : '💾 บันทึก'}
           </button>
-          {meta?.exists && <a className="dl" href={api.planDownloadUrl()}>⬇ ดาวน์โหลด Excel</a>}
+          {meta?.exists && <a className="dl" href={api.planDownloadUrl(meta.mtime)}>⬇ ดาวน์โหลด Excel</a>}
           <button onClick={refresh}>รีเฟรช</button>
         </div>
       </div>
@@ -310,6 +421,18 @@ export default function KnitPlan() {
         <div className="filterbar">
           <input className="search" placeholder="🔍 ค้นหาทุกคอลัมน์..."
             value={search} onChange={e => setSearch(e.target.value)} />
+          {quickCols.map(q => (
+            <label key={q.col} className={'quickf' + (filters[q.ci] ? ' on' : '')}>
+              <span>{q.label}</span>
+              <select value={q.value} onChange={e => setQuickFilter(q.ci, e.target.value)}>
+                <option value="">ทั้งหมด</option>
+                {q.value === '__multi__' && <option value="__multi__">(หลายค่า — กด ▾ ที่หัวคอลัมน์)</option>}
+                {q.values.map(v => (
+                  <option key={v} value={v}>{v === '' ? '(ว่าง)' : v}</option>
+                ))}
+              </select>
+            </label>
+          ))}
           <span className="count">แสดง {visible.length} / {grid.rows.length} แถว</span>
           {hasFilter ? (
             <button className="clearf" onClick={() => { setSearch(''); setFilters({}) }}>ล้างตัวกรองทั้งหมด</button>
@@ -323,7 +446,7 @@ export default function KnitPlan() {
             <b>Gantt แผนผลิต (เครื่อง × สัปดาห์)</b>
             <button onClick={() => setShowGantt(s => !s)}>{showGantt ? 'ซ่อน' : 'แสดง'}</button>
           </div>
-          {showGantt && <PlanGantt columns={grid.columns} rows={visible} load={load} ava={ava} bookingMc={bookingMc} onMoveWeek={moveJob} onEditQty={editQty} />}
+          {showGantt && <PlanGantt columns={grid.columns} rows={visible} load={load} ava={ava} bookingMc={bookingMc} poolMap={poolMap} onMoveWeek={moveJob} onEditQty={editQty} onSplit={splitJob} onRemove={delRow} />}
         </div>
       )}
 
@@ -333,12 +456,19 @@ export default function KnitPlan() {
 
       {grid && !loading && (
         <div className="gridwrap">
-          <table className="grid">
+          <table className="grid" style={{ tableLayout: 'fixed', width: totalW }}>
+            <colgroup>
+              <col style={{ width: ROWNUM_W }} />
+              {grid.columns.map((_, ci) => (
+                <col key={ci} style={{ width: colW[ci] || 120 }} />
+              ))}
+              <col style={{ width: ROWNUM_W }} />
+            </colgroup>
             <thead>
               <tr>
                 <th className="rownum">#</th>
                 {grid.columns.map((c, ci) => (
-                  <th key={ci}>
+                  <th key={ci} className={ci === 0 ? 'frozen' : undefined}>
                     <div className="thcell">
                       <span className="thlabel" title={c}>{c}</span>
                       <button
@@ -346,21 +476,30 @@ export default function KnitPlan() {
                         title="กรองคอลัมน์นี้"
                         onClick={e => openColMenu(e, ci)}>▾</button>
                     </div>
+                    <span className="colresize" onMouseDown={e => startResize(e, ci)} />
                   </th>
                 ))}
-                <th className="rownum"></th>
+                <th className="rownum actcol"></th>
               </tr>
             </thead>
             <tbody>
               {visible.map(({ row, idx }) => (
                 <tr key={idx}>
                   <td className="rownum">{idx + 1}</td>
-                  {row.map((cell, ci) => (
-                    <td key={ci}>
-                      <input value={norm(cell)} onChange={e => setCell(idx, ci, e.target.value)} />
-                    </td>
-                  ))}
-                  <td className="rownum">
+                  {row.map((cell, ci) => {
+                    const key = `${idx}:${ci}`
+                    return (
+                      <td key={ci} className={(ci === 0 ? 'frozen' : '') + (numCols.has(ci) ? ' num' : '')}>
+                        <input
+                          value={displayCell(cell, ci, key)}
+                          onChange={e => setCell(idx, ci, e.target.value)}
+                          onFocus={() => setEditKey(key)}
+                          onBlur={() => setEditKey(null)}
+                        />
+                      </td>
+                    )
+                  })}
+                  <td className="rownum actcol">
                     <button className="del" title="ลบแถว" onClick={() => delRow(idx)}>✕</button>
                   </td>
                 </tr>
@@ -392,6 +531,15 @@ export default function KnitPlan() {
           <div className="modal-box" onClick={e => e.stopPropagation()}>
             <button className="modal-close" title="ปิด" onClick={() => setShowOutsource(false)}>✕</button>
             <OutsourceAdvisor />
+          </div>
+        </div>
+      )}
+
+      {showCylinder && (
+        <div className="modal-backdrop" onClick={() => setShowCylinder(false)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <button className="modal-close" title="ปิด" onClick={() => setShowCylinder(false)}>✕</button>
+            <CylinderAdvisor />
           </div>
         </div>
       )}
