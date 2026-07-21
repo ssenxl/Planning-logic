@@ -80,6 +80,16 @@ def verify_login(username: str, password: str) -> bool:
     return _verify_password(password, record)
 
 
+def get_role(username: str) -> str:
+    """คืน role ของ user ('admin' หรือ 'user'); ไม่มี field role = 'user' ธรรมดา"""
+    record = load_users().get(username) or {}
+    return "admin" if record.get("role") == "admin" else "user"
+
+
+def is_admin(username: str) -> bool:
+    return get_role(username) == "admin"
+
+
 # ---------------- token (signed) ----------------
 def _b64e(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")

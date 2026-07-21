@@ -9,6 +9,7 @@ import { api } from '../api.js'
 //     กรอกค่าครั้งเดียว → เขียนลงทุกกลุ่มที่เลือก
 
 const FALLBACK = 6
+const FALLBACK_HOURS = 24   // ไม่ตั้ง = 24 ชม. (ไม่ลดกำลังผลิต)
 const WEEKS = Array.from({ length: 53 }, (_, i) => i + 1)
 const MIXED = Symbol('mixed')   // ค่าปัจจุบันของกลุ่มที่เลือกไม่ตรงกัน
 
@@ -29,6 +30,7 @@ export default function WorkDayPanel() {
   const [collapsed, setCollapsed] = useState(new Set()) // id หัวข้อที่ยุบ (F:.. / C:..)
   const [q, setQ] = useState('')                 // ค้นหากลุ่ม
   const [defDraft, setDefDraft] = useState({})   // key -> string (ค่ามาตรฐานที่กำลังแก้)
+  const [hourDraft, setHourDraft] = useState({}) // key -> string (ชั่วโมงมาตรฐานที่กำลังแก้)
   const [wkDraft, setWkDraft] = useState({})     // "key|W" -> string (ค่ารายสัปดาห์ที่กำลังแก้)
   const [mergeDraft, setMergeDraft] = useState({}) // week(number) -> targetWeek(number)
   const [loading, setLoading] = useState(false)
@@ -50,9 +52,10 @@ export default function WorkDayPanel() {
 
   function resetDrafts(d) {
     const df = {}; for (const [k, v] of Object.entries(d.defaults || {})) df[k] = String(v)
+    const hf = {}; for (const [k, v] of Object.entries(d.hours || {})) hf[k] = String(v)
     const wf = {}; for (const [k, v] of Object.entries(d.weeks || {})) wf[k] = String(v)
     const mf = {}; for (const [s, t] of Object.entries(d.merges || {})) mf[Number(s)] = Number(t)
-    setDefDraft(df); setWkDraft(wf); setMergeDraft(mf)
+    setDefDraft(df); setHourDraft(hf); setWkDraft(wf); setMergeDraft(mf)
   }
 
   // กลุ่ม unique (จาก payload) + กรองด้วยคำค้น
@@ -105,10 +108,15 @@ export default function WorkDayPanel() {
   // diff กับที่บันทึกไว้ = มีอะไรยังไม่บันทึก
   const dirty = useMemo(() => {
     if (!data) return false
-    const savedDef = data.defaults || {}, savedWk = data.weeks || {}, savedMg = data.merges || {}
+    const savedDef = data.defaults || {}, savedWk = data.weeks || {}, savedMg = data.merges || {}, savedHr = data.hours || {}
     const defKeys = new Set([...Object.keys(savedDef), ...Object.keys(defDraft)])
     for (const k of defKeys) {
       const a = num(defDraft[k] ?? ''), b = savedDef[k] ?? null
+      if ((a ?? null) !== (b ?? null)) return true
+    }
+    const hrKeys = new Set([...Object.keys(savedHr), ...Object.keys(hourDraft)])
+    for (const k of hrKeys) {
+      const a = num(hourDraft[k] ?? ''), b = savedHr[k] ?? null
       if ((a ?? null) !== (b ?? null)) return true
     }
     const wkKeys = new Set([...Object.keys(savedWk), ...Object.keys(wkDraft)])
@@ -121,7 +129,7 @@ export default function WorkDayPanel() {
       if ((mergeDraft[w] ?? null) !== (savedMg[w] ?? null)) return true
     }
     return false
-  }, [data, defDraft, wkDraft, mergeDraft])
+  }, [data, defDraft, hourDraft, wkDraft, mergeDraft])
 
   // targets ของ merge (คลาย chain) เพื่อคำนวณ "วันทำงานรวมของก้อน" ไว้โชว์
   const mergeSources = useMemo(() => {
@@ -160,11 +168,13 @@ export default function WorkDayPanel() {
     try {
       const defaults = {}
       for (const [k, v] of Object.entries(defDraft)) { const n = num(v); if (n != null) defaults[k] = n }
+      const hours = {}
+      for (const [k, v] of Object.entries(hourDraft)) { const n = num(v); if (n != null) hours[k] = n }
       const weeks = {}
       for (const [k, v] of Object.entries(wkDraft)) { const n = num(v); if (n != null) weeks[k] = n }
       const merges = {}
       for (const [s, t] of Object.entries(mergeDraft)) if (t != null) merges[String(s)] = Number(t)
-      const r = await api.saveWorkday(defaults, weeks, merges)
+      const r = await api.saveWorkday(defaults, weeks, hours, merges)
       setMsg(`บันทึกแล้ว (${r.rows} แถว, ยุบ ${r.merges} สัปดาห์) — สำรองไฟล์เดิมเป็น ${r.backup}`)
       await load()
     } catch (e) { setErr('บันทึกไม่สำเร็จ: ' + e.message) }
@@ -202,6 +212,7 @@ export default function WorkDayPanel() {
 
   // เขียนค่า (ค่ามาตรฐาน / รายสัปดาห์) ลงทุกกลุ่มที่เลือก
   const setDefAll = (val) => setDefDraft(p => { const n = { ...p }; for (const k of selKeys) n[k] = val; return n })
+  const setHourAll = (val) => setHourDraft(p => { const n = { ...p }; for (const k of selKeys) n[k] = val; return n })
   const setWkAll = (w, val) => setWkDraft(p => { const n = { ...p }; for (const k of selKeys) n[`${k}|${w}`] = val; return n })
 
   const one = selKeys.length === 1 ? allGroupsByKey.get(selKeys[0]) : null
@@ -210,6 +221,7 @@ export default function WorkDayPanel() {
       : `เลือก ${selKeys.length} กลุ่ม (กรอกครั้งเดียว → ใช้ทุกกลุ่มที่เลือก)`
 
   const defU = uniformOf(k => defDraft[k] ?? '')
+  const hourU = uniformOf(k => hourDraft[k] ?? '')
 
   return (
     <div className="wdpanel">
@@ -290,7 +302,7 @@ export default function WorkDayPanel() {
                               <Tri checked={on} onChange={() => toggleKey(g.key)} />
                               <button className={'wdgitem' + (on ? ' on' : '')} onClick={() => selectOnly(g.key)}>
                                 <span className="wdgname">G{g.guage}</span>
-                                <span className="wdgdef">{defDraft[g.key] ?? FALLBACK} วัน{hasWk ? ' ⚙' : ''}</span>
+                                <span className="wdgdef">{defDraft[g.key] ?? FALLBACK} วัน{hourDraft[g.key] != null && hourDraft[g.key] !== '' ? ` · ${hourDraft[g.key]} ชม.` : ''}{hasWk ? ' ⚙' : ''}</span>
                               </button>
                             </div>
                           )
@@ -314,8 +326,17 @@ export default function WorkDayPanel() {
               <input type="number" min="0" step="0.5"
                 placeholder={defU === MIXED ? 'หลายค่า' : String(FALLBACK)}
                 value={defU === MIXED ? '' : defU}
+                onWheel={e => e.currentTarget.blur()}
                 onChange={e => setDefAll(e.target.value)} />
-              <span className="hint small">เว้นว่าง = {FALLBACK} วัน</span>
+              <span className="hint small">วัน — เว้นว่าง = {FALLBACK} วัน</span>
+              <span className="wddefsep">·</span>
+              <span>ชั่วโมง/วัน:</span>
+              <input type="number" min="0" max="24" step="0.5"
+                placeholder={hourU === MIXED ? 'หลายค่า' : String(FALLBACK_HOURS)}
+                value={hourU === MIXED ? '' : hourU}
+                onWheel={e => e.currentTarget.blur()}
+                onChange={e => setHourAll(e.target.value)} />
+              <span className="hint small">เว้นว่าง = {FALLBACK_HOURS} ชม. · Item Special ชนะ</span>
             </div>
             <div className="wdwkgrid">
               {WEEKS.map(w => {
@@ -339,6 +360,7 @@ export default function WorkDayPanel() {
                       disabled={merged != null}
                       title={receives ? 'ยอดรวมของสัปดาห์ที่ยุบ — พิมพ์แก้ได้ (เว้นว่าง = ใช้ผลรวมอัตโนมัติ)' : ''}
                       placeholder={merged != null ? '—' : (wkU === MIXED ? 'หลายค่า' : autoTxt)}
+                      onWheel={e => e.currentTarget.blur()}
                       onChange={e => setWkAll(w, e.target.value)} />
                   </div>
                 )

@@ -4,9 +4,12 @@ import React, { useMemo, useRef } from 'react'
 // แต่ละการ์ด = 1 แถวในชีท อ่านเป็นประโยค: "สัปดาห์ W__ กัน __ เครื่อง กลุ่ม __ เกจ __"
 // แก้ค่าลงใน grid เดิมของ Masters โดยตรง → ใช้ปุ่มบันทึก / Ctrl+Z / Ctrl+S ชุดเดียวกัน
 //
-// การวางแผนสนใจแค่ (สัปดาห์ + กลุ่มเครื่อง + เกจ + จำนวนกัน) ส่วนคอลัมน์ MC (FA/SKP)
-// เป็นแค่หมายเหตุ ไม่ถูกใช้คำนวณ และแถวที่คีย์ (สัปดาห์/กลุ่ม/เกจ) ซ้ำกันจะถูก "บวกรวม"
-// → การ์ดจึงเตือนเมื่อคีย์ซ้ำ พร้อมโชว์ผลรวมจริงที่ระบบจะเอาไปหักเครื่อง
+// การหักเครื่องออกจาก pool สนใจแค่ (สัปดาห์ + กลุ่ม + เกจ + จำนวนกัน) — แถวที่คีย์ซ้ำกันจะถูก
+// "บวกรวม" → การ์ดจึงเตือนเมื่อคีย์ซ้ำ พร้อมโชว์ผลรวมจริงที่ระบบจะเอาไปหักเครื่อง
+//
+// ถ้ากรอก ITEM ด้วยจะได้ผลอีกชั้น = "คงความอุ่น" (AVA_MC.py) ซึ่งชั้นนี้ใช้คอลัมน์ MC ด้วย:
+//   ระบุ MC → อุ่นเฉพาะกลุ่มเครื่องนั้น · เว้นว่าง → อุ่นทุกกลุ่มเครื่องใน MC_CAT
+//   จำนวนที่กัน = จำนวนเครื่องที่อุ่นได้ (กัน 3 → อุ่น 3 ตัว ตัวที่ 4 เป็นเครื่องใหม่ต้อง setup)
 //
 // ช่องกลุ่ม/เกจ/เครื่อง/สัปดาห์ เป็น dropdown เลือกจากรายการจริง (opts) กัน user พิมพ์ผิด
 // ถ้าโหลด opts ไม่ได้ (เช่น หา MasterMC ไม่เจอ) จะ fallback เป็นช่องพิมพ์ + datalist
@@ -179,14 +182,14 @@ export default function LockMcEditor({ grid, cols, opts, rids, setCell, addRow, 
                 )}
                 {mcCi >= 0 && (
                   <label className="lkfield note">
-                    <span>หมายเหตุ / เครื่อง</span>
+                    <span>เครื่อง (MC)</span>
                     {useDrop ? (
                       <Select className={chg(ri, mcCi) ? 'chg' : ''}
-                        value={r[mcCi]} options={mcs} placeholder="— ไม่ระบุ —"
+                        value={r[mcCi]} options={mcs} placeholder="— ทุกเครื่องในกลุ่ม —"
                         onChange={v => setCell(ri, mcCi, v)} />
                     ) : (
                       <input className={chg(ri, mcCi) ? 'chg' : ''}
-                        value={r[mcCi] ?? ''} placeholder="เช่น FA (ไม่บังคับ)"
+                        value={r[mcCi] ?? ''} placeholder="เช่น FA (เว้นว่าง = ทุกเครื่อง)"
                         onChange={e => setCell(ri, mcCi, e.target.value)} />
                     )}
                   </label>
@@ -195,7 +198,7 @@ export default function LockMcEditor({ grid, cols, opts, rids, setCell, addRow, 
 
               <div className="lkrow">
                 <label className="lkfield grow item">
-                  <span>🎯 Item ที่จะกันเครื่องให้ (ใส่ = ไม่ setup ใหม่ตอนกลับมาผลิต · เว้นว่าง = กันเครื่องเฉยๆ)</span>
+                  <span>🎯 Item ที่จะกันเครื่องให้ (ใส่ = เครื่องที่กันไว้ยังอุ่น ไม่ setup ใหม่ตอนกลับมาผลิต · เว้นว่าง = กันเครื่องเฉยๆ)</span>
                   <input list="lk-items" className={itemCi >= 0 && chg(ri, itemCi) ? 'chg' : ''}
                     value={itemCi >= 0 ? (r[itemCi] ?? '') : ''} placeholder="เช่น รหัส item — เว้นว่างได้"
                     onChange={e => onItemInput(ri, e.target.value)} />
@@ -222,7 +225,7 @@ export default function LockMcEditor({ grid, cols, opts, rids, setCell, addRow, 
 
       <div className="gridhelp">
         แต่ละการ์ด = การกัน 1 รายการ · แก้แล้วกด <b>บันทึก</b> (Ctrl+S) · Ctrl+Z = ย้อนกลับ ·
-        คอลัมน์ "หมายเหตุ" (FA/SKP) เป็นแค่บันทึกช่วยจำ ไม่มีผลต่อการคำนวณ
+        ช่อง "เครื่อง (MC)" มีผลเฉพาะตอนกรอก Item — เว้นว่าง = อุ่นทุกกลุ่มเครื่องในกลุ่มนั้น
       </div>
     </div>
   )

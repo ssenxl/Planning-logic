@@ -191,8 +191,23 @@ def parse_args():
     return parser.parse_args()
 
 
+def _ensure_calendar():
+    """เติมปฏิทินปีถัดไปให้อัตโนมัติก่อนรัน pipeline (idempotent, ไม่ crash ถ้าพลาด)"""
+    try:
+        from gen_calendar import ensure_calendar_extended
+        from Calendar import _CALENDAR_LOCAL_PATH
+        res = ensure_calendar_extended(_CALENDAR_LOCAL_PATH)
+        if res.get("added"):
+            print(f"📅 เติมปฏิทินปีถัดไปอัตโนมัติ: +{res['added']} วัน → ถึงสิ้นปี {res.get('end_year')} "
+                  f"(backup: {res.get('backup')})")
+    except Exception as e:
+        print(f"⚠️ ข้ามการเติมปฏิทินอัตโนมัติ ({e})")
+
+
 def main():
     args = parse_args()
+
+    _ensure_calendar()
 
     skip_names = {s.lower() for s in args.skip}
     start_from = args.start_from.lower() if args.start_from else None

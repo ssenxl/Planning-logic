@@ -20,9 +20,10 @@ from config import master_files
 
 WORKDAY_SHEET = "Work Day"
 WEEK_MERGE_SHEET = "Week Merge"
-WORKDAY_HEADER = ["Factory", "MC_CAT", "Guage", "WEEK", "WORK_DAY"]
+WORKDAY_HEADER = ["Factory", "MC_CAT", "Guage", "WEEK", "WORK_DAY", "WORK_HOUR"]
 WEEK_MERGE_HEADER = ["WEEK", "MERGE_TO"]
 DEFAULT_WORK_DAYS = 6.0
+DEFAULT_WORK_HOURS = 24.0   # ไม่ตั้ง = 24 ชม. (ไม่ลดกำลังผลิต)
 
 
 def _norm(v) -> str:
@@ -94,20 +95,25 @@ def mc_groups() -> list:
 
 def get_workday() -> dict:
     """คืนค่าที่ตั้งไว้ + รายการกลุ่ม + การยุบสัปดาห์
-    {groups: [...], defaults: {"FAC|CAT|G": วัน}, weeks: {"FAC|CAT|G|W": วัน}, merges: {week: to}}"""
+    {groups: [...], defaults: {"FAC|CAT|G": วัน}, weeks: {"FAC|CAT|G|W": วัน},
+     hours: {"FAC|CAT|G": ชั่วโมง}, merges: {week: to}}"""
     cal = _path("Calendar")
     groups = mc_groups()
 
-    defaults, weeks = {}, {}
+    defaults, weeks, hours = {}, {}, {}
     for r in _rows_of(cal, WORKDAY_SHEET):
-        r = list(r) + [None] * (5 - len(r))
+        r = list(r) + [None] * (6 - len(r))
         key = "|".join(_norm(x).upper() for x in r[:3])
-        days, wk = _num(r[4]), _num(r[3])
-        if days is None or key == "||":
+        if key == "||":
             continue
+        wk, days, hr = _num(r[3]), _num(r[4]), _num(r[5])
         if wk is None:
-            defaults[key] = days
-        else:
+            # ค่ามาตรฐานของกลุ่ม: วัน + ชั่วโมง (ชั่วโมงเป็น override ต่อกลุ่มอย่างเดียว)
+            if days is not None:
+                defaults[key] = days
+            if hr is not None:
+                hours[key] = hr
+        elif days is not None:
             weeks[f"{key}|{int(wk)}"] = days
 
     merges = {}
@@ -118,8 +124,9 @@ def get_workday() -> dict:
             continue
         merges[int(src)] = int(dst)
 
-    return {"groups": groups, "defaults": defaults, "weeks": weeks, "merges": merges,
-            "fallback_days": DEFAULT_WORK_DAYS}
+    return {"groups": groups, "defaults": defaults, "weeks": weeks, "hours": hours,
+            "merges": merges, "fallback_days": DEFAULT_WORK_DAYS,
+            "fallback_hours": DEFAULT_WORK_HOURS}
 
 
 def _write_sheet(wb, sheet: str, header: list, rows: list) -> None:
@@ -131,27 +138,31 @@ def _write_sheet(wb, sheet: str, header: list, rows: list) -> None:
         ws.append(r)
 
 
-def save_workday(defaults: dict, weeks: dict, merges: dict) -> dict:
+def save_workday(defaults: dict, weeks: dict, hours: dict = None, merges: dict = None) -> dict:
     """เขียนชีท Work Day + Week Merge กลับ Calendar.xlsx (สำรอง .bak ก่อน)
-    defaults: {"FAC|CAT|G": วัน} · weeks: {"FAC|CAT|G|W": วัน} · merges: {"31": 32}"""
+    defaults: {"FAC|CAT|G": วัน} · weeks: {"FAC|CAT|G|W": วัน}
+    hours: {"FAC|CAT|G": ชั่วโมง} (ค่ามาตรฐานต่อกลุ่ม) · merges: {"31": 32}"""
     cal = _path("Calendar")
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     bak = cal.with_suffix(cal.suffix + f".{ts}.bak")
     shutil.copy2(cal, bak)
 
+    defaults, weeks, hours, merges = defaults or {}, weeks or {}, hours or {}, merges or {}
+
     wd_rows = []
-    for key, days in sorted((defaults or {}).items()):
+    # แถวค่ามาตรฐานของกลุ่ม (WEEK ว่าง) = union ของกลุ่มที่ตั้งวัน และ/หรือ ชั่วโมง
+    for key in sorted(set(defaults) | set(hours)):
         fac, cat, g = (key.split("|") + ["", "", ""])[:3]
-        d = _num(days)
-        if d is not None:
-            wd_rows.append([fac, cat, g, None, d])
-    for key, days in sorted((weeks or {}).items()):
+        d, h = _num(defaults.get(key)), _num(hours.get(key))
+        if d is not None or h is not None:
+            wd_rows.append([fac, cat, g, None, d, h])
+    for key, days in sorted(weeks.items()):
         parts = key.split("|")
         if len(parts) != 4:
             continue
         d, wk = _num(days), _num(parts[3])
         if d is not None and wk is not None:
-            wd_rows.append([parts[0], parts[1], parts[2], int(wk), d])
+            wd_rows.append([parts[0], parts[1], parts[2], int(wk), d, None])
 
     mg_rows = []
     for src, dst in sorted((merges or {}).items(), key=lambda kv: int(kv[0])):
@@ -180,6 +191,6 @@ def seed_from_mastermc() -> dict:
         added += 1
     if not added:
         return {"ok": True, "added": 0}
-    r = save_workday(defaults, cur["weeks"], cur["merges"])
+    r = save_workday(defaults, cur["weeks"], cur.get("hours"), cur["merges"])
     r["added"] = added
     return r

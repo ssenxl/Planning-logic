@@ -35,6 +35,7 @@ async function req(method, url, body) {
 export const api = {
   // auth
   login: (username, password) => req('POST', '/api/login', { username, password }),
+  me: () => req('GET', '/api/me'),
   // run
   run: (mode) => req('POST', '/api/run', { mode }),
   runStop: () => req('POST', '/api/run/stop'),
@@ -47,7 +48,7 @@ export const api = {
     req('PUT', `/api/masters/${encodeURIComponent(name)}/${encodeURIComponent(sheet)}`, { columns, rows }),
   // work day (วันทำงานตามกลุ่มเครื่อง + ยุบสัปดาห์)
   workday: () => req('GET', '/api/workday'),
-  saveWorkday: (defaults, weeks, merges) => req('PUT', '/api/workday', { defaults, weeks, merges }),
+  saveWorkday: (defaults, weeks, hours, merges) => req('PUT', '/api/workday', { defaults, weeks, hours, merges }),
   seedWorkday: () => req('POST', '/api/workday/seed'),
   // schedule
   schedule: () => req('GET', '/api/schedule'),

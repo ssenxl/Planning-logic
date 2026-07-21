@@ -309,6 +309,80 @@ except Exception as _e_is_ava:
     _ITEM_SPECIAL_LOOKUP_AVA = {}
 
 # =========================
+# LOCK_MC: เครื่องที่ user "กันไว้ให้ item" ในสัปดาห์ที่ item ไม่ได้ผลิต
+# Source: MasterMC.xlsx sheet "Lock_MC" (คอลัมน์ ITEM ไม่บังคับ)
+#
+# ความหมาย: กันกระบอกไว้ N เครื่อง → สัปดาห์นั้นเครื่องว่าง (Planning หักออกจาก pool)
+# แต่พอ item กลับมาผลิต ถือว่าเครื่อง N ตัวนั้น "ยังอุ่น" → ไม่ต้อง setup ใหม่
+# ⚠️ จำนวนที่กันไว้ = จำนวนเครื่องที่อุ่นได้ (กัน 3 → อุ่น 3 ตัว ตัวที่ 4 เป็นเครื่องใหม่ต้อง setup)
+#
+# แถวที่ไม่มี ITEM = กันเครื่องเฉย ๆ (Planning หัก pool) ไม่เกี่ยวกับความอุ่น → ข้ามที่นี่
+# คอลัมน์ MC (FA/SKP) ถ้าระบุ = อุ่นเฉพาะกลุ่มเครื่องนั้น, เว้นว่าง = อุ่นทุกกลุ่มใน MC_CAT
+# =========================
+_LOCK_WARM: dict = {}  # key=(item_upper, mc_cat_upper, gauge_norm, mc_upper|"") → {week: locked_count}
+
+try:
+    _lk_df = pd.read_excel(MASTER_MC_FILE, sheet_name="Lock_MC")
+    _lk_df.columns = _lk_df.columns.str.strip()
+
+    def _lk_int(v):
+        # ทนค่าว่าง/NaN/ทศนิยม/สตริง — คืน None ถ้าแปลงไม่ได้ (กันทั้งชีทพังเพราะแถวเดียว)
+        try:
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return None
+            s = str(v).strip()
+            if not s or s.lower() == "nan":
+                return None
+            return int(float(s))
+        except (ValueError, TypeError):
+            return None
+
+    for _, _lk_row in _lk_df.iterrows():
+        _lk_item = str(_lk_row.get("ITEM", _lk_row.get("ITEM_CODE", "")) or "").strip().upper()
+        if not _lk_item or _lk_item == "NAN":
+            continue  # ไม่ระบุ item = กันเครื่องเฉย ๆ ไม่มีผลกับความอุ่น
+        _lk_week = _lk_int(_lk_row.get("Week"))
+        _lk_cnt = _lk_int(_lk_row.get("MC Lock")) or 0
+        if _lk_week is None or _lk_cnt <= 0:
+            continue
+        _lk_key = (
+            _lk_item,
+            str(_lk_row.get("MC_CAT", "")).strip().upper(),
+            _norm_gauge_ava(_lk_row.get("Guage", "")),
+            str(_lk_row.get("MC", "") or "").strip().upper().replace("NAN", ""),
+        )
+        _lk_slot = _LOCK_WARM.setdefault(_lk_key, {})
+        # คีย์ซ้ำ (สัปดาห์เดียวกัน) → บวกรวม ให้ตรงกับที่ Planning หัก pool และที่การ์ดเตือนไว้
+        _lk_slot[_lk_week] = _lk_slot.get(_lk_week, 0) + _lk_cnt
+
+    if _LOCK_WARM:
+        print(f"✅ Lock_MC warm map: {_LOCK_WARM}")
+    else:
+        print("ℹ️ Lock_MC: ไม่มีแถวที่ระบุ ITEM → ไม่มีเครื่องกันไว้แบบ 'คงความอุ่น'")
+except Exception as _e_lk:
+    print(f"⚠️ ไม่สามารถโหลด Lock_MC sheet: {_e_lk}")
+
+
+def _lock_warm_weeks(item, mc_cat, gauge, mc_group) -> dict:
+    """{week: จำนวนเครื่องที่ lock ไว้ให้ item นี้} — รวม lock ที่ระบุ MC ตรงกับที่เว้นว่าง
+
+    เว้นว่าง = ครอบคลุมทุกกลุ่มเครื่องใน MC_CAT นั้น → ถ้ามีทั้งสองแบบใช้ค่าที่มากกว่า
+    (ไม่บวกกัน เพราะเป็นการอ้างถึงเครื่องชุดเดียวกัน)
+    """
+    if not _LOCK_WARM:
+        return {}
+    _item = str(item).strip().upper()
+    _cat = str(mc_cat).strip().upper()
+    _g = _norm_gauge_ava(gauge)
+    _mc = str(mc_group).strip().upper()
+    out: dict = {}
+    for _k in ((_item, _cat, _g, _mc), (_item, _cat, _g, "")):
+        for _w, _c in _LOCK_WARM.get(_k, {}).items():
+            out[_w] = max(out.get(_w, 0), _c)
+    return out
+
+
+# =========================
 # MC SPECIAL: per-(Factory, MC_CAT, MC, Gauge) → POLY/COTTON machine count
 # Source: MasterMC.xlsx sheet "MC Special"
 # ถ้า ITEM_CODE ขึ้นต้น FD5/F5 → ใช้ pool COTTON, FD4/F4 → ใช้ pool POLY
@@ -643,7 +717,11 @@ df["KP_WEIGHT"] = pd.to_numeric(df["KP_WEIGHT"], errors="coerce")
 def _apply_cap_adj(r):
     _is = _get_item_special_ava(r["ITEM_CODE"], r["MC_GROUP"], r["GUAGE"])
     if _is is not None:
-        return r["CAP_KNIT"] * (_is[1] / 24)  # Item Special working_hour override
+        return r["CAP_KNIT"] * (_is[1] / 24)  # Item Special working_hour override (ชนะเสมอ)
+    # ชั่วโมง override ต่อกลุ่มจากชีท Work Day (หน้า WorkDayPanel) — รองจาก Item Special
+    _ov = WorkDay.get_working_hours(r["MC_GROUP"], r["GUAGE"])
+    if _ov is not None:
+        return r["CAP_KNIT"] * (_ov / 24)
     wh = WORKING_HOURS_MAP.get((r["MC_GROUP"], _norm_gauge_ava(r["GUAGE"])), 24)
     return r["CAP_KNIT"] * (wh / 24)
 
@@ -695,13 +773,6 @@ df = df.sort_values(["MC_GROUP", "GUAGE", "ITEM_CODE", "WEEK"])
 # สร้าง key สำหรับเช็ค carryover
 df["_carry_key"] = df["MC_GROUP"] + "_" + df["GUAGE"].astype(str) + "_" + df["ITEM_CODE"]
 
-# เช็คว่า item+MC_GROUP+GUAGE เดียวกันมีใน week ก่อนหน้าหรือไม่
-df["_prev_week"] = df.groupby("_carry_key")["WEEK"].shift(1)
-df["_week_gap"] = df["WEEK"] - df["_prev_week"]
-
-# ถ้า gap > SETUP_GAP_WEEK หรือไม่มี week ก่อนหน้า → setup ใหม่
-df["_is_new_setup"] = (df["_week_gap"] > SETUP_GAP_WEEK) | (df["_prev_week"].isna())
-
 # คำนวณ setup days สำหรับแต่ละ item ตาม MATERIAL_CONTENT และ YARN-USED
 df["_setup_days"] = df.apply(
     lambda r: get_setup_days_for_item(
@@ -710,6 +781,51 @@ df["_setup_days"] = df.apply(
         mc_group=r.get("MC_GROUP", ""),
         item_code=r.get("ITEM_CODE", "")
     ), axis=1
+)
+
+# =========================
+# SETUP DETECTION — สัปดาห์ก่อนหน้า + Lock_MC ที่ user กันเครื่องไว้ให้ item
+#
+# เดินเป็นทอด ๆ จากสัปดาห์ผลิตล่าสุดผ่านสัปดาห์ที่ lock ไว้ โดยแต่ละช่วงห้ามเกิน
+# SETUP_GAP_WEEK (เครื่องเย็นระหว่างทางไม่ได้) → ถ้าต่อถึงสัปดาห์นี้ได้ = เครื่องยังอุ่น
+# _lock_warm_mc = จำนวนที่กันไว้ (แคบสุดตลอดเส้นทาง) = เพดานเครื่องที่อุ่นได้
+# =========================
+def _detect_setup_group(g):
+    """หา _prev_week / _week_gap / _is_new_setup / _lock_warm_mc ของ _carry_key หนึ่งชุด"""
+    _item = str(g["ITEM_CODE"].iloc[0]).strip().upper()
+    _cat = str(g["MC_CAT"].iloc[0]).strip().upper() if "MC_CAT" in g.columns else ""
+    _locks = _lock_warm_weeks(_item, _cat, g["GUAGE"].iloc[0], g["MC_GROUP"].iloc[0])
+
+    out = []
+    prev_week = None
+    for wk in g["WEEK"].tolist():
+        wk = int(wk)
+        warm_cap = None
+        eff_prev = prev_week
+        if prev_week is not None and _locks:
+            for lw in sorted(_locks):
+                if eff_prev < lw < wk and (lw - eff_prev) <= SETUP_GAP_WEEK:
+                    eff_prev = lw
+                    warm_cap = _locks[lw] if warm_cap is None else min(warm_cap, _locks[lw])
+        if prev_week is None:
+            gap, is_new = np.nan, True
+        else:
+            gap = wk - eff_prev
+            is_new = bool(gap > SETUP_GAP_WEEK)
+        out.append({
+            "_prev_week": prev_week,
+            "_week_gap": gap,
+            "_is_new_setup": is_new,
+            "_lock_warm_mc": warm_cap if warm_cap is not None else np.nan,
+        })
+        prev_week = wk
+    return pd.DataFrame(out, index=g.index)
+
+
+df = df.join(
+    df.groupby("_carry_key", group_keys=False)[
+        ["WEEK", "ITEM_CODE", "MC_GROUP", "GUAGE", "MC_CAT"]
+    ].apply(_detect_setup_group)
 )
 
 # =========================
@@ -749,13 +865,25 @@ df["_mc_use_ceil_pass1"] = df["_mc_use_ceil_pass1"].fillna(0).astype(int)
 # เดิมใช้ shift(1) มองแค่สัปดาห์ติดกัน → ถ้ามีสัปดาห์ KP=0 คั่นกลาง เครื่องที่กลับมารัน (rerun)
 # จะถูกนับเป็น "เครื่องใหม่" ผิด ทำให้โดน setup penalty ซ้ำและพองจำนวนเครื่องเกินจริง
 # (เช่น item รัน week 25 → ว่าง 26,27 → กลับมา week 28 ควร carry 2 เครื่องเดิม ไม่ใช่ setup ใหม่)
+#
+# Lock_MC: สัปดาห์ที่ user กันเครื่องไว้ให้ item ใช้เชื่อมช่วงที่ item ไม่ได้ผลิต (เครื่องยังอุ่น)
+# และจำนวนที่กันไว้เป็นเพดานของเครื่องที่ carry ได้ (กัน 3 → carry 3, ตัวที่ 4 ต้อง setup)
 def _carry_prev_active_ceil(g):
     prev_vals = []
     last_week = None
     last_ceil = 0
-    for wk, c in zip(g["WEEK"].tolist(), g["_mc_use_ceil_pass1"].tolist()):
-        if last_week is not None and (wk - last_week) <= SETUP_GAP_WEEK:
-            prev_vals.append(last_ceil)   # ยังอยู่ใน gap → carry เครื่องจากสัปดาห์ active ล่าสุด
+    for wk, c, _cap in zip(
+        g["WEEK"].tolist(),
+        g["_mc_use_ceil_pass1"].tolist(),
+        g["_lock_warm_mc"].tolist(),
+    ):
+        # _cap ไม่ใช่ NaN = สัปดาห์นี้ต่อความอุ่นมาได้เพราะ Lock_MC → ข้ามเกณฑ์ gap ปกติ
+        _lock_used = not pd.isna(_cap)
+        if last_week is not None and ((wk - last_week) <= SETUP_GAP_WEEK or _lock_used):
+            _carry = last_ceil
+            if _lock_used:
+                _carry = min(_carry, int(_cap))   # กันไว้กี่เครื่อง = carry ได้แค่นั้น
+            prev_vals.append(_carry)
         else:
             prev_vals.append(np.nan)      # นอก gap / ครั้งแรก → ไม่มี carry (= setup ใหม่)
         if c > 0:                          # อัปเดต active week เฉพาะสัปดาห์ที่มีเครื่องรันจริง
@@ -791,6 +919,50 @@ df["MC_USE"] = np.where(
     0
 )
 df["MC_USE_CEIL"] = np.ceil(df["MC_USE"]).fillna(0).astype(int)
+
+# =========================
+# แถวที่ Lock_MC เชื่อมความอุ่นมา: วนหาจุดลงตัวให้ carry/setup ตรงกับที่ user กันไว้จริง
+#
+# สูตร 2-pass ด้านบนคิด _mc_increase จาก ceil ตอน INITIAL แต่ ceil สุดท้ายพองขึ้น
+# (เพราะโดนหักวัน setup) → ส่วนต่างตกไปเป็น carryover ที่ไม่มีตัวตน เช่น กันไว้ 3 เครื่อง
+# แต่รายงาน carry 4 → เกินจำนวนที่กันไว้ ซึ่งขัดกับความหมายของ Lock_MC โดยตรง
+#
+# จึงวนซ้ำเฉพาะแถวพวกนี้จน n = carry + setup ลงตัว (n เพิ่มทางเดียว มีเพดาน eff ≥ 0.5 → ลู่เข้าเสมอ)
+# ⚠️ แถวอื่นปล่อยตามสูตรเดิม — บั๊กเครื่องผีของเดิมยังอยู่ ตั้งใจไม่แตะเพื่อไม่ให้ตัวเลขทั้งไฟล์ขยับ
+# =========================
+_lk_fix = (
+    df["_lock_warm_mc"].notna()
+    & (df["_CAP_ADJ"] > 0)
+    & (df["KP_WEIGHT"] > 0)
+    & (df["WORKING_DAY"] > 0)
+)
+for _i in df.index[_lk_fix]:
+    _kp = float(df.at[_i, "KP_WEIGHT"])
+    _cap = float(df.at[_i, "_CAP_ADJ"])
+    _wd = float(df.at[_i, "WORKING_DAY"])
+    _sd = float(df.at[_i, "_setup_days"])
+    _warm = int(pd.to_numeric(df.at[_i, "_prev_mc_use_ceil"], errors="coerce") or 0)
+    _n = int(np.ceil(_kp / (_cap * _wd)))
+    _eff = _wd
+    for _ in range(50):
+        _inc = max(_n - _warm, 0)
+        _eff = max(_wd - (_sd * _inc / _n), 0.5) if (_n > 0 and _inc > 0) else _wd
+        _n2 = int(np.ceil(_kp / (_cap * _eff)))
+        if _n2 == _n:
+            break
+        _n = _n2
+    _use = _kp / (_cap * _eff)
+    _n = int(np.ceil(_use))
+    _inc = max(_n - _warm, 0)
+    df.at[_i, "_effective_working_days"] = _eff
+    df.at[_i, "MC_USE"] = _use
+    df.at[_i, "MC_USE_CEIL"] = _n
+    df.at[_i, "_mc_increase"] = _inc
+    df.at[_i, "_has_mc_increase"] = bool(_inc > 0)
+    print(
+        f"[LOCK WARM] {df.at[_i, 'ITEM_CODE']} {df.at[_i, 'MC_GROUP']} W{int(df.at[_i, 'WEEK'])}:"
+        f" {_n} เครื่อง = carry {_n - _inc} (กันไว้ {int(df.at[_i, '_lock_warm_mc'])}) + setup {_inc}"
+    )
 
 # เก็บ CAP หลังปรับ 20/24 ไว้ก่อน drop — ใช้เป็นคอลัมน์ CAP ในชีท AVA_MC_ITEM
 _CAP_ADJ_SNAP = (

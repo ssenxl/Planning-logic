@@ -55,6 +55,7 @@ export default function OrderColor() {
   const [aiAdvice, setAiAdvice] = useState(null)   // { summary, ranking, ai, note }
   const [aiLoading, setAiLoading] = useState(false)
   const [aiPreview, setAiPreview] = useState(null) // รายการปรับที่รอ user ยืนยัน (ไม่ apply อัตโนมัติ)
+  const [showHelp, setShowHelp] = useState(false)  // ซ่อน/แสดงคำอธิบายวิธีใช้ (กันหน้ารก)
   const prevRunning = useRef(false)
 
   async function loadMeta() {
@@ -728,48 +729,7 @@ export default function OrderColor() {
   const runLabel = isRunning ? `กำลังดึงข้อมูล: ${runStatus.label || '-'}` : 'ยังไม่มีงานกำลังรัน'
 
   return (
-    <div className="masters">
-      <aside className="filelist">
-        <div className="data-sidehead">
-          <div>
-            <h2>Order Color</h2>
-            <p>Order ระดับ ITEM Color (Datamining → Booking)</p>
-          </div>
-          <div className="data-sideactions">
-            <button className="primary" onClick={pull} disabled={isRunning}>ดึงข้อมูล</button>
-            <button onClick={runAdvise} disabled={advising || isRunning}>
-              {advising ? 'กำลังวิเคราะห์...' : '🔍 วิเคราะห์แผนสี'}
-            </button>
-            <button onClick={buildPlan} disabled={planning || isRunning}>
-              {planning ? 'กำลังสร้างแผน...' : '🗓 จัดแผนสี (Gantt)'}
-            </button>
-          </div>
-        </div>
-
-        <div className="map-runbox">
-          <span className={'badge ' + (isRunning ? 'run' : 'idle')}>{runLabel}</span>
-          <small>ปุ่ม <b>ดึงข้อมูล</b> จะรัน <b>MapItem.py</b> เพื่อสร้าง/อัปเดตไฟล์ Order Color (เขียนทับไฟล์เดิม)</small>
-        </div>
-
-        {meta && (
-          <div className="filegroup">
-            <div className="filename">
-              {meta.name} {!meta.exists && <span className="warn">ยังไม่พบไฟล์</span>}
-            </div>
-            {meta.exists && (
-              <div className="datafile-meta">
-                อัปเดตล่าสุด {fmtTime(meta.mtime)} • {fmtSize(meta.size)}
-              </div>
-            )}
-            {meta.exists && <a className="dl" href={api.orderColorDownloadUrl(meta.mtime)}>⬇ ดาวน์โหลดไฟล์</a>}
-          </div>
-        )}
-
-        <div className="data-note">
-          ถ้ายังไม่พบไฟล์ ให้กด <b>ดึงข้อมูล</b> แล้วรอให้สถานะจบก่อน ระบบจะโหลดข้อมูลให้อัตโนมัติ
-        </div>
-      </aside>
-
+    <div className="masters oc-full">
       <section className="editor">
         {basePlan && (
           <div className="advice-panel">
@@ -777,18 +737,29 @@ export default function OrderColor() {
               <div>
                 <h2>แผนถักงานสี (Gantt) — ทุก item ต่อสัปดาห์ × เครื่อง</h2>
                 <div className="data-selected-meta">
-                  {basePlan.plan_name ? `จาก booking ${basePlan.plan_name} • ` : ''}
-                  ★ บล็อกสีทอง = งานสี (ทอก่อน) • ลากบล็อกเปลี่ยนสัปดาห์ / คลิก ✕ ถอดงานไม่มีสีเพื่อเปิดที่ให้งานสี
+                  {basePlan.plan_name ? `จาก booking ${basePlan.plan_name}` : ''}
+                  {' '}
+                  <button type="button" className="help-toggle" onClick={() => setShowHelp(v => !v)}>
+                    {showHelp ? '▾ ซ่อนวิธีใช้' : '▸ วิธีใช้'}
+                  </button>
                 </div>
               </div>
               <div className="actions">
+                <button className="build" onClick={buildPlan} disabled={planning || isRunning}>
+                  {planning ? 'กำลังสร้างแผน...' : '🗓 จัดแผนสี (Gantt)'}
+                </button>
                 <button onClick={runAiAdvise} disabled={aiLoading || !swapView.length}>
                   {aiLoading ? '🤖 กำลังวิเคราะห์...' : '🤖 AI แนะนำการปรับ'}
                 </button>
                 <button className="primary" onClick={downloadPlan}>⬇ ดาวน์โหลดแผนนี้</button>
-                <button onClick={() => setBasePlan(null)}>📋 ดูสรุป CAT×เกจ</button>
               </div>
             </div>
+            {showHelp && (
+              <div className="help-box">
+                <div>★ บล็อกสีทอง = งานสี (ทอก่อน) • ลากบล็อกเปลี่ยนสัปดาห์ • คลิก ✕ ถอดงานไม่มีสีเพื่อเปิดที่ให้งานสี</div>
+                <div>งานสีต้องได้ทอก่อน — ตัวที่ทออยู่ week ไกลจะเสนอดึงเข้ามาเร็วขึ้น • เครื่องว่าง = ย้ายเลย • เครื่อง/job ไม่พอ = ถอดงานไม่มีสี (⭐ แนะนำ) — งานที่ถอดได้แผนใหม่อัตโนมัติ</div>
+              </div>
+            )}
             {basePlan.note && <div className="msg note">ℹ️ {basePlan.note}</div>}
             {work.warns?.length > 0 && (
               <div className="msg note">
@@ -812,7 +783,6 @@ export default function OrderColor() {
             <div className="swap-panel">
               <div className="swap-head">
                 <b>งานสีใน {catFilterLabel || '(ทั้งหมด)'} — {swapView.length} ตัว (ดึงเข้ามาเร็วขึ้นได้ {nSwapNeed}, จัดแล้ว {nSwapDone})</b>
-                <span className="hint small" style={{ padding: 0 }}>งานสีต้องได้ทอก่อน — ตัวที่ทออยู่ week ไกลจะเสนอดึงเข้ามาเร็วขึ้น • เครื่องว่าง = ย้ายเลย • เครื่อง/job ไม่พอ = ถอดงานไม่มีสี (⭐ แนะนำ) — งานที่ถอดได้แผนใหม่อัตโนมัติ</span>
               </div>
               {!swapView.length && <div className="hint small" style={{ padding: '4px 0' }}>กลุ่มนี้ไม่มีงานสี</div>}
               {swapView.map(s => {
@@ -1127,6 +1097,11 @@ export default function OrderColor() {
                   งานสีต้องทอก่อนงานไม่มีสี • วางบน "สัปดาห์ถัก = ย้อม − {catHist?.lead_weeks ?? 2}" แล้วดึงเข้าสัปดาห์ว่างที่เร็วสุด
                   <br />② เครื่องว่างต่อสัปดาห์ (เขียว = ว่าง, แดง = เต็ม) • ① บล็อกงานสี (ตัวเลข = กก. ถัก) • ③ แผนปัจจุบัน — งานไม่มีสี = ตัวที่ถอดออกได้
                 </div>
+              </div>
+              <div className="actions">
+                <button className="build" onClick={buildPlan} disabled={planning || isRunning}>
+                  {planning ? 'กำลังสร้างแผน...' : '🗓 จัดแผนสี (Gantt)'}
+                </button>
               </div>
             </div>
 

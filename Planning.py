@@ -9,6 +9,16 @@ from datetime import date, datetime
 import configparser as _cp
 from pathlib import Path
 from Calendar import load_calendar, calendar_week_map
+import WorkDay  # ต้อง import ก่อน _base_work_hours ถูกเรียกที่ระดับ module (WorkDay.init เรียกทีหลังตอน master_mc พร้อม)
+
+
+def _base_work_hours(mc_group, gauge=None) -> float:
+    """ชั่วโมงฐานของกลุ่มสำหรับแปลง CAP (ฐาน 24 ชม.) → กำลังผลิตจริง
+    override จากชีท Work Day (หน้า WorkDayPanel) ถ้าตั้งไว้ · ไม่งั้น 20 (ค่าเดิมของ Planning)
+    หมายเหตุ: Item Special ยังชนะเสมอ — จัดการที่ adjust_daily_cap_for_item_special แยกต่างหาก"""
+    ov = WorkDay.get_working_hours(mc_group, gauge)
+    return float(ov) if ov is not None else 20.0
+
 
 # Set UTF-8 encoding for Windows console
 
@@ -323,10 +333,13 @@ except Exception as _e_job:
 # Lock_MC: เครื่องที่ถูก lock ไม่ให้ใช้วางแผน per (week, mc_cat, gauge)
 # Source: MasterMC.xlsx sheet "Lock_MC"
 # - _LOCK_MC_MAP: หักจำนวนเครื่องออกจาก pool (กันคนอื่นใช้) — ทำงานเสมอไม่ว่าจะระบุ item หรือไม่
-# - _LOCK_ITEM_WEEKS: ถ้าระบุคอลัมน์ ITEM = "กันเครื่องให้ item นี้ + คงความอุ่น" (item_upper → set(week))
+# - _LOCK_ITEM_WARM: ถ้าระบุคอลัมน์ ITEM = "กันเครื่องให้ item นี้ + คงความอุ่น"
 #   ทำให้พอ item กลับมาผลิตหลังเว้นช่วง ระบบถือว่าเครื่องยังอุ่น → ไม่ setup ใหม่
+#   ⚠️ ต้องใช้กติกาเดียวกับ _LOCK_WARM ใน AVA_MC.py (ฝั่ง OLD) ไม่งั้น NEW/OLD ให้ผลคนละแบบ:
+#     - จำนวนที่กัน = จำนวนเครื่องที่อุ่นได้ (กัน 3 → อุ่น 3, ตัวที่ 4 เป็นเครื่องใหม่ต้อง setup)
+#     - คอลัมน์ MC: ระบุ = อุ่นเฉพาะกลุ่มเครื่องนั้น, เว้นว่าง = อุ่นทุกกลุ่มใน MC_CAT
 _LOCK_MC_MAP: dict = {}
-_LOCK_ITEM_WEEKS: dict = {}
+_LOCK_ITEM_WARM: dict = {}  # key=(item_upper, cat_upper, gauge_norm, mc_upper|"") → {week: locked_count}
 try:
     _lock_mc_df = pd.read_excel(_MASTER_MC_PATH, sheet_name="Lock_MC")
     _lock_mc_df.columns = _lock_mc_df.columns.str.strip()
@@ -352,13 +365,36 @@ try:
             _LOCK_MC_MAP[_k] = _LOCK_MC_MAP.get(_k, 0) + _lcount
         # ITEM (ไม่บังคับ): กันเครื่องให้ item นี้คงความอุ่นในสัปดาห์ที่ระบุ
         _litem = str(_lrow.get("ITEM", _lrow.get("ITEM_CODE", "")) or "").strip().upper()
-        if _litem and _litem.lower() != "nan" and _lweek is not None:
-            _LOCK_ITEM_WEEKS.setdefault(_litem, set()).add(_lweek)
+        if _litem and _litem != "NAN" and _lweek is not None and _lcount > 0:
+            _lmc = str(_lrow.get("MC", "") or "").strip().upper().replace("NAN", "")
+            _lk = (_litem, _lcat, _lg, _lmc)
+            _lslot = _LOCK_ITEM_WARM.setdefault(_lk, {})
+            # คีย์ซ้ำ (สัปดาห์เดียวกัน) → บวกรวม ให้ตรงกับที่หัก pool และที่การ์ดในเว็บเตือนไว้
+            _lslot[_lweek] = _lslot.get(_lweek, 0) + _lcount
     print(f"✅ Lock_MC map: {_LOCK_MC_MAP}")
-    if _LOCK_ITEM_WEEKS:
-        print(f"✅ Lock_MC item-warm: {_LOCK_ITEM_WEEKS}")
+    if _LOCK_ITEM_WARM:
+        print(f"✅ Lock_MC item-warm: {_LOCK_ITEM_WARM}")
 except Exception as _e_lock:
     print(f"⚠️ ไม่สามารถโหลด Lock_MC sheet: {_e_lock}")
+
+
+def _lock_warm_weeks_plan(item, mc_group, gauge) -> dict:
+    """{week: จำนวนเครื่องที่ lock ไว้ให้ item นี้} — รวม lock ที่ระบุ MC ตรงกับที่เว้นว่าง
+
+    กติกาเดียวกับ _lock_warm_weeks() ใน AVA_MC.py (เว้นว่าง = ครอบคลุมทุกกลุ่มใน MC_CAT
+    → ถ้ามีทั้งสองแบบใช้ค่าที่มากกว่า ไม่บวกกัน เพราะอ้างถึงเครื่องชุดเดียวกัน)
+    """
+    if not _LOCK_ITEM_WARM:
+        return {}
+    _item = str(item).strip().upper()
+    _mc = str(mc_group).strip().upper()
+    _cat = _mc_to_type1(_mc, gauge)
+    _g = _normalize_gauge(gauge)
+    out: dict = {}
+    for _k in ((_item, _cat, _g, _mc), (_item, _cat, _g, "")):
+        for _w, _c in _LOCK_ITEM_WARM.get(_k, {}).items():
+            out[_w] = max(out.get(_w, 0), _c)
+    return out
 
 
 def _bridge_locks(key, current_idx):
@@ -368,23 +404,44 @@ def _bridge_locks(key, current_idx):
     เงื่อนไข: item ต้องเคยผลิตมาก่อน (key อยู่ใน last_production) จึงจะ "อุ่นต่อ" ได้
     (ครั้งแรกสุดยังต้อง setup ตามปกติ) และเลื่อนได้เฉพาะสัปดาห์ lock ที่อยู่ระหว่าง
     สัปดาห์ผลิตล่าสุด..สัปดาห์ปัจจุบัน — ไม่ล้ำอนาคต
+
+    เดินเป็นทอด ๆ ทีละ lock โดยแต่ละช่วงห้ามเกิน SETUP_GAP_WEEK (เครื่องเย็นระหว่างทางไม่ได้)
+    — เดิมกระโดดไป lock ที่ไกลสุดเลยโดยไม่เช็คว่าช่วงก่อนหน้าขาดตอนหรือเปล่า
+
+    คืนค่า: จำนวนเครื่องที่อุ่นได้ (= จำนวนที่กันไว้ แคบสุดตลอดเส้นทาง) หรือ None ถ้าไม่มี
+    lock มาเกี่ยว → ผู้เรียกต้องเอาไปจำกัดจำนวนเครื่อง carry-over ด้วย
     """
-    if not _LOCK_ITEM_WEEKS or current_idx is None:
-        return
-    if not isinstance(key, tuple) or not key:
-        return
-    weeks = _LOCK_ITEM_WEEKS.get(key[0])
-    if not weeks or key not in last_production:
-        return
-    cur = last_production[key]
-    best = cur
-    for _w in weeks:
+    if not _LOCK_ITEM_WARM or current_idx is None:
+        return None
+    if not isinstance(key, tuple) or not key or key not in last_production:
+        return None
+    weeks = _lock_warm_weeks_plan(
+        key[0],
+        key[1] if len(key) > 1 else "",
+        key[2] if len(key) > 2 else "",
+    )
+    if not weeks:
+        return None
+    # แปลงสัปดาห์ → index ก่อน (last_production เก็บเป็น index ไม่ใช่เลขสัปดาห์)
+    _by_idx: dict = {}
+    for _w, _c in weeks.items():
         _wi = week_index(_w)
-        if _wi is not None and cur < _wi < current_idx and _wi > best:
-            best = _wi
-    if best > cur:
-        last_production[key] = best
-        print(f"[LOCK WARM] {key[0]}: คงเครื่องอุ่นถึง idx {best} (จาก Lock_MC) → ไม่ setup ใหม่ที่ idx {current_idx}")
+        if _wi is not None:
+            _by_idx[_wi] = max(_by_idx.get(_wi, 0), _c)
+    cur = last_production[key]
+    start = cur
+    cap = None
+    for _wi in sorted(_by_idx):
+        if cur < _wi < current_idx and (_wi - cur) <= SETUP_GAP_WEEK:
+            cur = _wi
+            cap = _by_idx[_wi] if cap is None else min(cap, _by_idx[_wi])
+    if cur > start:
+        last_production[key] = cur
+        print(
+            f"[LOCK WARM] {key[0]}: คงเครื่องอุ่นถึง idx {cur} (จาก Lock_MC, อุ่นได้ {cap} เครื่อง)"
+            f" → ไม่ setup ใหม่ที่ idx {current_idx}"
+        )
+    return cap
 
 # MC Special: per-(Factory, MC_CAT, MC, Gauge) → POLY/COTTON machine count
 # Source: MasterMC.xlsx sheet "MC Special"
@@ -1614,19 +1671,19 @@ def _get_material_content_from_yarn(item_code: str) -> str:
 
 
 
-def _normalize_capacity(item_code: str, mc_group: str, original_cap: float) -> float:
+def _normalize_capacity(item_code: str, mc_group: str, original_cap: float, gauge: str = None) -> float:
 
     """
 
     Normalize capacity to ensure consistency across MC_GROUPS
 
-    แปลง CAP ทอ จากฐาน 24 ชั่วโมง เป็น 20 ชั่วโมง
+    แปลง CAP ทอ จากฐาน 24 ชั่วโมง → ชั่วโมงทำงานจริงของกลุ่ม
 
-    เพราะเครื่องทอทำงานจริง 20 ชั่วโมง/วัน
+    ปกติ 20 ชม./วัน · ถ้าตั้ง WORK_HOUR override ในชีท Work Day ใช้ค่านั้น
 
     """
 
-    return original_cap * (20 / 24)
+    return original_cap * (_base_work_hours(mc_group, gauge) / 24)
 
 
 
@@ -2926,21 +2983,19 @@ def _get_working_hours_for_mc(mc_group: str) -> int:
 
 
 
-def _convert_cap_per_day(cap_per_day: float, mc_group: str) -> float:
+def _convert_cap_per_day(cap_per_day: float, mc_group: str, gauge: str = None) -> float:
 
     """
 
     Convert CAP_PER_DAY to usable capacity based on working hours
 
-    - All CAP_PER_DAY values are for 24 hours and must be converted to 20 hours
+    - CAP_PER_DAY อยู่บนฐาน 24 ชม. → แปลงเป็นชั่วโมงทำงานจริงของกลุ่ม
 
-    - Convert: CAP_PER_DAY × (20/24) for all machines
+    - ปกติ 20 ชม. · ถ้าตั้ง WORK_HOUR override ในชีท Work Day ใช้ค่านั้น
 
     """
 
-    # All machines work 20 hours, so convert all CAP_PER_DAY from 24-hour basis
-
-    return cap_per_day * (20 / 24)
+    return cap_per_day * (_base_work_hours(mc_group, gauge) / 24)
 
 
 
@@ -2958,7 +3013,7 @@ def _get_capacity_for_mc_group(item_code: str, mc_group: str, gauge: str = None)
 
     if not item_rows.empty:
 
-        return _normalize_capacity(item_code, mc_group, item_rows["CAP ทอ"].iloc[0])
+        return _normalize_capacity(item_code, mc_group, item_rows["CAP ทอ"].iloc[0], gauge)
 
 
 
@@ -2968,7 +3023,7 @@ def _get_capacity_for_mc_group(item_code: str, mc_group: str, gauge: str = None)
 
     if not all_item_caps.empty:
 
-        return _normalize_capacity(item_code, mc_group, all_item_caps.min())
+        return _normalize_capacity(item_code, mc_group, all_item_caps.min(), gauge)
 
 
 
@@ -3106,6 +3161,10 @@ summary_mc["WEEK"] = summary_mc["WEEK"].astype(int)
 
 calendar_week["WEEK"] = calendar_week["WEEK"].astype(int)
 
+# YW_INT = คีย์สัปดาห์แบบ composite YYYYWW (เช่น 2027 W5 -> 202705) — unique ข้ามปี
+# ใช้แก้ปัญหาเลข week ซ้ำข้ามปี (bare week 1-53 ไม่ unique เมื่อปฏิทินมีหลายปี)
+calendar_week["YW_INT"] = calendar_week["YEAR"].astype(int) * 100 + calendar_week["WEEK"].astype(int)
+
 
 
 # =========================
@@ -3198,7 +3257,7 @@ for _, _ord_row in orders.iterrows():
 
         )
 
-        converted_cap = raw_cap * (20 / 24)
+        converted_cap = raw_cap * (_base_work_hours(_ord_mc, _ord_row.get("MC_GUAGE")) / 24)
 
         print(
 
@@ -3452,7 +3511,7 @@ for _, row in master_mc.iterrows():
 
 # วันทำงานรายสัปดาห์ (แหล่งเดียว: ชีท Work Day / Week Merge ใน Calendar.xlsx)
 # ส่ง lambda นับวันทำงานตามปฏิทิน (get_working_days_in_week นิยามด้านล่าง — resolve ตอนเรียกใช้)
-import WorkDay
+# หมายเหตุ: import WorkDay + def _base_work_hours ย้ายไปไว้ต้นไฟล์แล้ว (ถูกเรียกที่ระดับ module ก่อนถึงจุดนี้)
 WorkDay.init(master_mc, lambda w: len(get_working_days_in_week(w)))
 
 
@@ -3498,11 +3557,56 @@ def get_week_from_date(date):
 
 
 
+def wk_year(week):
+    """คืนปีของค่าสัปดาห์: composite YYYYWW -> YYYY, bare -> None (ไม่รู้ปี)"""
+    if week is None:
+        return None
+    try:
+        w = int(week)
+    except (TypeError, ValueError):
+        return None
+    return w // 100 if w >= 100000 else None
+
+
+def wk_num(week):
+    """คืนเลขสัปดาห์ 1-53: composite YYYYWW -> WW, bare -> คงเดิม"""
+    if week is None:
+        return None
+    try:
+        w = int(week)
+    except (TypeError, ValueError):
+        return None
+    return w % 100 if w >= 100000 else w
+
+
 def week_index(week):
+    """แปลงค่าสัปดาห์ -> row index ใน calendar_week (ตำแหน่งบน timeline)
 
-    idx = calendar_week.index[calendar_week["WEEK"] == week]
+    รองรับ 2 รูปแบบ:
+      - composite YYYYWW (>= 100000) : จับคู่ YW_INT แบบ unique -> ถูกต้องข้ามปีเสมอ
+      - bare week 1-53   (< 100000)  : เลือก occurrence ที่ใกล้ TODAY_IDX ที่สุด
+                                        (กันเลข week ซ้ำข้ามปีจับผิดปี; ถูกทั้งอดีตใกล้ ๆ และอนาคตใกล้ ๆ)
+    หมายเหตุ: ตอน bootstrap (คำนวณ TODAY_IDX ครั้งแรก) TODAY_IDX ยังไม่มี -> fallback แถวแรกสุด
+    """
+    if week is None:
+        return None
+    try:
+        w = int(week)
+    except (TypeError, ValueError):
+        return None
 
-    return None if idx.empty else idx[0]
+    if w >= 100000:  # composite YYYYWW
+        idx = calendar_week.index[calendar_week["YW_INT"] == w]
+        return None if len(idx) == 0 else int(idx[0])
+
+    idx = list(calendar_week.index[calendar_week["WEEK"] == w])
+    if not idx:
+        return None
+    base = globals().get("TODAY_IDX")
+    if base is None:
+        return int(idx[0])
+    # เลือกแถวที่ใกล้ TODAY ที่สุด (tie -> แถวก่อน)
+    return int(min(idx, key=lambda i: (abs(int(i) - base), int(i))))
 
 
 
@@ -3582,13 +3686,15 @@ def get_working_days_by_factory(mc_group, available_machines_count=None, week=No
 
 
 
-def adjust_daily_cap_for_item_special(daily_cap, item_code, mc_group, gauge=None, base_working_hour=20):
+def adjust_daily_cap_for_item_special(daily_cap, item_code, mc_group, gauge=None, base_working_hour=None):
 
-    """ปรับ daily_cap ตาม Working hour จาก Item Special
+    """ปรับ daily_cap ตาม Working hour จาก Item Special (Item Special ชนะเสมอ)
 
-    ถ้า item อยู่ใน Item Special และ Working hour ต่างจาก base_working_hour (ปกติ 20)
+    daily_cap เข้ามาถูกแปลงด้วยชั่วโมงฐานของกลุ่มแล้ว (base = WORK_HOUR override หรือ 20)
 
-    → scale daily_cap = daily_cap * (item_special_wh / base_working_hour)
+    ถ้า item อยู่ใน Item Special และ Working hour ต่างจาก base → rescale จาก base เป็นชั่วโมงของ Item Special
+
+    → ผลลัพธ์ = cap(24hr) * (item_special_wh / 24) เสมอ ไม่ว่ากลุ่มจะตั้ง override ไว้เท่าใด
 
     """
 
@@ -3600,11 +3706,13 @@ def adjust_daily_cap_for_item_special(daily_cap, item_code, mc_group, gauge=None
 
     if _is is not None:
 
+        base = base_working_hour if base_working_hour is not None else _base_work_hours(mc_group, gauge)
+
         _wh = _is[1]  # working_hour
 
-        if _wh != base_working_hour and base_working_hour > 0:
+        if base > 0 and _wh != base:
 
-            return daily_cap * (_wh / base_working_hour)
+            return daily_cap * (_wh / base)
 
     return daily_cap
 
@@ -4431,9 +4539,87 @@ def get_total_pending_qty_for_item(item_code, current_sc_so, current_fg_week, or
 
 
 
+# =========================
+# FOLD ROUNDING — จำนวนพับ = qty ÷ REVOLUTION_WEIGHT
+# ทอครึ่งพับไม่ได้ → ทุกกลุ่มปัดลงเป็นจำนวนเต็มพับ
+# กลุ่ม IRMT/SJT ปัดที่ระดับ "ต่อเครื่อง" (เครื่องละกี่พับก็ได้ ขอให้เต็มพับ) แล้วคูณจำนวนเครื่อง
+#
+# เงื่อนไข "หารด้วย 6 ลงตัว" เป็นเรื่องของ "ยอดรวมทั้ง order" ไม่ใช่ของแต่ละสัปดาห์
+# → ตรวจที่ ORDERS_QTY ด้วย fold_check_order() แล้วเตือน (ดู FOLD_WARN ในชีท PLAN)
+#   สัปดาห์ไหนจะทอกี่พับก็ได้ ขอแค่รวมกันครบยอด order
+# =========================
+FOLD_ROUND_MC_GROUPS = {"IRMT", "SJT"}
+FOLD_MULTIPLE = 6
+
+
+def fold_round(total_cap, rev_weight, mc_group, per_mc_cap=None, mc_count=None):
+    """ปัด capacity ลงตามจำนวนพับ (จำนวนเต็มพับ — สัปดาห์ละกี่พับก็ได้)
+    - กลุ่มอื่น: (total_cap // rev_weight) * rev_weight
+    - IRMT/SJT (ต้องส่ง per_mc_cap + mc_count): ปัดจำนวนพับ "ต่อเครื่อง" ลงเป็นจำนวนเต็ม
+      แล้วคูณจำนวนเครื่อง
+    """
+    if not rev_weight or rev_weight <= 0:
+        return total_cap
+    if (
+        per_mc_cap is not None
+        and mc_count
+        and str(mc_group).strip().upper() in FOLD_ROUND_MC_GROUPS
+    ):
+        folds = int(per_mc_cap // rev_weight)
+        return folds * rev_weight * int(mc_count)
+    return int(total_cap // rev_weight) * rev_weight
+
+
+def fold_round_mixed(
+    total_cap, rev_weight, mc_group,
+    carry_cap_per_mc, carry_mc, new_cap_per_mc, new_mc,
+):
+    """เหมือน fold_round แต่รองรับเครื่อง 2 กลุ่มที่ cap/เครื่องไม่เท่ากัน
+    (carry = วิ่งเต็มสัปดาห์, new = ถูกหักวัน setup)
+    - IRMT/SJT: ปัดจำนวนพับต่อเครื่องเป็นจำนวนเต็ม แยกกลุ่ม carry/new แล้วรวมกัน
+    - กลุ่มอื่น: ปัดยอดรวมทั้งก้อนเป็นจำนวนพับเต็ม
+    """
+    if not rev_weight or rev_weight <= 0:
+        return total_cap
+    if str(mc_group).strip().upper() in FOLD_ROUND_MC_GROUPS:
+        return (
+            fold_round(carry_cap_per_mc * carry_mc, rev_weight, mc_group, carry_cap_per_mc, carry_mc)
+            + fold_round(new_cap_per_mc * new_mc, rev_weight, mc_group, new_cap_per_mc, new_mc)
+        )
+    return int(total_cap // rev_weight) * rev_weight
+
+
+def fold_check_order(orders_qty, rev_weight, mc_groups=None):
+    """ตรวจยอดที่ลูกค้าเปิดมาว่าแบ่งเป็นพับแล้วหารด้วย 6 ลงตัวหรือไม่
+
+    ⚠️ กฎ "หาร 6 ลงตัว" ใช้เฉพาะกลุ่ม IRMT / SJT เท่านั้น — กลุ่มอื่นไม่มีข้อบังคับนี้
+    (mc_groups = MC_GROUP ทั้งหมดที่ order นี้ใช้; ไม่ส่ง = ไม่เช็ค)
+
+    คืน (folds, remainder, warn)
+      folds     = จำนวนพับของยอด order (ปัดทศนิยม 2 ตำแหน่ง — เศษพับก็ต้องเห็น)
+      remainder = เศษพับที่หาร 6 ไม่ลงตัว (0 = ลงตัวพอดี)
+      warn      = True เมื่อเป็น IRMT/SJT แล้วหารไม่ลงตัว
+    แผนยังวางเต็มตามยอดจริงเสมอ — ค่านี้ใช้เตือน planner ให้ไปแก้ที่ต้นทาง (ยอดเปิด order)
+    """
+    if not any(
+        str(_m).strip().upper() in FOLD_ROUND_MC_GROUPS for _m in (mc_groups or [])
+    ):
+        return (0.0, 0.0, False)
+    try:
+        _qty = float(orders_qty or 0)
+        _rw = float(rev_weight or 0)
+    except (TypeError, ValueError):
+        return (0.0, 0.0, False)
+    if _qty <= 0 or _rw <= 0:
+        return (0.0, 0.0, False)
+    folds = round(_qty / _rw, 2)
+    remainder = round(folds % FOLD_MULTIPLE, 2)
+    return (folds, remainder, remainder != 0)
+
+
 def calculate_progressive_reduction(
 
-    item_code, order_qty, start_week, fg_week, mc_group, daily_cap, item_gauge, 
+    item_code, order_qty, start_week, fg_week, mc_group, daily_cap, item_gauge,
 
     setup_days=SETUP_DAYS, rev_weight=None
 
@@ -4464,7 +4650,15 @@ def calculate_progressive_reduction(
     # สร้าง list ของ weeks จาก start_week ถึง TARGET_KNIT โดยเด็ดขาด
     # target_week_index เป็น None ได้ (RDD นอกช่วง calendar) → ข้าม loop ให้คืน None ตาม logic เดิม
 
+    _wut_guard = 0
+
     while current_week is not None and target_week_index is not None and week_index(current_week) <= target_week_index:
+
+        _wut_guard += 1  # SAFETY: กัน infinite loop ตอนข้ามปลายปี (week_index จับผิดปี → ไม่เดินหน้า)
+
+        if _wut_guard > 300:
+
+            break
 
         weeks_until_target.append(current_week)
 
@@ -4523,11 +4717,10 @@ def calculate_progressive_reduction(
 
             use_mc = min(try_mc, w['avail'])
 
-            prod = use_mc * prod_days * daily_cap
-
-            if rev_weight and rev_weight > 0:
-
-                prod = (prod // rev_weight) * rev_weight
+            prod = fold_round(
+                use_mc * prod_days * daily_cap, rev_weight, mc_group,
+                per_mc_cap=prod_days * daily_cap, mc_count=use_mc,
+            )
 
             qty_left -= prod
 
@@ -4563,11 +4756,10 @@ def calculate_progressive_reduction(
 
             _use_i = min(min_machines, week_info[_i]['avail'])
 
-            _p = _use_i * _pd_i * daily_cap
-
-            if rev_weight and rev_weight > 0:
-
-                _p = (_p // rev_weight) * rev_weight
+            _p = fold_round(
+                _use_i * _pd_i * daily_cap, rev_weight, mc_group,
+                per_mc_cap=_pd_i * daily_cap, mc_count=_use_i,
+            )
 
             _total_cap += _p
 
@@ -4643,11 +4835,10 @@ def calculate_progressive_reduction(
 
         # คำนวณ capacity ต่อสัปดาห์ของเครื่องทั้งหมด
 
-        full_week_capacity = min_machines * prod_days * daily_cap
-
-        if rev_weight and rev_weight > 0:
-
-            full_week_capacity = (full_week_capacity // rev_weight) * rev_weight
+        full_week_capacity = fold_round(
+            min_machines * prod_days * daily_cap, rev_weight, mc_group,
+            per_mc_cap=prod_days * daily_cap, mc_count=min_machines,
+        )
 
         
 
@@ -4695,15 +4886,19 @@ def calculate_progressive_reduction(
 
             added_in_wk = use_mc - carry_in_wk
 
-            prod = (carry_in_wk * prod_days + added_in_wk * max(0, prod_days - setup_days)) * daily_cap
+            prod = fold_round_mixed(
+                (carry_in_wk * prod_days + added_in_wk * max(0, prod_days - setup_days)) * daily_cap,
+                rev_weight, mc_group,
+                prod_days * daily_cap, carry_in_wk,
+                max(0, prod_days - setup_days) * daily_cap, added_in_wk,
+            )
 
         else:
 
-            prod = use_mc * prod_days * daily_cap
-
-        if rev_weight and rev_weight > 0:
-
-            prod = (prod // rev_weight) * rev_weight
+            prod = fold_round(
+                use_mc * prod_days * daily_cap, rev_weight, mc_group,
+                per_mc_cap=prod_days * daily_cap, mc_count=use_mc,
+            )
 
         result.append((w['week'], use_mc))
 
@@ -4821,11 +5016,15 @@ def calculate_required_machines(
     # สร้าง list ของ weeks จาก start_week ถึง TARGET_KNIT โดยเด็ดขาด
     # target_week_index เป็น None ได้ (RDD นอกช่วง calendar) → ข้าม loop ให้เข้า branch past RDD ด้านล่าง
 
-    while current_week is not None and target_week_index is not None and week_index(current_week) <= target_week_index:
-
-        weeks_until_target.append(current_week)
-
-        current_week = next_week(current_week)
+    # เดินด้วย row index ตรง ๆ (idx เพิ่มขึ้นเสมอ → จบแน่นอน)
+    # กัน infinite loop ที่เกิดจาก week_index(bare week) จับผิดปีตอนข้ามปลายปี
+    _iter_idx = start_week_idx
+    while (_iter_idx is not None and target_week_index is not None
+           and _iter_idx <= target_week_index and _iter_idx < len(calendar_week)):
+        weeks_until_target.append(int(calendar_week.iloc[_iter_idx]["WEEK"]))
+        _iter_idx += 1
+        while _iter_idx < len(calendar_week) and int(calendar_week.iloc[_iter_idx]["WEEK"]) in SKIP_WEEKS:
+            _iter_idx += 1
 
 
 
@@ -4837,15 +5036,16 @@ def calculate_required_machines(
 
         print(f"[DEBUG PAST RDD] Target {target_week_index} < Start {start_week_idx} → using weeks to plan_week+3 for faster completion")
 
-        current_week = start_week
-
         target_for_past_rdd = start_week_idx + 3  # จำกัด 3 weeks เพื่อให้รีบเสร็จ → คำนวณเครื่องสูงขึ้น
 
-        while current_week is not None and week_index(current_week) <= target_for_past_rdd:
-
-            weeks_until_target.append(current_week)
-
-            current_week = next_week(current_week)
+        # เดินด้วย row index ตรง ๆ (กัน infinite loop จาก week_index จับผิดปี)
+        _iter_idx = start_week_idx
+        while (_iter_idx is not None and _iter_idx <= target_for_past_rdd
+               and _iter_idx < len(calendar_week)):
+            weeks_until_target.append(int(calendar_week.iloc[_iter_idx]["WEEK"]))
+            _iter_idx += 1
+            while _iter_idx < len(calendar_week) and int(calendar_week.iloc[_iter_idx]["WEEK"]) in SKIP_WEEKS:
+                _iter_idx += 1
 
     
 
@@ -5908,7 +6108,18 @@ def next_week(week):
 
 TODAY_WEEK = get_week_from_date(TODAY)
 
-TODAY_IDX = week_index(TODAY_WEEK)
+# TODAY_IDX: หา row บน timeline ที่ครอบ TODAY โดยตรงจากวันที่ (กันยึดผิดปี)
+# เดิมใช้ week_index(TODAY_WEEK) แต่ TODAY_WEEK เป็น bare week และตอน bootstrap
+# TODAY_IDX ยังไม่มี → week_index คืน idx[0] = ปีแรกสุดในปฏิทิน (เช่นปี 2026 แทนที่จะเป็น 2027)
+_today_rows = calendar_week.index[
+    (calendar_week["WEEK_START"] <= TODAY) & (calendar_week["WEEK_END"] >= TODAY)
+]
+if len(_today_rows) > 0:
+    TODAY_IDX = int(_today_rows[0])
+else:
+    # TODAY อยู่นอกช่วงปฏิทิน → ใช้ row สุดท้ายที่เริ่มก่อน/ตรงกับ TODAY (fallback = แถวแรก)
+    _before = calendar_week.index[calendar_week["WEEK_START"] <= TODAY]
+    TODAY_IDX = int(_before[-1]) if len(_before) > 0 else week_index(TODAY_WEEK)
 
 
 
@@ -6098,9 +6309,9 @@ def detect_and_fill_unused_capacity(plans_list, orders_df, summary_mc):
 
             
 
-            # Calculate daily capacity from CAP ทอ (convert from 24hr to 20hr if needed)
+            # Calculate daily capacity from CAP ทอ (แปลงฐาน 24 ชม. → ชั่วโมงจริงของกลุ่ม)
 
-            daily_cap = cap_tor * (20 / 24) if cap_tor > 0 else 0
+            daily_cap = cap_tor * (_base_work_hours(mc_group, gauge) / 24) if cap_tor > 0 else 0
 
             
 
@@ -6492,23 +6703,15 @@ def detect_and_fill_unused_capacity(plans_list, orders_df, summary_mc):
 
 OLD_PLAN_FILE = DATA_PLAN_DIR / "committed_plan.xlsx"
 
-try:
-
-    old_plan_df = pd.read_excel(OLD_PLAN_FILE)
-
-    # เอาเฉพาะแถว NEW จาก old plan (carry-over จาก plan ก่อนหน้า)
-
-    if "PLAN_SOURCE" in old_plan_df.columns:
-
-        old_plan_df = old_plan_df[old_plan_df["PLAN_SOURCE"] == "NEW"].copy()
-
-    print(f"📋 โหลดแผนการผลิตเก่าสำหรับ validation: {len(old_plan_df)} แผน")
-
-except FileNotFoundError:
-
-    print("📋 ไม่พบแผนการผลิตเก่า")
-
-    old_plan_df = pd.DataFrame()
+# ❌ DISABLED: old-plan carryover จาก committed_plan.xlsx
+# เดิมโค้ดตรงนี้อ่าน committed_plan.xlsx (= ผลลัพธ์รอบก่อน) มาเป็น "old plan carryover"
+# แล้วเอาไป pre-load เครื่อง/หัก qty/ล็อกเครื่องเดิม → ทำให้ "รันแผนใหม่" ยังหยิบแผนเก่ามาปน
+# เกิด feedback loop: ผลลัพธ์ไม่นิ่ง (booking/order เดิมเป๊ะ ๆ แต่รันได้คนละสัปดาห์ W34↔W36)
+# บังคับ old_plan ให้ว่างเสมอ → รันแผนใหม่คำนวณสดล้วนจาก booking + order (deterministic)
+# หมายเหตุ: ฝั่ง "เขียน" committed_plan ก็ถูกปิดแล้ว (ดู block ปิด auto-backup ท้ายไฟล์)
+#   สำคัญบน server (deploy): แม้ committed_plan.xlsx เก่าจะค้างอยู่ ก็จะไม่ถูกอ่านมาใช้อีก
+#   ถ้าอนาคตจะทำ carryover จาก "แผนที่ user กด commit จริง" ค่อยเปิดอ่านเฉพาะไฟล์นั้น
+old_plan_df = pd.DataFrame()
 
 # สร้าง dict: {sc_so_no_upper: total_produce_qty} จาก old plan (NEW) ที่วาง week >= TODAY
 
@@ -8636,7 +8839,14 @@ def _run_planning_loop() -> list:
                     plan_week = int(_bw0)
             print(f"[CORE BATCH INIT] {item}: {len(_core_production_schedule)} batches, B1 W{_bw0} qty={qty_left:.0f} (total={_core_real_qty:.0f}), plan_week=W{plan_week}")
 
+        _mainloop_guard = 0
         while (qty_left > 0 or (_core_batch_idx + 1 < len(_core_production_schedule))) and plan_week is not None:
+            # SAFETY: กัน infinite loop ตอนข้ามปลายปี (next_week คืน bare week แล้ว week_index
+            # อาจ resolve ถอยปีทำให้ plan_week ไม่เดินหน้า) — เกินจำนวนสัปดาห์*fill ที่เป็นไปได้จริง → หยุด
+            _mainloop_guard += 1
+            if _mainloop_guard > 3000:
+                print(f"[SAFETY YEAR-END] {item} SC {sc_so_no}: main placement loop เกิน 3000 รอบ → break (qty เหลือจะเข้า UNPLANNED)")
+                break
             # FIX: กัน floating-point residual qty ที่น้อยเกินไปจาก booking deduction
             # qty ที่น้อยกว่า 1.0 ไม่สามารถผลิตได้จริง และจะทำลาย booking carryover seed ของ order อื่น
             if qty_left < 1.0:
@@ -8800,8 +9010,14 @@ def _run_planning_loop() -> list:
                 )
                 while qty_left > 0 and _rem_cap > 0:
                     if _fill_rev_weight and _fill_rev_weight > 0:
-                        _rem_batches = int(_rem_cap // _fill_rev_weight)
-                        produce = min(qty_left, _rem_batches * _fill_rev_weight)
+                        _fill_mc_cnt = max(1, int(_fill_avail_mc or 1))
+                        produce = min(
+                            qty_left,
+                            fold_round(
+                                _rem_cap, _fill_rev_weight, _fill_mc_group,
+                                per_mc_cap=_rem_cap / _fill_mc_cnt, mc_count=_fill_mc_cnt,
+                            ),
+                        )
                     else:
                         produce = min(qty_left, _rem_cap)
 
@@ -9543,7 +9759,15 @@ def _run_planning_loop() -> list:
                         forced_m = machines_in_use.get(mc_key, 0)
                     prev_machines = int(forced_m or 0)
             current_week_idx = week_index(plan_week)
-            _bridge_locks(mc_key, current_week_idx)
+            _warm_cap = _bridge_locks(mc_key, current_week_idx)
+            # กันไว้กี่เครื่อง = อุ่นได้แค่นั้น — ที่เกินต้องนับเป็นเครื่องใหม่ (setup)
+            # กติกาเดียวกับฝั่ง OLD ใน AVA_MC.py (_solve_carry_group)
+            if _warm_cap is not None and prev_machines > _warm_cap:
+                print(
+                    f"[LOCK WARM] {item} W{plan_week}: carry-over {prev_machines} → {_warm_cap} เครื่อง"
+                    f" (Lock_MC กันไว้ {_warm_cap})"
+                )
+                prev_machines = _warm_cap
             prev_week_idx = last_production.get(mc_key)
             _booking_week_mc = (
                 booking_mc_by_week.get(mc_key, {}).get(current_week_idx, 0)
@@ -9869,6 +10093,8 @@ def _run_planning_loop() -> list:
                 )
                 _sim_count = 0
                 while wk is not None and q > _rw:
+                    if _sim_count > 300:  # SAFETY: กัน infinite loop ข้ามปลายปี
+                        break
                     w_idx_sim = week_index(wk)
                     if w_idx_sim is None:
                         break
@@ -9889,12 +10115,18 @@ def _run_planning_loop() -> list:
                         c_prod = carry * _carry_wd * daily_capacity
                         n_prod = new * max(0, wd - item_setup_days) * daily_capacity
                         first = False
+                        total = fold_round_mixed(
+                            c_prod + n_prod, rev_weight, mc_group,
+                            _carry_wd * daily_capacity, carry,
+                            max(0, wd - item_setup_days) * daily_capacity, new,
+                        )
                     else:
                         c_prod = (carry + new) * wd * daily_capacity
                         n_prod = 0
-                    total = c_prod + n_prod
-                    if rev_weight and rev_weight > 0 and total > 0:
-                        total = (total // rev_weight) * rev_weight
+                        total = fold_round(
+                            c_prod, rev_weight, mc_group,
+                            per_mc_cap=wd * daily_capacity, mc_count=carry + new,
+                        )
                     q -= total
                     wk = next_week(wk)
                     _sim_count += 1
@@ -10154,6 +10386,8 @@ def _run_planning_loop() -> list:
                     )
                     _sim_cnt_fit = 0
                     while _wk is not None and _q > 0:
+                        if _sim_cnt_fit > 300:  # SAFETY: กัน infinite loop ข้ามปลายปี
+                            break
                         _wi = week_index(_wk)
                         if _wi is None:
                             break
@@ -10171,12 +10405,17 @@ def _run_planning_loop() -> list:
                             _n_cnt = max(0, total_mc - _c_cnt)
                             _c_prod = _c_cnt * _wd * daily_capacity
                             _n_prod = _n_cnt * max(0, _wd - item_setup_days) * daily_capacity
-                            _prod_wk = _c_prod + _n_prod
                             _first = False
+                            _prod_wk = fold_round_mixed(
+                                _c_prod + _n_prod, rev_weight, mc_group,
+                                _wd * daily_capacity, _c_cnt,
+                                max(0, _wd - item_setup_days) * daily_capacity, _n_cnt,
+                            )
                         else:
-                            _prod_wk = total_mc * _wd * daily_capacity
-                        if rev_weight and rev_weight > 0 and _prod_wk > 0:
-                            _prod_wk = (_prod_wk // rev_weight) * rev_weight
+                            _prod_wk = fold_round(
+                                total_mc * _wd * daily_capacity, rev_weight, mc_group,
+                                per_mc_cap=_wd * daily_capacity, mc_count=total_mc,
+                            )
                         _q -= _prod_wk
                         _wk = next_week(_wk)
                         _sim_cnt_fit += 1
@@ -10299,7 +10538,11 @@ def _run_planning_loop() -> list:
                 n_cap = daily_capacity * prod_days_new * n_mc
                 total_cap = c_cap + n_cap
                 if rev_weight and rev_weight > 0 and total_cap > 0:
-                    return (total_cap // rev_weight) * rev_weight
+                    return fold_round_mixed(
+                        total_cap, rev_weight, mc_group,
+                        daily_capacity * prod_days_old, c_mc,
+                        daily_capacity * prod_days_new, n_mc,
+                    )
                 return total_cap
 
             if carryover_mc + new_mc > 0 and _sim_produce(carryover_mc, new_mc) > qty_left:
@@ -10374,7 +10617,11 @@ def _run_planning_loop() -> list:
                         _q = float(_qty_for_machine_calc)
                         _wk = plan_week
                         _first = True
+                        _stf_guard = 0
                         while _wk is not None and _q > 0:
+                            _stf_guard += 1  # SAFETY: กัน infinite loop ข้ามปลายปี
+                            if _stf_guard > 300:
+                                break
                             _wi = week_index(_wk)
                             if _wi is None:
                                 break
@@ -10388,12 +10635,17 @@ def _run_planning_loop() -> list:
                                 _n_cnt = max(0, total_mc - _c_cnt)
                                 _c_prod = _c_cnt * _wd * daily_capacity
                                 _n_prod = _n_cnt * max(0, _wd - item_setup_days) * daily_capacity
-                                _prod_wk = _c_prod + _n_prod
                                 _first = False
+                                _prod_wk = fold_round_mixed(
+                                    _c_prod + _n_prod, rev_weight, mc_group,
+                                    _wd * daily_capacity, _c_cnt,
+                                    max(0, _wd - item_setup_days) * daily_capacity, _n_cnt,
+                                )
                             else:
-                                _prod_wk = total_mc * _wd * daily_capacity
-                            if rev_weight and rev_weight > 0 and _prod_wk > 0:
-                                _prod_wk = (_prod_wk // rev_weight) * rev_weight
+                                _prod_wk = fold_round(
+                                    total_mc * _wd * daily_capacity, rev_weight, mc_group,
+                                    per_mc_cap=_wd * daily_capacity, mc_count=total_mc,
+                                )
                             _q -= _prod_wk
                             _wk = next_week(_wk)
                         return _q <= 0
@@ -10528,16 +10780,27 @@ def _run_planning_loop() -> list:
                 _same_week_total_cap = _same_week_base_cap + _same_week_new_cap + _same_week_carry_cap
 
                 if rev_weight and rev_weight > 0:
-                    _rem_batches = int(_same_week_total_cap // rev_weight)
-                    produce = min(qty_left, _rem_batches * rev_weight)
+                    _swt_mc = max(1, int(available_machines or 1))
+                    produce = min(
+                        qty_left,
+                        fold_round(
+                            _same_week_total_cap, rev_weight, mc_group,
+                            per_mc_cap=_same_week_total_cap / _swt_mc, mc_count=_swt_mc,
+                        ),
+                    )
                 else:
                     produce = min(qty_left, _same_week_total_cap)
             elif rev_weight is not None and rev_weight > 0:
                 cap_old = daily_capacity * prod_days_old * carryover_mc
                 cap_new = daily_capacity * prod_days_new * new_mc
-                max_capacity = cap_old + cap_new
-                max_batches = max_capacity // rev_weight
-                produce = min(qty_left, max_batches * rev_weight)
+                produce = min(
+                    qty_left,
+                    fold_round_mixed(
+                        cap_old + cap_new, rev_weight, mc_group,
+                        daily_capacity * prod_days_old, carryover_mc,
+                        daily_capacity * prod_days_new, new_mc,
+                    ),
+                )
             else:
                 cap_old = daily_capacity * prod_days_old * carryover_mc
                 cap_new = daily_capacity * prod_days_new * new_mc
@@ -10593,7 +10856,11 @@ def _run_planning_loop() -> list:
                 )
                 _clamped_qty = max(0.0, float(_max_additional_qty))
                 if rev_weight and rev_weight > 0:
-                    _rounded_cap = int(_clamped_qty // rev_weight) * rev_weight
+                    _clamp_mc = max(1, int(available_machines or 1))
+                    _rounded_cap = fold_round(
+                        _clamped_qty, rev_weight, mc_group,
+                        per_mc_cap=_clamped_qty / _clamp_mc, mc_count=_clamp_mc,
+                    )
                     if _rounded_cap > 0:
                         _clamped_qty = _rounded_cap
                     elif _clamped_qty < rev_weight:
@@ -11204,8 +11471,12 @@ def _run_planning_loop() -> list:
                                         max_capacity = 33
                                     elif mc_type == "SINGLE":
                                         max_capacity = 44
-                                elif factory == "OM":
+                                    else:
+                                        max_capacity = 9999
+                                elif factory in ("OM", "OMNOI"):
                                     max_capacity = 13
+                                else:
+                                    max_capacity = 9999
                                 remaining_capacity_by_type[type_key] = (
                                     max_capacity - old_type_jobs
                                 )
@@ -11615,8 +11886,8 @@ if not detail_mc.empty:
                 str(row.get("MC_GUAGE", "")).strip(),
             )
             if _is is not None:
-                return cap * (_is[1] / 24)  # Item Special working_hour override
-            return cap * (20 / 24)
+                return cap * (_is[1] / 24)  # Item Special working_hour override (ชนะเสมอ)
+            return cap * (_base_work_hours(row.get("MC_GROUP"), row.get("MC_GUAGE")) / 24)
         old_booking_df["DAILY_CAPACITY"] = old_booking_df.apply(_adj_old_cap, axis=1)
     # ตัด S นำหน้า SC_SO_NO (เช่น "S717455" → "717455")
     if "SC_SO_NO" in old_booking_df.columns:
@@ -11982,13 +12253,14 @@ else:
 # =========================
 # Write COMBINED_FILE
 # =========================
-# Backup ไฟล์เก่าไปเป็น committed_plan.xlsx ก่อนเขียนทับ
-# เพื่อให้รันครั้งถัดไปอ่าน reference เดิม → ผลลัพธ์สม่ำเสมอ
-import shutil as _shutil
-_committed_file = DATA_PLAN_DIR / "committed_plan.xlsx"
-if COMBINED_FILE.exists():
-    _shutil.copy2(COMBINED_FILE, _committed_file)
-    print(f"📋 Backup → committed_plan.xlsx")
+# ❌ DISABLED: auto-backup ผลรอบก่อน → committed_plan.xlsx (feedback loop)
+# เดิมโค้ดตรงนี้ก็อป COMBINED_FILE (= ผลลัพธ์รอบก่อน) มาเป็น committed_plan.xlsx
+# แล้วรอบถัดไปจะอ่าน committed_plan.xlsx กลับเข้ามาเป็น old-plan carryover
+# → เกิด feedback loop: แผนรอบใหม่ขึ้นกับแผนรอบก่อน ทำให้ผลลัพธ์ "ไม่นิ่ง"
+#   (booking/order เดิมเป๊ะ ๆ แต่รันคนละครั้งได้คนละสัปดาห์ เช่น W34 บ้าง W36 บ้าง)
+# ตัดออกเพื่อให้ทุกครั้งคำนวณสดจาก booking + order → deterministic
+# ⚠️ ถ้าจะทำฟีเจอร์ "commit แผน" จริง ให้เขียน committed_plan.xlsx เฉพาะตอน user กด commit เท่านั้น
+# ไม่ใช่ auto ทุกครั้งที่รัน Planning
 with pd.ExcelWriter(COMBINED_FILE, engine="openpyxl") as writer:
     combined_df.to_excel(writer, sheet_name="PLAN", index=False)
     if not _no_cap_df.empty:
@@ -12289,11 +12561,46 @@ _cylinder_change_df = pd.DataFrame(_cyl_rows) if _cyl_rows else pd.DataFrame(
     columns=["WEEK", "FACTORY", "MC_CAT", "GAUGE_FROM", "GAUGE_TO", "MC_CHANGED", "ITEM_CODE"]
 )
 
+# ===== FOLD CHECK: ยอดที่ลูกค้าเปิดมา แบ่งเป็นพับแล้วหารด้วย 6 ลงตัวหรือไม่ =====
+# เช็คที่ "ยอดรวมทั้ง order" (ITEM_CODE + SC_SO_NO) — ไม่ใช่รายสัปดาห์
+# → SC ไหนหารไม่ลงตัว ทุกสัปดาห์ของ SC นั้นติดธงเตือนเหมือนกันหมด
+# เฉพาะกลุ่ม IRMT/SJT เท่านั้น (กลุ่มอื่นไม่มีกฎหาร 6)
+# แผนวางเต็มตามยอดจริงเสมอ ค่าพวกนี้เป็นแค่ธงเตือนให้ planner ไปแก้ที่ยอดเปิด order
+if not plan_df.empty and {"ORDERS_QTY", "REVOLUTION_WEIGHT", "MC_GROUP"} <= set(plan_df.columns):
+    _fold_cache = {}
+    for _fo_key, _fo_grp in plan_df.groupby(["ITEM_CODE", "SC_SO_NO"], dropna=False):
+        _fold_cache[_fo_key] = fold_check_order(
+            _fo_grp["ORDERS_QTY"].max(),
+            _fo_grp["REVOLUTION_WEIGHT"].max(),
+            _fo_grp["MC_GROUP"].unique(),
+        )
+    _fold_vals = [
+        _fold_cache.get((_r_item, _r_sc), (0.0, 0.0, False))
+        for _r_item, _r_sc in zip(plan_df["ITEM_CODE"], plan_df["SC_SO_NO"])
+    ]
+    plan_df["FOLD_QTY"] = [_v[0] for _v in _fold_vals]
+    plan_df["FOLD_REMAINDER"] = [_v[1] for _v in _fold_vals]
+    plan_df["FOLD_WARN"] = [1 if _v[2] else 0 for _v in _fold_vals]
+
+    _fold_bad = sorted(k for k, v in _fold_cache.items() if v[2])
+    _fold_scope = sum(
+        1 for _k, _g in plan_df.groupby(["ITEM_CODE", "SC_SO_NO"], dropna=False)
+        if any(str(_m).strip().upper() in FOLD_ROUND_MC_GROUPS for _m in _g["MC_GROUP"].unique())
+    )
+    print(f"\n📏 FOLD CHECK ({'/'.join(sorted(FOLD_ROUND_MC_GROUPS))}): "
+          f"order ที่แบ่งพับแล้วหาร {FOLD_MULTIPLE} ไม่ลงตัว "
+          f"{len(_fold_bad)}/{_fold_scope} order")
+    for _fb_item, _fb_sc in _fold_bad:
+        _fb_folds, _fb_rem, _ = _fold_cache[(_fb_item, _fb_sc)]
+        print(f"   ⚠️  {_fb_item} SC {_fb_sc}: {_fb_folds:g} พับ → เหลือเศษ {_fb_rem:g} พับ")
+    print()
+
 # ย้ายคอลัมน์เสริมที่เพิ่มเข้ามา (วันทำงาน + ประเภทเครื่อง + REMARK) + S9_ROUTING
 # ไปไว้ท้ายสุด เพื่อไม่ให้แทรกกลางคอลัมน์หลักที่คนอ่านแผนใช้ประจำ
 _tail_cols = [
     c
-    for c in ["WD_BASE", "WD_W32", "MC_SHARED", "MC_BOOKING", "REMARK", "S9_ROUTING", "OUTSOURCE", "YARNPO"]
+    for c in ["WD_BASE", "WD_W32", "MC_SHARED", "MC_BOOKING", "REMARK", "S9_ROUTING", "OUTSOURCE", "YARNPO",
+              "FOLD_QTY", "FOLD_REMAINDER", "FOLD_WARN"]
     if c in plan_df.columns
 ]
 if _tail_cols:

@@ -161,7 +161,10 @@
       "PowerShell(Get-Item \"c:\\\\vscode\\\\AI_plan\\\\dist\\\\KnitPlan\\\\KnitPlan.exe\" | Select-Object Name, @{N='Size_MB';E={[math]::Round\\($_.Length/1MB,1\\)}}, LastWriteTime)",
       "PowerShell(Get-ChildItem \"c:\\\\vscode\\\\AI_plan\\\\dist\\\\KnitPlan\\\\\" | Select-Object Name, @{N='Size_MB';E={[math]::Round\\($_.Length/1MB,1\\)}}, LastWriteTime | Format-Table -AutoSize)",
       "Bash(powershell.exe -NoProfile -Command \"python -c \\\\\"import pandas as pd; df = pd.read_excel\\(r'C:\\\\Users\\\\WICHARIT\\\\Nan Yang Textile\\\\SCM_Cloud - Knit Plan \\(AI\\)\\\\Master_Item.xlsx', nrows=5\\); print\\(list\\(df.columns\\)\\)\\\\\"\")",
-      "Bash(powershell.exe -NoProfile -Command \"python -c \\\\\"import pandas as pd; df = pd.read_excel\\(r'C:\\\\Users\\\\WICHARIT\\\\Nan Yang Textile\\\\SCM_Cloud - Knit Plan \\(AI\\)\\\\Master_Item.xlsx'\\); print\\(df['ORA_ITEM_CODE'].dropna\\(\\).astype\\(str\\).sample\\(30, random_state=1\\).tolist\\(\\)\\)\\\\\"\")"
+      "Bash(powershell.exe -NoProfile -Command \"python -c \\\\\"import pandas as pd; df = pd.read_excel\\(r'C:\\\\Users\\\\WICHARIT\\\\Nan Yang Textile\\\\SCM_Cloud - Knit Plan \\(AI\\)\\\\Master_Item.xlsx'\\); print\\(df['ORA_ITEM_CODE'].dropna\\(\\).astype\\(str\\).sample\\(30, random_state=1\\).tolist\\(\\)\\)\\\\\"\")",
+      "Bash(PYTHONIOENCODING=utf-8 python AVA_MC.py)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c ' *)",
+      "Bash(PYTHONIOENCODING=utf-8 python C:/Users/WICHARIT/AppData/Local/Temp/claude/c--vscode-AI-plan/4af7fb15-5917-4df2-8c49-45d218483042/scratchpad/mklock.py 'C:/Users/WICHARIT/AppData/Local/Temp/claude/c--vscode-AI-plan/4af7fb15-5917-4df2-8c49-45d218483042/scratchpad/fakehome/Nan Yang Textile/SCM_Cloud - Knit Plan \\(AI\\)/MasterMC.xlsx')"
     ],
     "additionalDirectories": [
       "C:\\Users\\WICHARIT\\Nan Yang Textile\\SCM_Cloud - Knit Plan (AI)",

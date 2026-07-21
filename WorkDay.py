@@ -80,6 +80,15 @@ def _raw_days(grp, week: int) -> float:
     return float(_WORKDAY["default"].get(grp, DEFAULT_WORK_DAYS))
 
 
+def get_working_hours(mc_group, gauge=None):
+    """ชั่วโมงทำงาน override ต่อกลุ่ม (Factory·MC_CAT·Guage) จากชีท Work Day
+    คืน float ถ้าตั้งไว้ · None = ไม่ได้ตั้ง (ให้ผู้เรียกใช้ค่าเดิม: Working Hours. ของ MasterMC / default)"""
+    grp = _group(mc_group, gauge)
+    if grp is None:
+        return None
+    return _WORKDAY.get("hour", {}).get(grp)
+
+
 def merged_into(week) -> int | None:
     """สัปดาห์นี้ถูกยุบเข้าสัปดาห์ไหน (None = ไม่ได้ถูกยุบ)"""
     try:

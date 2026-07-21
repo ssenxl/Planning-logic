@@ -5,6 +5,7 @@ server.py — FastAPI app
 - เริ่ม APScheduler ตอน startup
 รัน: uvicorn server:app --host 0.0.0.0 --port 8080
 """
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -36,8 +37,30 @@ NO_CACHE = {"Cache-Control": "no-store, must-revalidate", "Pragma": "no-cache"}
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
+def _auto_extend_calendar():
+    """เติมปฏิทินปีถัดไปลง Calendar.xlsx ของ server อัตโนมัติตอน start (idempotent)
+    user ไม่ต้องอัปโหลด/กดเอง — ถ้ามีปีล่วงหน้าครบแล้วจะไม่ทำอะไร ไม่ crash server ถ้าพลาด"""
+    try:
+        cal = config.master_files().get("Calendar")
+        if not cal:
+            print("[CALENDAR AUTO-EXTEND] ข้าม: ไม่ได้ตั้ง path calendar ใน config")
+            return
+        if str(config.REPO_DIR) not in sys.path:
+            sys.path.insert(0, str(config.REPO_DIR))
+        from gen_calendar import ensure_calendar_extended
+        res = ensure_calendar_extended(cal)
+        if res.get("added"):
+            print(f"[CALENDAR AUTO-EXTEND] เติม {res['added']} วัน → ถึงสิ้นปี {res.get('end_year')} "
+                  f"(backup: {res.get('backup')})")
+        else:
+            print(f"[CALENDAR AUTO-EXTEND] ปฏิทินครบแล้ว ({res.get('reason','')})")
+    except Exception as e:
+        print(f"[CALENDAR AUTO-EXTEND] ข้ามการเติมปฏิทิน (error: {e})")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _auto_extend_calendar()
     scheduler.start()
     yield
 
@@ -51,6 +74,13 @@ app.add_middleware(
 # ---------------- Auth ----------------
 # path ที่เข้าได้โดยไม่ต้อง login
 AUTH_OPEN_PATHS = {"/api/login", "/api/health"}
+
+# path ที่เฉพาะ admin เท่านั้นถึงเรียกได้ (ตั้งเวลาอัตโนมัติ)
+# gate ที่ (method, path) — endpoint อ่านสถานะ/log ยังเปิดให้ทุกคนเพราะหน้าอื่น poll อยู่
+# หมายเหตุ: สั่งรัน/หยุด pipeline (/api/run, /api/run/stop) เปิดให้ user ธรรมดารันได้แล้ว
+ADMIN_ONLY = {
+    ("PUT", "/api/schedule"),
+}
 
 
 def _is_download_path(path: str) -> bool:
@@ -80,8 +110,12 @@ async def auth_guard(request: Request, call_next):
             and request.method != "OPTIONS":
         header = request.headers.get("authorization", "")
         token = header[7:] if header.lower().startswith("bearer ") else ""
-        if not auth.check_token(token):
+        username = auth.check_token(token)
+        if not username:
             return JSONResponse(status_code=401, content={"detail": "ยังไม่ได้เข้าสู่ระบบ หรือเซสชันหมดอายุ"})
+        # endpoint สำหรับ admin เท่านั้น (สั่งรัน/ตั้งเวลา) — user ธรรมดาเรียกไม่ได้
+        if (request.method, path) in ADMIN_ONLY and not auth.is_admin(username):
+            return JSONResponse(status_code=403, content={"detail": "ต้องเป็นผู้ดูแลระบบ (admin) เท่านั้น"})
     return await call_next(request)
 
 
@@ -94,7 +128,22 @@ class LoginReq(BaseModel):
 def api_login(req: LoginReq):
     if not auth.verify_login(req.username, req.password):
         raise HTTPException(status_code=401, detail="ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
-    return {"token": auth.make_token(req.username), "username": req.username}
+    return {
+        "token": auth.make_token(req.username),
+        "username": req.username,
+        "role": auth.get_role(req.username),
+    }
+
+
+@app.get("/api/me")
+def api_me(request: Request):
+    """คืนข้อมูล user ปัจจุบันจาก token — frontend ใช้เช็ค role หลังรีเฟรชหน้า"""
+    header = request.headers.get("authorization", "")
+    token = header[7:] if header.lower().startswith("bearer ") else ""
+    username = auth.check_token(token)  # middleware ผ่านแล้ว แต่กันไว้อีกชั้น
+    if not username:
+        raise HTTPException(status_code=401, detail="เซสชันหมดอายุ")
+    return {"username": username, "role": auth.get_role(username)}
 
 
 # ---------------- Run / Pipeline ----------------
@@ -167,13 +216,14 @@ def api_workday_get():
 class WorkDayReq(BaseModel):
     defaults: dict          # {"FACTORY|MC_CAT|GUAGE": วัน}
     weeks: dict = {}        # {"FACTORY|MC_CAT|GUAGE|WEEK": วัน}
+    hours: dict = {}        # {"FACTORY|MC_CAT|GUAGE": ชั่วโมง} (ค่ามาตรฐานต่อกลุ่ม)
     merges: dict = {}       # {"31": 32}
 
 
 @app.put("/api/workday")
 def api_workday_put(req: WorkDayReq):
     try:
-        return workday.save_workday(req.defaults, req.weeks, req.merges)
+        return workday.save_workday(req.defaults, req.weeks, req.hours, req.merges)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

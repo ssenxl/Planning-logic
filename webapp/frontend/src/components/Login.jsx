@@ -14,7 +14,7 @@ export default function Login({ onLogin }) {
     try {
       const res = await api.login(username.trim(), password)
       auth.set(res.token)
-      onLogin(res.username)
+      onLogin(res.role)
     } catch (e) {
       setErr(e.message || 'เข้าสู่ระบบไม่สำเร็จ')
     } finally {

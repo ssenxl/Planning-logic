@@ -82,7 +82,7 @@ export default function OutsourceAdvisor() {
   async function runPlan() {
     setErr(''); setMsg('')
     try {
-      const r = await api.run('plan')
+      const r = await api.run('full')
       setMsg(r.message + ' — เมื่อรันเสร็จ Gantt จะโชว์ก้อนจ้างทอเป็น 🧵 (ไม่กินเครื่องในบ้าน)')
     } catch (e) { setErr('สั่งรันไม่ได้: ' + e.message) }
   }

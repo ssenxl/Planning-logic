@@ -168,6 +168,67 @@ button {
   box-shadow: 0 0 14px 1px rgba(165, 180, 252, .85), 0 0 4px rgba(199, 210, 254, .9);
 }
 
+/* แท็บแบบ dropdown (แผนผลิต → แผนผลิต / Order Color) */
+.tab-dd {
+  position: relative;
+  display: inline-flex;
+}
+
+.tab-dd .caret {
+  margin-left: 7px;
+  font-size: 11px;
+  opacity: .8;
+  transition: transform .16s ease;
+  display: inline-block;
+}
+
+.tab-dd .caret.up {
+  transform: rotate(180deg);
+}
+
+.tab-menu {
+  position: absolute;
+  top: 100%;
+  left: 6px;
+  z-index: 50;
+  min-width: 190px;
+  padding: 6px;
+  background: #201f4a;
+  border: 1px solid rgba(197, 196, 238, .25);
+  border-radius: 11px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .45);
+}
+
+.tab-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #c5c4ee;
+  cursor: pointer;
+  padding: 10px 12px;
+  font-size: 14.5px;
+  font-weight: 500;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.tab-menu-item .ico {
+  margin-right: 9px;
+  opacity: .9;
+}
+
+.tab-menu-item:hover {
+  background: rgba(255, 255, 255, .08);
+  color: #fff;
+}
+
+.tab-menu-item.active {
+  background: rgba(129, 140, 248, .22);
+  color: #fff;
+}
+
 /* ปุ่มออกจากระบบ (ชิดขวาของ topbar) */
 .logout-btn {
   margin-left: auto;
@@ -508,6 +569,22 @@ button {
 /* emoji บอกประเภทเครื่อง: 🔧 setup ใหม่ / 📦 เติมเข้าเครื่องเดิม / ⏩ เครื่องเดิมวิ่งต่อ */
 .gbar-mc {
   font-size: 11px;
+  line-height: 1;
+  flex: none;
+}
+
+/* บล็อกของ SC ที่ยอดรวมแบ่งพับแล้วหาร 6 ไม่ลงตัว (เฉพาะ IRMT/SJT)
+   → ทั้งกล่องแดง ติดทุกสัปดาห์ของ SC นั้น ให้เห็นทันทีว่าต้องไปแก้ยอดเปิด order
+   ทับสีตาม CAT ที่ตั้งจาก inline style (JSX ตัด inline style ทิ้งเมื่อ foldWarn) */
+.gbar-foldwarn {
+  background: #dc2626;
+  color: #fff;
+  outline: 2px solid #7f1d1d;
+  outline-offset: -2px;
+}
+
+.gbar-fold {
+  font-size: 10px;
   line-height: 1;
   flex: none;
 }
@@ -1276,6 +1353,11 @@ button.ghost.sm:hover {
   align-items: start;
 }
 
+/* Order Color: ลบ sidebar ซ้ายออกแล้ว → เนื้อหาหลักเต็มความกว้างคอลัมน์เดียว */
+.masters.oc-full {
+  grid-template-columns: 1fr;
+}
+
 /* กันตารางกว้าง (เช่น Gantt) ดันคอลัมน์ grid ล้นจอ — grid item default min-width:auto
    จะไม่ยอมแคบกว่าเนื้อหา ทำให้ทั้งหน้าเลื่อนแนวนอน; ตั้ง 0 เพื่อให้เลื่อนใน
    .gantt-scroll / .gridwrap แทน */
@@ -1289,6 +1371,35 @@ button.ghost.sm:hover {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* ทะลุ padding/max-width ของ .content ออกไปเกือบชิดขอบจอ เหลือกันขอบ 18px */
+  margin-left: calc(50% - 50vw + 18px);
+  margin-right: calc(50% - 50vw + 18px);
+  margin-top: -12px;
+  /* พอดีจอเดียว: หน้าไม่ scroll เหลือแค่ Gantt ที่ scroll ในตัวเอง (96 ≈ topbar + padding บน/ล่าง) */
+  height: calc(100vh - 96px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ให้ Gantt ยืดเต็มพื้นที่ที่เหลือของหน้า แล้ว scroll ภายใน (ไม่ดันหน้าให้ยาว) */
+.knitplan .gantt-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.knitplan .gantt {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.knitplan .gantt-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
 }
 
 .knitplan .editbar {
@@ -1424,7 +1535,7 @@ button.ghost.sm:hover {
 }
 
 .gload-filter-label {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--muted);
 }
@@ -1592,6 +1703,48 @@ button.ghost.sm:hover {
 .gantt-weekcorner {
   text-align: center;
   background: #e8eaf0;
+}
+
+/* ช่องหัวแถวซ้ายที่คลิกกรองได้ (Category/Guage/Machine) */
+.gantt-glabel.gantt-gclick {
+  cursor: pointer;
+}
+.gantt-glabel.gantt-gclick:hover {
+  background: #e2e8fb;
+  text-decoration: underline;
+}
+/* ช่องที่ตรงกับตัวกรองที่ใช้อยู่ — ไฮไลต์ให้รู้ว่ากรองด้วยค่าไหน */
+.gantt-glabel.gantt-gfilter-on {
+  background: #d6e9fb;
+  color: #1c4e80;
+  box-shadow: inset 0 0 0 2px #4f86c6;
+}
+
+/* ชิปตัวกรอง CAT/เกจ/เครื่อง ที่มุม Factory/Week + ปุ่มล้าง */
+.gantt-catfilter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: center;
+}
+.gantt-catfilter .gcf-txt {
+  font-weight: 700;
+  color: #1c4e80;
+}
+.gantt-catfilter .gcf-clear {
+  border: none;
+  background: #cf4d4d;
+  color: #fff;
+  border-radius: 999px;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+.gantt-catfilter .gcf-clear:hover {
+  background: #b83a3a;
 }
 
 /* แถวหัวคอลัมน์ (Category/Guage/Machine/กันเครื่อง) ที่ย้ายลงมา — pin ค้างทั้งบนและซ้าย
@@ -1883,6 +2036,14 @@ button.ghost.sm:hover {
   line-height: 16px;
 }
 
+/* หน่วยของตัวเลขจำนวนบนบล็อก = กิโลกรัม (kg) */
+.gbar-qty-unit {
+  font-size: 8px;
+  font-weight: 600;
+  margin-left: 2px;
+  opacity: .8;
+}
+
 /* ข้อมูลเสริมบนบล็อก (SC, เครื่องที่ใช้, ...) — ข้อความบางๆ ต่อท้าย item ในบรรทัดเดียวกัน
    ไม่ทำเป็นชิปทึบ/ไม่ตัดบรรทัด เพราะทำให้บล็อกอ้วนและสูงไม่เท่ากัน
    (ฟิลด์ไหนโชว์ user ติ๊กเองที่หัว Gantt — ที่เหลือดูใน panel) */
@@ -2059,6 +2220,13 @@ button.ghost.sm:hover {
 .jobflag.warn {
   background: #ffe4e9;
   color: var(--fail);
+}
+
+/* ยอดรวมทั้ง SC หารด้วย 6 พับไม่ลงตัว — ต้องแก้ที่ยอดเปิด order ไม่ใช่ที่แผน */
+.jobflag.fold {
+  background: var(--fail, #dc2626);
+  color: #fff;
+  font-weight: 600;
 }
 
 .jobflag.core {
@@ -2248,6 +2416,45 @@ button.ghost.sm:hover {
   color: var(--run);
 }
 
+/* ปุ่มลิงก์ ▸ วิธีใช้ — ซ่อน/แสดงคำอธิบาย (ไม่ใช่ปุ่มก้อนใหญ่แบบ .actions button) */
+.help-toggle,
+.editbar button.help-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pri);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: none;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.help-toggle:hover,
+.editbar button.help-toggle:hover:not(:disabled) {
+  background: var(--pri-soft);
+  border-color: var(--pri);
+  color: var(--pri);
+  transform: none;
+  box-shadow: none;
+}
+
+.help-box {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: var(--pri-soft);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: #667085;
+}
+
 .actions {
   display: flex;
   gap: 8px;
@@ -2259,13 +2466,14 @@ button.ghost.sm:hover {
 .schedcard button {
   padding: 9px 18px;
   border: 1px solid #b8c6e0;
-  border-radius: 9px;
+  border-radius: 10px;
   background: #fff;
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
   color: var(--ink);
   box-shadow: 0 1px 3px rgba(30, 40, 80, .12);
+  transition: all .16s ease;
 }
 
 .actions button:hover:not(:disabled),
@@ -2273,6 +2481,26 @@ button.ghost.sm:hover {
   border-color: var(--pri);
   color: var(--pri);
   background: var(--pri-soft);
+  box-shadow: 0 5px 14px rgba(30, 40, 80, .14);
+  transform: translateY(-1px);
+}
+
+/* ปุ่มหลักของหน้า Order Color: "จัดแผนสี (Gantt)" — สีทองอำพันเข้าธีมงานสี */
+.actions button.build,
+.editbar button.build {
+  background: linear-gradient(120deg, #f59e0b, #d97706);
+  color: #fff;
+  border: 1px solid transparent;
+  box-shadow: 0 4px 14px rgba(217, 119, 6, .32);
+}
+
+.actions button.build:hover:not(:disabled),
+.editbar button.build:hover:not(:disabled) {
+  background: linear-gradient(120deg, #d97706, #b45309);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 7px 18px rgba(217, 119, 6, .42);
+  transform: translateY(-1px);
 }
 
 button.primary,
@@ -2401,6 +2629,126 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 12px;
   box-shadow: var(--shadow-sm);
+  background: #fff;
+}
+
+/* modal ตารางแผนที่เด้งตอนคลิกบล็อก Gantt — เว้นฝั่งขวาให้การ์ด JobPanel (fixed right:18 width:340) จึงไม่ทับกัน */
+.plan-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(20, 22, 45, .45);
+  display: flex;
+  padding: 74px 372px 24px 24px;
+}
+
+.plan-modal {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.plan-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--pri-soft);
+}
+
+.plan-modal-head b {
+  font-size: 15px;
+}
+
+.plan-modal-hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* แถบสรุปยอดแยกรายออร์เดอร์ (item เดียวมีหลาย SC ได้) — ใต้หัว modal เลื่อนแนวนอนได้ */
+.plan-modal-orders {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcff;
+  max-height: 92px;
+  overflow-y: auto;
+}
+
+/* สถานะยอดออร์เดอร์: ครบพอดี (เขียว) / ขาด-เกิน (แดง) */
+.order-status {
+  font-size: 12.5px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* ออร์เดอร์ของบล็อกที่คลิก — เน้นกรอบ */
+.order-status.cur {
+  outline: 2px solid var(--pri);
+  outline-offset: 1px;
+}
+
+.order-status.ok {
+  background: #e3f6e9;
+  color: #1a7f42;
+}
+
+.order-status.short,
+.order-status.over {
+  background: #fde6e3;
+  color: #c0392b;
+}
+
+.plan-modal-close {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.plan-modal-close:hover {
+  color: var(--ink);
+}
+
+.plan-modal-grid {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  margin-top: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* จอแคบ → modal ใช้เต็มความกว้าง (การ์ดจะซ้อนด้านบน) */
+@media (max-width: 1100px) {
+  .plan-modal-backdrop {
+    padding: 64px 16px 16px;
+  }
+}
+
+/* แถวที่คลิกมาจากบล็อก Gantt — ไฮไลต์เหลืองให้เห็นชัด */
+table.grid tbody tr.rowsel td {
+  background: #fff6d6;
+}
+
+table.grid tbody tr.rowsel td.frozen,
+table.grid tbody tr.rowsel td.rownum {
+  background: #fdeeb3;
 }
 
 /* header cell + funnel (Excel-style filter) */
@@ -4161,11 +4509,17 @@ table.grid b.late { color: #d1373b; }
 .wddefault {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 10px;
   font-size: 13px;
   font-weight: 600;
   color: var(--ink);
+}
+
+.wddefsep {
+  color: var(--line);
+  font-weight: 700;
 }
 
 .wddefault input {

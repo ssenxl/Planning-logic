@@ -340,10 +340,11 @@ def _num(v):
 
 
 def load_workday(file_path: Path | str | None = None) -> dict:
-    """อ่านชีท Work Day → {"default": {(fac,cat,gauge): วัน}, "week": {(fac,cat,gauge,week): วัน}}
-    ไม่มีชีท/อ่านไม่ได้ → คืน dict ว่าง (ทุกกลุ่มจะใช้ DEFAULT_WORK_DAYS)"""
+    """อ่านชีท Work Day → {"default": {(fac,cat,gauge): วัน}, "week": {(fac,cat,gauge,week): วัน},
+    "hour": {(fac,cat,gauge): ชั่วโมง}}
+    ไม่มีชีท/อ่านไม่ได้ → คืน dict ว่าง (ทุกกลุ่มจะใช้ DEFAULT_WORK_DAYS / ชั่วโมงตามเดิม)"""
     src = file_path or _CALENDAR_LOCAL_PATH
-    out = {"default": {}, "week": {}}
+    out = {"default": {}, "week": {}, "hour": {}}
     try:
         df = pd.read_excel(src, sheet_name=WORKDAY_SHEET)
     except Exception:
@@ -355,15 +356,22 @@ def load_workday(file_path: Path | str | None = None) -> dict:
     if any(k not in cols for k in need):
         return out
 
+    has_hour = "WORK_HOUR" in cols
     for _, r in df.iterrows():
         key = (_norm_key(r[cols["FACTORY"]]), _norm_key(r[cols["MC_CAT"]]), _norm_key(r[cols["GUAGE"]]))
-        days = _num(r[cols["WORK_DAY"]])
-        if days is None or not any(key):
+        if not any(key):
             continue
+        days = _num(r[cols["WORK_DAY"]])
         wk = _num(r[cols["WEEK"]]) if "WEEK" in cols else None
         if wk is None:
-            out["default"][key] = days
-        else:
+            # ค่ามาตรฐานของกลุ่ม: วัน + ชั่วโมง (ชั่วโมงเป็น override ต่อกลุ่มอย่างเดียว ไม่รายสัปดาห์)
+            if days is not None:
+                out["default"][key] = days
+            if has_hour:
+                hr = _num(r[cols["WORK_HOUR"]])
+                if hr is not None:
+                    out["hour"][key] = hr
+        elif days is not None:
             out["week"][key + (int(wk),)] = days
     return out
 
@@ -417,7 +425,10 @@ def calendar_week_map(calendar_df: pd.DataFrame) -> pd.DataFrame:
             working_days=("is_working_day", "sum"),
             total_days=("DATE", "count")
         )
-        .sort_values(["year", "week"])
+        # เรียงตามวันที่จริง (week_start) ไม่ใช่ [year, week]
+        # กันกรณีสัปดาห์คร่อมปีที่ถูก label ปีถัดไป (เช่น 28–31 ธ.ค. label เป็น YEAR ปีหน้า WEEK 53)
+        # ให้ timeline เรียงตามลำดับเวลาจริงเสมอ
+        .sort_values("week_start")
         .reset_index(drop=True)
     )
 
@@ -431,8 +442,18 @@ if __name__ == "__main__":
     cal_df = load_calendar(_CALENDAR_LOCAL_PATH, sheet_name="Sheet1")
     cal_week_df = calendar_week_map(cal_df)
 
-    print("=== DAILY CALENDAR ===")
+    # สรุปช่วงครอบคลุม — ให้เห็นชัดว่าปฏิทินมีถึงปีไหน (ยืนยันว่า auto-extend ทำงาน)
+    _years = sorted(cal_df["YEAR"].dropna().astype(int).unique().tolist())
+    print("=== CALENDAR COVERAGE ===")
+    print(f"   ช่วงวันที่ : {cal_df['DATE'].min().date()}  ->  {cal_df['DATE'].max().date()}")
+    print(f"   ปีที่มี    : {_years}")
+    print(f"   จำนวนสัปดาห์: {len(cal_week_df)}  |  จำนวนวัน: {len(cal_df)}")
+
+    print("\n=== DAILY CALENDAR (head) ===")
     print(cal_df.head(10))
 
-    print("\n=== WEEKLY CALENDAR ===")
+    print("\n=== DAILY CALENDAR (tail) ===")
+    print(cal_df.tail(5))
+
+    print("\n=== WEEKLY CALENDAR (head) ===")
     print(cal_week_df.head())

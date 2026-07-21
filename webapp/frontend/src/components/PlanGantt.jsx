@@ -214,18 +214,21 @@ const PANEL_GROUPS = [
 ]
 const PANEL_KNOWN = new Set(PANEL_GROUPS.flatMap(g => g.fields.map(f => f[0])))
 
-export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingMc = {}, poolMap = {}, onMoveWeek, colorRows, onRemove, onEditQty, onSplit, lockBefore = null, loadFilter = null, setLoadFilter = () => {}, barFields = BAR_FIELDS_DEFAULT }) {
+export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingMc = {}, poolMap = {}, onMoveWeek, colorRows, onRemove, onEditQty, onSplit, lockBefore = null, loadFilter = null, setLoadFilter = () => {}, barFields = BAR_FIELDS_DEFAULT, selIdx = null, setSelIdx = () => {} }) {
   const [dragIdx, setDragIdx] = useState(null)
   const [overWeek, setOverWeek] = useState(null)
   // double click บล็อก → แก้ตัวเลขจำนวน (กก.) inline แล้วส่งค่าใหม่ผ่าน onEditQty(idx, qty)
   const [editIdx, setEditIdx] = useState(null)
   const [editVal, setEditVal] = useState('')
   // คลิกบล็อก 1 ครั้ง → เปิด panel รายละเอียด (idx ของแถวใน grid)
-  const [selIdx, setSelIdx] = useState(null)
+  // selIdx/setSelIdx ยกไปไว้ที่ KnitPlan → เปิด modal ตารางคู่กับการ์ดได้
   const [showOther, setShowOther] = useState(false)   // กาง "คอลัมน์อื่นๆ" ใน panel
   // barFields (ฟิลด์ที่โชว์บนบล็อก) + loadFilter → สถานะยกไปไว้ที่ KnitPlan (ปุ่มอยู่แถบบน)
   // ย่อ/ขยาย คำอธิบาย (hint + legend) ใต้ตาราง — เริ่มต้นย่อไว้ กดค่อยโชว์
   const [showFoot, setShowFoot] = useState(false)
+  // กรองหัวแถวซ้าย: คลิกช่อง Category/Guage → กรอง CAT+เกจ, คลิก Machine → กรองถึงเครื่อง
+  // ค่า = { cat, gauge, mcgroup(หรือ null) } ที่ normalize แล้ว, null = แสดงทั้งหมด
+  const [catFilter, setCatFilter] = useState(null)
   // สัปดาห์ที่ล็อก (freeze) — โชว์ได้แต่ลาก/ถอด/วางไม่ได้
   const isLocked = (w) => lockBefore != null && Number(w) < Number(lockBefore)
 
@@ -424,6 +427,10 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
         mc: mcKind(num(ci.newmc), num(ci.carrymc), num(ci.sharedmc), num(ci.bookingmc), isOutsource),
         remark: ci.remark >= 0 ? norm(row[ci.remark]) : '',
         setup: v('SETUP_DAYS'),
+        // ยอดที่ลูกค้าเปิดมาแบ่งพับแล้วหาร 6 ไม่ลงตัว (คิดจากยอดรวมทั้ง order ไม่ใช่รายสัปดาห์)
+        foldWarn: String(v('FOLD_WARN')) === '1',
+        foldQty: v('FOLD_QTY'),
+        foldRem: v('FOLD_REMAINDER'),
       })
     }
     return m
@@ -577,6 +584,28 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
     onMoveWeek(idx, week, targetMc)
   }
 
+  // คลิกหัวแถวซ้ายได้เมื่อรู้ตำแหน่ง CAT + เกจ
+  const catClickable = avaCatI >= 0 && avaGaugeI >= 0
+  // แถวหนึ่งเข้าเงื่อนไขตัวกรองหรือไม่ (mcgroup=null → เทียบแค่ CAT+เกจ)
+  const catMatch = (vals, f) => !!f
+    && nkey(vals[avaCatI]) === f.cat && nkey(vals[avaGaugeI]) === f.gauge
+    && (f.mcgroup == null || (mcGroupI >= 0 && nkey(vals[mcGroupI]) === f.mcgroup))
+  // คลิกช่องหัวแถว group ที่ตำแหน่ง n → ตั้ง/สลับตัวกรอง (คลิกซ้ำช่องเดิม = ล้าง)
+  const clickGroupCell = (vals, n) => {
+    if (!catClickable) return
+    const next = {
+      cat: nkey(vals[avaCatI]),
+      gauge: nkey(vals[avaGaugeI]),
+      mcgroup: (n === mcGroupI && mcGroupI >= 0) ? nkey(vals[mcGroupI]) : null,
+    }
+    setCatFilter(cur =>
+      cur && cur.cat === next.cat && cur.gauge === next.gauge && cur.mcgroup === next.mcgroup
+        ? null : next)
+  }
+  // แถวที่แสดงจริง = ผ่านตัวกรองประเภทโหลด (loadFilter) + ตัวกรอง CAT/เกจ/เครื่อง (catFilter)
+  const visRows = (loadFilter ? gantRows.filter(r => rowType.get(r.key) === loadFilter) : gantRows)
+    .filter(r => !catFilter || catMatch(r.vals, catFilter))
+
   return (
     <div className="gantt">
       <div className="gantt-scroll">
@@ -586,7 +615,14 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
               <th className="gantt-glabel gantt-ghead gantt-glast gantt-weekcorner"
                 colSpan={groups.length + (showRsv ? 1 : 0)}
                 style={{ left: 0, width: groupsW + (showRsv ? RSV_COL.width : 0), minWidth: groupsW + (showRsv ? RSV_COL.width : 0) }}>
-                Factory/Week
+                {catFilter ? (
+                  <span className="gantt-catfilter">
+                    <span className="gcf-txt" title="ตัวกรองที่ใช้อยู่ (คลิกช่องหัวแถวเพื่อเปลี่ยน)">
+                      🔎 {catFilter.cat} / {catFilter.gauge}{catFilter.mcgroup ? ` / ${catFilter.mcgroup}` : ''}
+                    </span>
+                    <button className="gcf-clear" onClick={() => setCatFilter(null)} title="ล้างตัวกรอง">✕</button>
+                  </span>
+                ) : 'Factory/Week'}
               </th>
               {weeks.map(w => <th key={w} className={'gantt-wk' + (isLocked(w) ? ' locked' : '')}>{isLocked(w) && '🔒'}W{w}</th>)}
             </tr>
@@ -658,15 +694,26 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
               )}
               {weeks.map(w => <td key={w} className="gantt-colhead-cell" style={{ top: colHeadTop }} />)}
             </tr>
-            {(loadFilter ? gantRows.filter(r => rowType.get(r.key) === loadFilter) : gantRows).map(r => (
+            {visRows.map(r => (
               <tr key={r.key}>
-                {groups.map((g, n) => (
-                  <th key={g.col}
-                    className={'gantt-glabel' + (!showRsv && n === groups.length - 1 ? ' gantt-glast' : '')}
-                    style={{ left: g.left, width: g.width, minWidth: g.width }}>
-                    {r.vals[n]}
-                  </th>
-                ))}
+                {groups.map((g, n) => {
+                  // ช่องที่ตรงกับตัวกรองปัจจุบัน → ไฮไลต์ให้เห็นว่ากรองด้วยค่าไหน
+                  const on = catFilter && catMatch(r.vals, catFilter)
+                    && (n === avaCatI || n === avaGaugeI
+                      || (catFilter.mcgroup != null && n === mcGroupI))
+                  return (
+                    <th key={g.col}
+                      className={'gantt-glabel'
+                        + (!showRsv && n === groups.length - 1 ? ' gantt-glast' : '')
+                        + (catClickable ? ' gantt-gclick' : '')
+                        + (on ? ' gantt-gfilter-on' : '')}
+                      onClick={catClickable ? () => clickGroupCell(r.vals, n) : undefined}
+                      title={catClickable ? 'คลิกเพื่อกรอง CAT/เกจ (Machine = กรองถึงเครื่อง) — คลิกซ้ำเพื่อล้าง' : undefined}
+                      style={{ left: g.left, width: g.width, minWidth: g.width }}>
+                      {r.vals[n]}
+                    </th>
+                  )
+                })}
                 {showRsv && (() => {
                   const rv = rsvOfRow(r.vals)
                   return (
@@ -745,17 +792,22 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
                         return (
                           <div key={j.idx}
                             className={'gbar' + (dragIdx === j.idx ? ' dragging' : '') + (isColor ? ' gbar-color' : '')
-                              + (locked ? ' locked' : '') + (selIdx === j.idx ? ' selected' : '')}
+                              + (locked ? ' locked' : '') + (selIdx === j.idx ? ' selected' : '')
+                              + (j.foldWarn ? ' gbar-foldwarn' : '')}
                             draggable={!locked && !editing}
                             onDragStart={locked ? undefined : e => { e.dataTransfer.setData('text/plain', String(j.idx)); e.dataTransfer.effectAllowed = 'move'; setDragIdx(j.idx) }}
                             onDragEnd={locked ? undefined : () => { setDragIdx(null); setOverWeek(null) }}
                             onClick={() => onBarClick(j)}
                             onDoubleClick={() => onBarDblClick(j, locked)}
-                            style={isColor ? undefined : { background: colorOf(j.ck), color: textOf(j.ck) }}
-                            title={`${j.item}${sc ? ` • SC ${sc}` : ''}\n${r.vals.join(' • ')} • สัปดาห์ ${w}${j.qty !== '' ? `\nจำนวน ${j.qty}` : ''}${j.actualmc !== '' ? ` • ใช้ ${j.actualmc} เครื่อง` : ''}${Number(j.setup) > 0 ? ` • setup ${j.setup} วัน` : ''}${j.mc ? `\n${MC_KINDS[j.mc].icon} ${MC_KINDS[j.mc].label}` : ''}${j.remark ? `\n${j.remark}` : ''}\nสี: ${j.ck}${isColor ? '\n★ งานสี (ต้องย้อม)' : ''}${j.lateRdd ? '\n⚠ วางเลยสัปดาห์ RDD' : ''}\n👆 คลิกเพื่อดูรายละเอียดครบ${onEditQty && !locked && j.qty !== '' ? ' • double click เพื่อแก้จำนวน' : ''}${locked ? '\n🔒 สัปดาห์ freeze — แก้ไม่ได้' : ''}`}>
+                            style={j.foldWarn ? undefined : (isColor ? undefined : { background: colorOf(j.ck), color: textOf(j.ck) })}
+                            title={`${j.item}${sc ? ` • SC ${sc}` : ''}\n${r.vals.join(' • ')} • สัปดาห์ ${w}${j.qty !== '' ? `\nจำนวน ${j.qty}` : ''}${j.actualmc !== '' ? ` • ใช้ ${j.actualmc} เครื่อง` : ''}${Number(j.setup) > 0 ? ` • setup ${j.setup} วัน` : ''}${j.mc ? `\n${MC_KINDS[j.mc].icon} ${MC_KINDS[j.mc].label}` : ''}${j.remark ? `\n${j.remark}` : ''}\nสี: ${j.ck}${isColor ? '\n★ งานสี (ต้องย้อม)' : ''}${j.lateRdd ? '\n⚠ วางเลยสัปดาห์ RDD' : ''}${j.foldWarn ? `\n⚠ order เปิดมา ${j.foldQty} พับ — หาร 6 ไม่ลงตัว (เหลือเศษ ${j.foldRem} พับ)` : ''}\n👆 คลิกเพื่อดูรายละเอียดครบ${onEditQty && !locked && j.qty !== '' ? ' • double click เพื่อแก้จำนวน' : ''}${locked ? '\n🔒 สัปดาห์ freeze — แก้ไม่ได้' : ''}`}>
                             {locked && <span className="gbar-star">🔒</span>}
                             {isColor && !locked && <span className="gbar-star">★</span>}
                             {j.mc && <span className="gbar-mc">{MC_KINDS[j.mc].icon}</span>}
+                            {j.foldWarn && (
+                              <span className="gbar-fold"
+                                title={`order เปิดมา ${j.foldQty} พับ — หาร 6 ไม่ลงตัว (เหลือเศษ ${j.foldRem} พับ)`}>⚠</span>
+                            )}
                             <span className="gbar-item">{j.item}</span>
                             {j.tags.map(t => (
                               <span key={t.key} className={'gbar-tag' + (t.warn ? ' warn' : '')}>{t.text}</span>
@@ -770,7 +822,7 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
                                 onKeyDown={e => { if (e.key === 'Enter') commitQty(); else if (e.key === 'Escape') setEditIdx(null) }}
                                 onBlur={commitQty} />
                             ) : (
-                              j.qty !== '' && <span className="gbar-qty">{j.qty}</span>
+                              j.qty !== '' && <span className="gbar-qty" title={`จำนวน ${j.qty} กก.`}>{j.qty}<small className="gbar-qty-unit">kg</small></span>
                             )}
                           </div>
                         )
@@ -896,6 +948,11 @@ function JobPanel({ row, columns, colIdx, idx, weeks = [], isLocked = () => fals
         {kind && <span className="jobflag">{MC_KINDS[kind].icon} {MC_KINDS[kind].label}</span>}
         {Number(v('SETUP_DAYS')) > 0 && <span className="jobflag setup">🔧 setup {v('SETUP_DAYS')} วัน</span>}
         {lateRdd && <span className="jobflag warn">⚠ วางเลย RDD (W{rddW})</span>}
+        {String(v('FOLD_WARN')) === '1' && (
+          <span className="jobflag fold" title="ยอดรวมทั้ง SC หารด้วย 6 พับไม่ลงตัว — ต้องแก้ที่ยอดเปิด order">
+            ⚠ order {v('FOLD_QTY')} พับ — หาร 6 ไม่ลงตัว (เหลือ {v('FOLD_REMAINDER')})
+          </span>
+        )}
         {v('IS_CORE_ITEM') && <span className="jobflag core">★ {v('IS_CORE_ITEM')}</span>}
       </div>
 

@@ -9,6 +9,30 @@ import PlanGantt, { LOAD_TYPES, BAR_FIELDS, BAR_FIELDS_DEFAULT, loadBarFields, s
 import OutsourceAdvisor from './OutsourceAdvisor.jsx'
 import CylinderAdvisor from './CylinderAdvisor.jsx'
 
+// ค่าความคลาดเคลื่อนที่ยอมรับได้เวลาเทียบยอดสั่ง (กก.)
+// PRODUCE_QTY ปัดทศนิยม 2 หลักทีละแถว → ผลรวมคลาดจาก ORDERS_QTY ได้แค่เศษปัดหลักสุดท้าย
+// ยอมแค่ 0.01 กก. (+ epsilon กันขอบ float) เกินกว่านี้ = ขาด/เกินจริง ต้องเตือน
+const QTY_TOL = 0.01 + 1e-9
+
+// แปลงเวลาไฟล์แผน (mtime = epoch วินาที) → วันที่+เวลาแบบไทย เช่น "17 ก.ค. 2569 14:32 น."
+// ใช้บอก user ว่าแผนที่กำลังดูอยู่รันเสร็จเมื่อไหร่ (mtime = เวลาที่ Planning.py เขียนไฟล์เสร็จ)
+function fmtPlanTime(mtime) {
+  if (!mtime) return ''
+  const d = new Date(mtime * 1000)
+  const date = d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' })
+  const time = d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+  return `${date} ${time} น.`
+}
+
+// คอลัมน์ที่ระบุ "ออร์เดอร์ 1 รายการ" — ค่าคงที่ภายในออร์เดอร์เดียวกัน แต่ต่างกันระหว่างออร์เดอร์
+// SC เดียวมีได้หลายออร์เดอร์: ต่างที่ PO / ORDERS_QTY / สัปดาห์ FG (FG_WEEK)
+// ไม่รวม PLAN_WEEK เพราะออร์เดอร์เดียวถูกแบ่งวางได้หลายสัปดาห์ (ต้องจับรวมกัน)
+// แก้ที่นี่ที่เดียวถ้าพบว่ายังมีคอลัมน์อื่นที่แยกออร์เดอร์
+const ORDER_KEY_COLS = ['SC_SO_NO', 'SC_LINE_ID', 'PO_NO', 'ORDERS_QTY', 'FG_WEEK']
+function orderKeyOf(row, columns) {
+  return ORDER_KEY_COLS.map(c => { const i = columns.indexOf(c); return i >= 0 ? norm(row[i]) : '' }).join('|')
+}
+
 // คอลัมน์ที่มี dropdown กรองด่วนบนแถบค้นหา (ใช้ตัวกรองชุดเดียวกับปุ่ม ▾ ที่หัวคอลัมน์)
 const QUICK_COLS = [
   { col: 'CAT', label: 'CAT' },
@@ -62,6 +86,15 @@ export default function KnitPlan({ active = true }) {
   useEffect(() => { saveBarFields(barFields) }, [barFields])
   const [showOutsource, setShowOutsource] = useState(false)
   const [showCylinder, setShowCylinder] = useState(false)
+  // แถวที่เลือกจากการคลิกบล็อก Gantt (idx ของแถวในชีท) → เปิด modal ตาราง + การ์ดคู่กัน
+  const [selJob, setSelJob] = useState(null)
+  const modalRowRef = useRef(null)
+  // เปิด modal แล้วเลื่อนตารางไปหาแถวที่คลิก + ไฮไลต์
+  useEffect(() => {
+    if (selJob == null) return
+    const t = setTimeout(() => modalRowRef.current?.scrollIntoView({ block: 'center' }), 40)
+    return () => clearTimeout(t)
+  }, [selJob])
   const [load, setLoad] = useState({})
   const [ava, setAva] = useState({})
   // map เครื่อง→พูล (เช่น SKP vs SKPTA/SKPLE) สำหรับหา ava/reserved ต่อพูล
@@ -159,7 +192,7 @@ export default function KnitPlan({ active = true }) {
   async function runPlan() {
     setMsg('')
     try {
-      const r = await api.run('plan')
+      const r = await api.run('full')
       setMsg(r.message)
       setTimeout(loadRunStatus, 300)
     } catch (e) { setMsg('สั่งรันไม่ได้: ' + e.message) }
@@ -170,8 +203,38 @@ export default function KnitPlan({ active = true }) {
     await loadSheet(sheet)
   }
 
+  // ทุกออร์เดอร์ (นิยามด้วย ORDER_KEY_COLS) ที่วางไม่ครบ/เกิน — ใช้เตือนก่อนบันทึก
+  function ordersOutOfBalance() {
+    if (!grid) return []
+    const cols = grid.columns
+    const oq = cols.indexOf('ORDERS_QTY'), pq = cols.indexOf('PRODUCE_QTY')
+    const sc = cols.indexOf('SC_SO_NO')
+    if (oq < 0 || pq < 0) return []
+    const g = new Map()
+    grid.rows.forEach(r => {
+      const ordered = Number(norm(r[oq])) || 0
+      if (ordered <= 0) return
+      const key = orderKeyOf(r, cols)
+      const cur = g.get(key) || { key, sc: sc >= 0 ? norm(r[sc]) : '', ordered: 0, placed: 0 }
+      cur.ordered = Math.max(cur.ordered, ordered)
+      cur.placed += Number(norm(r[pq])) || 0
+      g.set(key, cur)
+    })
+    return [...g.values()]
+      .map(o => ({ ...o, diff: Math.round((o.ordered - o.placed) * 100) / 100 }))
+      .filter(o => Math.abs(o.diff) > QTY_TOL)
+  }
+
   async function save() {
     if (!grid) return
+    const bad = ordersOutOfBalance()
+    if (bad.length) {
+      const lines = bad.slice(0, 12).map(o =>
+        `• SC ${o.sc || '-'}: สั่ง ${o.ordered.toLocaleString()} วาง ${o.placed.toLocaleString()} `
+        + (o.diff > 0 ? `(ขาด ${o.diff.toLocaleString()})` : `(เกิน ${(-o.diff).toLocaleString()})`)).join('\n')
+      const more = bad.length > 12 ? `\n…และอีก ${bad.length - 12} ออร์เดอร์` : ''
+      if (!window.confirm(`⚠ มี ${bad.length} ออร์เดอร์ที่วางไม่ตรงยอดสั่ง (ORDERS_QTY):\n\n${lines}${more}\n\nยืนยันบันทึกทั้งที่ยอดไม่ตรงหรือไม่?`)) return
+    }
     setSaving(true); setMsg('')
     try {
       const r = await api.planSave(grid.sheet, grid.columns, grid.rows)
@@ -292,11 +355,49 @@ export default function KnitPlan({ active = true }) {
     setDirty(true)
   }
 
+  // จำนวนสูงสุดที่แถว ri วางได้ = ORDERS_QTY ของออร์เดอร์ − ผลรวม PRODUCE_QTY ของแถวอื่นในออร์เดอร์เดียวกัน
+  // ออร์เดอร์นิยามด้วย ORDER_KEY_COLS → ห้ามวางรวมเกินยอดสั่ง
+  // คืน Infinity ถ้าไม่มี ORDERS_QTY (ปล่อยผ่าน)
+  function maxQtyForRow(ri) {
+    if (!grid) return Infinity
+    const cols = grid.columns
+    const oq = cols.indexOf('ORDERS_QTY'), pq = cols.indexOf('PRODUCE_QTY')
+    if (oq < 0 || pq < 0) return Infinity
+    const row = grid.rows[ri]
+    const ordered = Number(norm(row[oq]))
+    if (!Number.isFinite(ordered) || ordered <= 0) return Infinity
+    const k = orderKeyOf(row, cols)
+    let others = 0
+    grid.rows.forEach((r, i) => { if (i !== ri && orderKeyOf(r, cols) === k) others += Number(norm(r[pq])) || 0 })
+    return Math.max(0, Math.round((ordered - others) * 100) / 100)
+  }
+
+  // ถ้า PRODUCE_QTY ของแถว ri เกินยอดสั่ง → เตือนแล้วปรับลงมาเท่าที่วางได้ (คืน true ถ้าปรับ)
+  function clampOrderQty(ri) {
+    if (!grid) return false
+    const pq = grid.columns.indexOf('PRODUCE_QTY')
+    if (pq < 0) return false
+    const cur = Number(norm(grid.rows[ri][pq])) || 0
+    const max = maxQtyForRow(ri)
+    if (cur > max + QTY_TOL) {
+      window.alert(`วางเกินยอดสั่ง (ORDERS_QTY) ไม่ได้\nออร์เดอร์นี้วางแถวนี้ได้สูงสุด ${max.toLocaleString()} กก. — ปรับลงให้อัตโนมัติ`)
+      setCell(ri, pq, max)
+      return true
+    }
+    return false
+  }
+
   // double click ตัวเลขบนบล็อก Gantt → แก้ PRODUCE_QTY ของแถวนั้น (ตารางด้านล่างอัปเดตตาม + ต้องกดบันทึก)
   function editQty(ri, qty) {
     if (!grid) return
     const qci = grid.columns.indexOf('PRODUCE_QTY')
-    if (qci >= 0) setCell(ri, qci, qty)
+    if (qci < 0) return
+    const max = maxQtyForRow(ri)
+    if (qty > max + QTY_TOL) {
+      window.alert(`วางเกินยอดสั่ง (ORDERS_QTY) ไม่ได้\nออร์เดอร์นี้วางแถวนี้ได้สูงสุด ${max.toLocaleString()} กก. (กรอก ${qty.toLocaleString()})`)
+      return
+    }
+    setCell(ri, qci, qty)
   }
 
   // แบ่งงาน 1 บล็อกออกเป็น 2 สัปดาห์: ลด PRODUCE_QTY ของแถวเดิม + สร้างแถวใหม่ (copy) จำนวนที่แบ่ง
@@ -406,6 +507,69 @@ export default function KnitPlan({ active = true }) {
     setOpenCol(null)
   }
 
+  // ตารางแผน (ใช้ซ้ำทั้งท้ายหน้า + ใน modal ที่เด้งตอนคลิกบล็อก Gantt)
+  // highlight = idx แถวที่จะไฮไลต์/ผูก ref ไว้เลื่อนหา (เฉพาะใน modal)
+  // rowsList = ชุดแถวที่จะโชว์ (default = ทั้งหมดที่ผ่านตัวกรอง; modal ส่งเฉพาะแถวของ item ที่คลิก)
+  const renderGrid = (highlight = null, rowsList = visible) => (
+    <table className="grid" style={{ tableLayout: 'fixed', width: totalW }}>
+      <colgroup>
+        <col style={{ width: ROWNUM_W }} />
+        {grid.columns.map((_, ci) => (
+          <col key={ci} style={{ width: colW[ci] || 120 }} />
+        ))}
+        <col style={{ width: ROWNUM_W }} />
+      </colgroup>
+      <thead>
+        <tr>
+          <th className="rownum">#</th>
+          {grid.columns.map((c, ci) => (
+            <th key={ci} className={ci === 0 ? 'frozen' : undefined}>
+              <div className="thcell">
+                <span className="thlabel" title={c}>{c}</span>
+                <button
+                  className={'funnel' + (filters[ci] ? ' on' : '')}
+                  title="กรองคอลัมน์นี้"
+                  onClick={e => openColMenu(e, ci)}>▾</button>
+              </div>
+              <span className="colresize" onMouseDown={e => startResize(e, ci)} />
+            </th>
+          ))}
+          <th className="rownum actcol"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {rowsList.map(({ row, idx }) => (
+          <tr key={idx}
+            ref={highlight === idx ? modalRowRef : null}
+            className={highlight === idx ? 'rowsel' : undefined}>
+            <td className="rownum">{idx + 1}</td>
+            {row.map((cell, ci) => {
+              const key = `${idx}:${ci}`
+              return (
+                <td key={ci} className={(ci === 0 ? 'frozen' : '') + (numCols.has(ci) ? ' num' : '')}>
+                  <input
+                    value={displayCell(cell, ci, key)}
+                    onChange={e => setCell(idx, ci, e.target.value)}
+                    onFocus={() => setEditKey(key)}
+                    onBlur={() => { setEditKey(null); if (grid.columns[ci] === 'PRODUCE_QTY') clampOrderQty(idx) }}
+                  />
+                </td>
+              )
+            })}
+            <td className="rownum actcol">
+              <button className="del" title="ลบแถว" onClick={() => delRow(idx)}>✕</button>
+            </td>
+          </tr>
+        ))}
+        {!rowsList.length && (
+          <tr><td className="rownum"></td>
+            <td colSpan={grid.columns.length + 1} className="hint">ไม่มีแถวตรงตัวกรอง</td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+  )
+
   return (
     <div className="knitplan">
       <div className="editbar plan-head">
@@ -426,6 +590,7 @@ export default function KnitPlan({ active = true }) {
           <button onClick={refresh}>รีเฟรช</button>
           <span className={'badge ' + (isRunning ? 'run' : 'idle')}>{runLabel}</span>
           {isRunning && runStatus.progress != null && <small className="run-hint">ความคืบหน้า {runStatus.progress}%</small>}
+          {meta?.exists && meta.mtime && <small className="run-hint">แผนล่าสุด: {fmtPlanTime(meta.mtime)}</small>}
         </div>
       </div>
 
@@ -501,7 +666,7 @@ export default function KnitPlan({ active = true }) {
               <button onClick={() => setShowGantt(s => !s)}>{showGantt ? 'ซ่อน' : 'แสดง'}</button>
             </div>
           </div>
-          {showGantt && <PlanGantt columns={grid.columns} rows={visible} load={load} ava={ava} bookingMc={bookingMc} poolMap={poolMap} onMoveWeek={moveJob} onEditQty={editQty} onSplit={splitJob} onRemove={delRow} loadFilter={loadFilter} setLoadFilter={setLoadFilter} barFields={barFields} />}
+          {showGantt && <PlanGantt columns={grid.columns} rows={visible} load={load} ava={ava} bookingMc={bookingMc} poolMap={poolMap} onMoveWeek={moveJob} onEditQty={editQty} onSplit={splitJob} onRemove={delRow} loadFilter={loadFilter} setLoadFilter={setLoadFilter} barFields={barFields} selIdx={selJob} setSelIdx={setSelJob} />}
         </div>
       )}
 
@@ -509,65 +674,60 @@ export default function KnitPlan({ active = true }) {
       {loading && <div className="hint">กำลังโหลด...</div>}
       {!loading && !meta?.exists && <div className="hint">ยังไม่มีไฟล์แผน กด <b>รันแผนใหม่</b> แล้วรอให้สถานะจบก่อน ระบบจะโหลดให้อัตโนมัติ</div>}
 
-      {grid && !loading && (
-        <div className="gridwrap">
-          <table className="grid" style={{ tableLayout: 'fixed', width: totalW }}>
-            <colgroup>
-              <col style={{ width: ROWNUM_W }} />
-              {grid.columns.map((_, ci) => (
-                <col key={ci} style={{ width: colW[ci] || 120 }} />
-              ))}
-              <col style={{ width: ROWNUM_W }} />
-            </colgroup>
-            <thead>
-              <tr>
-                <th className="rownum">#</th>
-                {grid.columns.map((c, ci) => (
-                  <th key={ci} className={ci === 0 ? 'frozen' : undefined}>
-                    <div className="thcell">
-                      <span className="thlabel" title={c}>{c}</span>
-                      <button
-                        className={'funnel' + (filters[ci] ? ' on' : '')}
-                        title="กรองคอลัมน์นี้"
-                        onClick={e => openColMenu(e, ci)}>▾</button>
-                    </div>
-                    <span className="colresize" onMouseDown={e => startResize(e, ci)} />
-                  </th>
-                ))}
-                <th className="rownum actcol"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map(({ row, idx }) => (
-                <tr key={idx}>
-                  <td className="rownum">{idx + 1}</td>
-                  {row.map((cell, ci) => {
-                    const key = `${idx}:${ci}`
-                    return (
-                      <td key={ci} className={(ci === 0 ? 'frozen' : '') + (numCols.has(ci) ? ' num' : '')}>
-                        <input
-                          value={displayCell(cell, ci, key)}
-                          onChange={e => setCell(idx, ci, e.target.value)}
-                          onFocus={() => setEditKey(key)}
-                          onBlur={() => setEditKey(null)}
-                        />
-                      </td>
-                    )
-                  })}
-                  <td className="rownum actcol">
-                    <button className="del" title="ลบแถว" onClick={() => delRow(idx)}>✕</button>
-                  </td>
-                </tr>
-              ))}
-              {!visible.length && (
-                <tr><td className="rownum"></td>
-                  <td colSpan={grid.columns.length + 1} className="hint">ไม่มีแถวตรงตัวกรอง</td>
-                </tr>
+      {/* คลิกบล็อกใน Gantt → เด้ง modal โชว์เฉพาะแถวของ item ที่คลิก (แก้ไขได้) คู่กับการ์ดรายละเอียด
+          modal เว้นที่ฝั่งขวาให้การ์ด (JobPanel = fixed) จึงไม่ทับกัน */}
+      {selJob != null && grid && (() => {
+        const itemCi = grid.columns.indexOf('ITEM_CODE')
+        const selItem = itemCi >= 0 ? grid.rows[selJob]?.[itemCi] : null
+        // เฉพาะแถวของ item เดียวกัน (อ่านจาก grid.rows ทั้งหมด ไม่สนตัวกรองที่เปิดอยู่)
+        const itemRows = itemCi >= 0
+          ? grid.rows.map((row, idx) => ({ row, idx })).filter(({ row }) => row[itemCi] === selItem)
+          : [{ row: grid.rows[selJob], idx: selJob }]
+        // สรุปยอดแยกรายออร์เดอร์ (SC_SO_NO + SC_LINE_ID) ที่อยู่ใน item นี้ — item เดียวมีหลาย SC ได้
+        const scI = grid.columns.indexOf('SC_SO_NO')
+        const lnI = grid.columns.indexOf('SC_LINE_ID')
+        const oqI = grid.columns.indexOf('ORDERS_QTY')
+        const pqI = grid.columns.indexOf('PRODUCE_QTY')
+        // ออร์เดอร์นิยามด้วย ORDER_KEY_COLS (SC เดียวมีหลายออร์เดอร์: ต่าง PO / ORDERS_QTY / FG week)
+        const okey = row => orderKeyOf(row, grid.columns)
+        const selKey = okey(grid.rows[selJob])
+        const ordMap = new Map()
+        itemRows.forEach(({ row }) => {
+          const key = okey(row)
+          const m = ordMap.get(key) || { key, sc: scI >= 0 ? norm(row[scI]) : '', line: lnI >= 0 ? norm(row[lnI]) : '', ordered: 0, placed: 0 }
+          m.ordered = Math.max(m.ordered, Number(norm(row[oqI])) || 0)
+          m.placed += Number(norm(row[pqI])) || 0
+          ordMap.set(key, m)
+        })
+        const orders = [...ordMap.values()]
+          .filter(o => o.ordered > 0)
+          .map(o => ({ ...o, diff: Math.round((o.ordered - o.placed) * 100) / 100 }))
+        return (
+          <div className="plan-modal-backdrop" onClick={() => setSelJob(null)}>
+            <div className="plan-modal" onClick={e => e.stopPropagation()}>
+              <div className="plan-modal-head">
+                <b>{selItem || 'ตารางแผนผลิต'}</b>
+                <span className="plan-modal-hint">{itemRows.length} แถว · {orders.length} ออร์เดอร์ · แก้ค่าในช่องได้เลย</span>
+                <button className="plan-modal-close" onClick={() => setSelJob(null)} title="ปิด (Esc)">✕</button>
+              </div>
+              {orders.length > 0 && (
+                <div className="plan-modal-orders">
+                  {orders.map(o => (
+                    <span key={o.key}
+                      className={'order-status ' + (Math.abs(o.diff) <= QTY_TOL ? 'ok' : o.diff > 0 ? 'short' : 'over') + (o.key === selKey ? ' cur' : '')}>
+                      SC {o.sc || '-'}{o.line ? `/${o.line}` : ''} · สั่ง {o.ordered.toLocaleString()} · วาง {o.placed.toLocaleString()}
+                      {Math.abs(o.diff) <= QTY_TOL ? ' ✓' : o.diff > 0 ? ` ⚠ ขาด ${o.diff.toLocaleString()}` : ` ⚠ เกิน ${(-o.diff).toLocaleString()}`}
+                    </span>
+                  ))}
+                </div>
               )}
-            </tbody>
-          </table>
-        </div>
-      )}
+              <div className="gridwrap plan-modal-grid">
+                {renderGrid(selJob, itemRows)}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {openCol && colData && (
         <ColumnFilter
