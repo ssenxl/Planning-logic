@@ -62,6 +62,7 @@ export const api = {
   // outputs
   outputs: () => req('GET', '/api/outputs'),
   outputsBooking: () => req('GET', '/api/outputs/booking'),
+  outputsSc: () => req('GET', '/api/outputs/sc'),
   deleteOutput: (name) => req('DELETE', '/api/outputs/' + encodeURIComponent(name)),
   // map item (ผลลัพธ์การเชื่อม Datamining ↔ Booking)
   mapItemFiles: () => req('GET', '/api/map-item'),
@@ -78,7 +79,7 @@ export const api = {
   planAva: () => req('GET', '/api/plan/ava'),
   planPoolMap: () => req('GET', '/api/plan/pool-map'),
   planBookingMc: () => req('GET', '/api/plan/booking-mc'),
-  planWeekDays: () => req('GET', '/api/plan/week-days'),
+  planBookingItems: () => req('GET', '/api/plan/booking-items'),
   // v = mtime ของไฟล์ — บังคับให้ URL เปลี่ยนหลังบันทึก เบราว์เซอร์จะได้ไม่หยิบไฟล์เก่าจากแคช
   planDownloadUrl: (v) => '/api/plan/download' + (v ? `?t=${Math.round(v)}` : ''),
   // order color (Datamining → Booking ระดับ ITEM Color — แก้ไข + export)
@@ -117,6 +118,6 @@ export const api = {
     req('POST', '/api/outsource/split', { item_code, outsource_qty, start_week }),
   outsourceSplitDelete: (item_code) =>
     req('DELETE', '/api/outsource/split/' + encodeURIComponent(item_code)),
-  // เปลี่ยนกระบอก (AI) — แนะนำว่าควรเปลี่ยนกระบอกให้ item ไหนเพื่อปลดล็อกงานที่ติดเครื่อง
+  // Change Cylinder (AI) — แนะนำว่าควรทำ Change Cylinder ให้ item ไหนเพื่อปลดล็อกงานที่ติดเครื่อง
   cylinderAdvise: () => req('POST', '/api/cylinder/advise'),
 }

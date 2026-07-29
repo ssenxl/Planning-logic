@@ -164,12 +164,19 @@
       "Bash(powershell.exe -NoProfile -Command \"python -c \\\\\"import pandas as pd; df = pd.read_excel\\(r'C:\\\\Users\\\\WICHARIT\\\\Nan Yang Textile\\\\SCM_Cloud - Knit Plan \\(AI\\)\\\\Master_Item.xlsx'\\); print\\(df['ORA_ITEM_CODE'].dropna\\(\\).astype\\(str\\).sample\\(30, random_state=1\\).tolist\\(\\)\\)\\\\\"\")",
       "Bash(PYTHONIOENCODING=utf-8 python AVA_MC.py)",
       "Bash(PYTHONIOENCODING=utf-8 python -c ' *)",
-      "Bash(PYTHONIOENCODING=utf-8 python C:/Users/WICHARIT/AppData/Local/Temp/claude/c--vscode-AI-plan/4af7fb15-5917-4df2-8c49-45d218483042/scratchpad/mklock.py 'C:/Users/WICHARIT/AppData/Local/Temp/claude/c--vscode-AI-plan/4af7fb15-5917-4df2-8c49-45d218483042/scratchpad/fakehome/Nan Yang Textile/SCM_Cloud - Knit Plan \\(AI\\)/MasterMC.xlsx')"
+      "Bash(PYTHONIOENCODING=utf-8 python C:/Users/WICHARIT/AppData/Local/Temp/claude/c--vscode-AI-plan/4af7fb15-5917-4df2-8c49-45d218483042/scratchpad/mklock.py 'C:/Users/WICHARIT/AppData/Local/Temp/claude/c--vscode-AI-plan/4af7fb15-5917-4df2-8c49-45d218483042/scratchpad/fakehome/Nan Yang Textile/SCM_Cloud - Knit Plan \\(AI\\)/MasterMC.xlsx')",
+      "Bash(git diff *)",
+      "PowerShell(python \"c:\\\\vscode\\\\AI_plan\\\\webapp\\\\UAT\\\\make_uat_excel.py\")",
+      "PowerShell(Copy-Item \"C:\\\\vscode\\\\AI_plan\\\\webapp\\\\UAT\\\\UAT_KnitPlan_Server.xlsx\" \"C:\\\\Users\\\\WICHARIT\\\\OneDrive - Nan Yang Textile\\\\Desktop\\\\UAT_KnitPlan_Server.xlsx\" -Force)",
+      "PowerShell(python -c \"import sys;print\\(sys.executable\\);print\\(sys.version\\)\"; echo '--- venv/docker ---'; Get-ChildItem \"C:\\\\vscode\\\\AI_plan\" -Force | Where-Object { $_.Name -match 'venv|env|docker|Dockerfile|compose' } | Select-Object Name; Get-ChildItem \"C:\\\\vscode\\\\AI_plan\\\\webapp\" -Force | Select-Object Name; echo '--- requirements ---'; Get-Content \"C:\\\\vscode\\\\AI_plan\\\\webapp\\\\backend\\\\requirements.txt\")",
+      "PowerShell($vs = @\\(\"C:\\\\vscode\\\\AI_plan\\\\webapp\\\\.venv\",\"C:\\\\vscode\\\\AI_plan\\\\webapp\\\\.venv-1\"\\); foreach \\($v in $vs\\) { $py = Join-Path $v \"Scripts\\\\python.exe\"; if \\(Test-Path $py\\) { Write-Output \"== $py\"; & $py -c \"import fastapi,uvicorn,apscheduler,openpyxl,pandas;import httpx;print\\('deps ok \\(httpx too\\)'\\)\" } else { Write-Output \"== $v : no python.exe\" } })",
+      "PowerShell($env:PYTHONIOENCODING=\"utf-8\"; python \"C:\\\\Users\\\\WICHARIT\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--vscode-AI-plan\\\\b0e9aeca-e0ba-4a15-bb27-1fa9f86e4419\\\\scratchpad\\\\run_uat.py\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\WICHARIT\\Nan Yang Textile\\SCM_Cloud - Knit Plan (AI)",
       "C:\\",
-      "c:\\vscode\\AI_plan"
+      "c:\\vscode\\AI_plan",
+      "\\tmp"
     ]
   }
 }

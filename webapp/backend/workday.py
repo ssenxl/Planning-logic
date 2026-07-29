@@ -11,19 +11,22 @@ workday.py — API สำหรับ "วันทำงานตามกล�
 """
 import re
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 
 from openpyxl import load_workbook
 
+import config
 from config import master_files
 
 WORKDAY_SHEET = "Work Day"
 WEEK_MERGE_SHEET = "Week Merge"
 WORKDAY_HEADER = ["Factory", "MC_CAT", "Guage", "WEEK", "WORK_DAY", "WORK_HOUR"]
 WEEK_MERGE_HEADER = ["WEEK", "MERGE_TO"]
-DEFAULT_WORK_DAYS = 6.0
+DEFAULT_WORK_DAYS = 6.0     # หากลุ่มไม่เจอ → 6 วัน (ต้องตรงกับ Calendar.DEFAULT_WORK_DAYS)
 DEFAULT_WORK_HOURS = 24.0   # ไม่ตั้ง = 24 ชม. (ไม่ลดกำลังผลิต)
+SEED_WORK_DAYS = DEFAULT_WORK_DAYS   # ใช้ตอน seed จาก MasterMC (แถวที่ MasterMC ไม่มีค่า)
 
 
 def _norm(v) -> str:
@@ -93,6 +96,95 @@ def mc_groups() -> list:
     return out
 
 
+def mc_group_map() -> dict:
+    """ทุกเครื่องใน MasterMC → กลุ่มในแผง : {"MC|GUAGE": "FACTORY|MC_CAT|GUAGE"}
+
+    ต่างจาก mc_groups() ที่ยุบเหลือกลุ่มละ 1 เครื่อง (ไว้ทำ tree) — อันนี้เก็บ "ทุกเครื่อง"
+    ให้ Gantt แปลง (เครื่อง, เกจ) → กลุ่มได้ครบ เช่น TSB/26 → PHET|SINGEL-18|26
+    ไม่งั้นเครื่องที่ไม่ใช่ตัวแทนกลุ่มจะหาไม่เจอ → ตกไปใช้ fallback 6 ผิด"""
+    path = _path("MasterMC")
+    wb = load_workbook(path, read_only=True, data_only=True)
+    ws = wb["Master MC"] if "Master MC" in wb.sheetnames else wb[wb.sheetnames[0]]
+    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    wb.close()
+    if not rows:
+        return {}
+    hdr = {str(c).strip().upper(): i for i, c in enumerate(rows[0]) if c is not None}
+    fi, ci, gi, mi = hdr.get("FACTORY"), hdr.get("MC_CAT"), hdr.get("GUAGE"), hdr.get("MC")
+    if None in (fi, ci, gi, mi):
+        return {}
+    out = {}
+    for r in rows[1:]:
+        def g(i):
+            return _norm(r[i]).upper() if i < len(r) else ""
+        mc, guage = g(mi), g(gi)
+        if not mc:
+            continue
+        out.setdefault(f"{mc}|{guage}", f"{g(fi)}|{g(ci)}|{guage}")
+    return out
+
+
+def calendar_week_days() -> dict:
+    """วันที่ปฏิทินเปิดของแต่ละสัปดาห์ — อ่านสดจาก Calendar.xlsx บน server → {week(str): วัน}
+
+    ใช้เป็นเพดานเดียวกับฝั่ง pipeline (WorkDay.get_working_days) เพื่อให้หน้าเว็บกับแผน
+    เห็นวันหยุดชุดเดียวกัน — แก้ปฏิทินบน server แล้วหน้าเว็บเห็นทันทีโดยไม่ต้องรันแผนใหม่
+    อ่านไม่ได้ → {} (หน้าเว็บจะไม่ cap ด้วยปฏิทิน)"""
+    try:
+        if str(config.REPO_DIR) not in sys.path:
+            sys.path.insert(0, str(config.REPO_DIR))
+        from Calendar import load_calendar
+        df = load_calendar(_path("Calendar"), sheet_name="Sheet1")
+        return {str(int(w)): int(n) for w, n in df.groupby("WEEK")["is_working_day"].sum().items()}
+    except Exception:
+        return {}
+
+
+def _aliases(known: set) -> dict:
+    """คู่ (เครื่อง|เกจ) → กลุ่มในแผง จาก booking_final ล่าสุด → {"MC|GUAGE": "FAC|CAT|GUAGE"}
+
+    ต้องมีเพราะ booking มีชื่อเครื่องที่ไม่มีใน MasterMC (SKPHF/SKPSL/SKPAO) หรือคู่
+    (เครื่อง, เกจ) ไม่ตรง — แต่ CAT+เกจ ตรงกับกลุ่มในแผงพอดี (ตรรกะเดียวกับ
+    WorkDay.register_aliases ฝั่ง pipeline) · หาไฟล์ไม่ได้ → {}"""
+    if not known:
+        return {}
+    try:
+        import pandas as pd
+        import plan_view
+        p = plan_view._latest_booking_path()
+        if p is None:
+            return {}
+        df = pd.read_excel(p, sheet_name="DETAIL")
+    except Exception:
+        return {}
+
+    by_cat: dict = {}
+    for k in known:
+        parts = k.split("|")
+        if len(parts) == 3:
+            by_cat.setdefault((parts[1], parts[2]), set()).add(k)
+
+    cols = {c: c for c in df.columns}
+    out: dict = {}
+    for r in df.to_dict("records"):
+        mc = _norm(r.get("MC_GROUP")).upper()
+        g = _norm(r.get("GUAGE")).upper()
+        if not mc or f"{mc}|{g}" in out:
+            continue
+        cat = _norm(r.get("MC_CAT")).upper() or _norm(r.get("CAT")).upper()
+        fac = _norm(r.get("FACTORY")).upper()
+        key = None
+        if fac and f"{fac}|{cat}|{g}" in known:
+            key = f"{fac}|{cat}|{g}"
+        else:
+            cands = by_cat.get((cat, g), set())
+            if len(cands) == 1:
+                key = next(iter(cands))
+        if key:
+            out[f"{mc}|{g}"] = key
+    return out
+
+
 def get_workday() -> dict:
     """คืนค่าที่ตั้งไว้ + รายการกลุ่ม + การยุบสัปดาห์
     {groups: [...], defaults: {"FAC|CAT|G": วัน}, weeks: {"FAC|CAT|G|W": วัน},
@@ -124,9 +216,16 @@ def get_workday() -> dict:
             continue
         merges[int(src)] = int(dst)
 
+    known = set(defaults) | set(hours) | {"|".join(k.split("|")[:3]) for k in weeks}
     return {"groups": groups, "defaults": defaults, "weeks": weeks, "hours": hours,
             "merges": merges, "fallback_days": DEFAULT_WORK_DAYS,
-            "fallback_hours": DEFAULT_WORK_HOURS}
+            "fallback_hours": DEFAULT_WORK_HOURS,
+            # วันที่ปฏิทินเปิดต่อสัปดาห์ (สดจาก server) — เพดานของวันทำงาน
+            "cal_days": calendar_week_days(),
+            # ทุกเครื่องใน MasterMC → กลุ่มในแผง (ให้ Gantt แปลงเครื่องไม่ใช่ตัวแทนได้ถูก)
+            "mc_map": mc_group_map(),
+            # เครื่องที่ไม่มีใน MasterMC → กลุ่มในแผง (ให้ Gantt คำนวณตรงกับ pipeline)
+            "aliases": _aliases(known)}
 
 
 def _write_sheet(wb, sheet: str, header: list, rows: list) -> None:
@@ -187,7 +286,7 @@ def seed_from_mastermc() -> dict:
         key = "|".join(x.upper() for x in (g["factory"], g["mc_cat"], g["guage"]))
         if key in defaults:
             continue
-        defaults[key] = g["master_work_day"] if g["master_work_day"] is not None else DEFAULT_WORK_DAYS
+        defaults[key] = g["master_work_day"] if g["master_work_day"] is not None else SEED_WORK_DAYS
         added += 1
     if not added:
         return {"ok": True, "added": 0}

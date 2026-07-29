@@ -315,11 +315,13 @@ def load_calendar(file_path: Path | str, sheet_name: str = "Work day") -> pd.Dat
 #   Factory | MC_CAT | Guage | WEEK | WORK_DAY
 #   WEEK ว่าง  = ค่ามาตรฐานของกลุ่ม (ใช้ทุกสัปดาห์)
 #   WEEK มีเลข = ค่าเฉพาะสัปดาห์นั้น
-# ค่าที่กรอกใช้ตรง ๆ ไม่หักวันหยุดซ้ำ
+# ค่าที่กรอกใช้ตรง ๆ ไม่หักวันหยุดซ้ำ · ไม่มีในชีท = ไม่วางแผน (0 วัน)
 # =========================================================
 WORKDAY_SHEET = "Work Day"
 WEEK_MERGE_SHEET = "Week Merge"
-DEFAULT_WORK_DAYS = 6.0
+DEFAULT_WORK_DAYS = 6.0    # หากลุ่มในชีท Work Day ไม่เจอ → ใช้ 6 วัน (ยังหักวันหยุดตามปฏิทินอยู่)
+NORMAL_CAL_DAYS = 6.0      # สัปดาห์ปกติ (ศุกร์–พฤหัส) เปิดกี่วัน — ใช้วัด "วันหยุดส่วนเกิน" ของสัปดาห์นั้น
+DEFAULT_WORK_HOURS = 24.0  # ไม่ตั้ง WORK_HOUR = 24 ชม. (ไม่ลดกำลังผลิต)
 
 
 def _norm_key(v) -> str:

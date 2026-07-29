@@ -1631,6 +1631,84 @@ button.ghost.sm:hover {
   display: inline-block;
 }
 
+/* ตัวอย่างสัญลักษณ์บนบล็อกใน legend — ทำคลาสแยกจาก .gbar เพราะ .gbar บังคับ
+   height:30px + flex เต็มความกว้าง ถ้า reuse ตรงๆ แถบคำอธิบายจะเละ */
+.glegend-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+  flex: none;
+}
+
+/* ชื่อ item ของ core item — แดงหนาบนพื้นบล็อกสีเข้ม (ตรงกับ .gbar-item.core) */
+.glegend-chip.lg-core {
+  background: #4a6fa5;
+  color: #dc2626;
+  font-weight: 800;
+  text-shadow: 0 0 2px rgba(255, 255, 255, .95);
+}
+
+/* งานสี — ส้ม (ตรงกับ .gbar-color) */
+.glegend-chip.lg-color {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: #fff;
+  box-shadow: inset 0 0 0 2px #b45309;
+}
+
+/* order หาร 6 พับไม่ลงตัว — แดงทั้งก้อน (ตรงกับ .gbar-foldwarn) */
+.glegend-chip.lg-fold {
+  background: #dc2626;
+  color: #fff;
+  box-shadow: inset 0 0 0 2px #7f1d1d;
+}
+
+/* ป้าย RDD เลยกำหนด (ตรงกับ .gbar-tag.warn — พื้นขาว ตัวแดง บนบล็อกสีเข้ม) */
+.glegend-chip.lg-rdd {
+  background: #fff;
+  color: var(--fail);
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+/* สัปดาห์ freeze — บล็อกจาง + ช่องลายทาง */
+.glegend-chip.lg-lock {
+  background: repeating-linear-gradient(-45deg, #f4f5f7, #f4f5f7 4px, #eceef1 4px, #eceef1 8px);
+  color: #98a1ad;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* History แผนเดิม (ตรงกับ .gbar-booking) */
+.glegend-chip.lg-booking {
+  background: repeating-linear-gradient(135deg, #eef2f7, #eef2f7 4px, #e2e8f0 4px, #e2e8f0 8px);
+  color: #475569;
+  box-shadow: inset 0 0 0 1px #94a3b8;
+}
+
+:root[data-theme="dark"] .glegend-chip.lg-booking {
+  background: repeating-linear-gradient(135deg, #2a2f3a, #2a2f3a 4px, #333a47 4px, #333a47 8px);
+  color: #cbd5e1;
+  box-shadow: inset 0 0 0 1px #64748b;
+}
+
+/* ตัวอย่างชิปเครื่องว่าง — ใช้สีจาก .cellava/.none/.over เดิม แต่ถอด position:absolute
+   ที่ .cellava ตั้งไว้ (ของจริงลอยมุมขวาบนของช่อง) ออก ให้ไหลอยู่ในบรรทัด legend */
+.cellava.glegend-ava {
+  position: static;
+  flex: none;
+}
+
+/* ชิปเครื่องกันไว้ POLY/COTTON — เหลืองอำพัน (ตรงกับ .cellava-rsv) */
+.cellava.glegend-ava.lg-rsv {
+  color: #8a6d00;
+  background: #fff8e1;
+}
+
 .gantt-scroll {
   overflow: auto;
   max-height: 460px;
@@ -2024,6 +2102,13 @@ button.ghost.sm:hover {
   font-size: 12px;
 }
 
+/* Core item — ชื่อเป็นแดงสด + ตัวหนา + เงาขาว ให้เด่นแยกจาก item ปกติบนพื้นทุกสี */
+.gbar-item.core {
+  color: #dc2626;
+  font-weight: 800;
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.95);
+}
+
 /* จำนวน (กก.) — ชิดขวาสุดเสมอ ให้ไล่สายตาเทียบข้ามบล็อกได้ */
 .gbar-qty {
   flex: 0 0 auto;
@@ -2106,6 +2191,164 @@ button.ghost.sm:hover {
 .gfield-reset:hover {
   border-color: var(--pri);
   color: var(--pri);
+}
+
+/* segmented control: overlay History แผนเดิม (สูงสุด 2 week) — ปิด / Item (ทั้งหมด) / Item (วางแผนวันนี้) */
+.gbooking-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.gbooking-toggle .gbk-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted, #64748b);
+  margin-right: 2px;
+}
+.gbk-btn {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+.gbk-btn:hover {
+  border-color: var(--pri);
+  color: var(--pri);
+}
+.gbk-btn.on {
+  background: var(--pri);
+  border-color: var(--pri);
+  color: #fff;
+}
+
+/* dropdown เลือก item ในโหมด plan */
+.gbk-pick {
+  position: relative;
+  display: inline-flex;
+}
+.gbk-pick-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 40;
+  min-width: 220px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* หัว dropdown (ช่องค้นหา + ปุ่ม All/ล้างทั้งหมด) — ค้างไว้ตอนเลื่อนดูรายการยาว ๆ */
+.gbk-pick-head {
+  position: sticky;
+  top: -6px;
+  z-index: 1;
+  background: var(--panel);
+  padding-top: 2px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.gbk-pick-searchwrap {
+  position: relative;
+  display: block;
+}
+.gbk-pick-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: var(--muted, #64748b);
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 4px;
+  cursor: pointer;
+}
+.gbk-pick-clear:hover {
+  color: var(--pri);
+}
+.gbk-pick-toggle.searching {
+  border-color: var(--pri);
+  color: var(--pri);
+  background: var(--pri-soft);
+}
+.gbk-pick-search {
+  width: 100%;
+  padding-right: 22px;
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+}
+.gbk-pick-search:focus {
+  outline: none;
+  border-color: var(--pri);
+  box-shadow: 0 0 0 3px var(--pri-ring);
+}
+.gbk-pick-actions {
+  display: flex;
+  gap: 6px;
+  padding: 6px 2px;
+}
+.gbk-pick-actions button {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+.gbk-pick-actions button:hover {
+  border-color: var(--pri);
+  color: var(--pri);
+}
+.gbk-pick-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--muted, #64748b);
+}
+.gbk-pick-item.on {
+  color: var(--ink);
+}
+.gbk-pick-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+.gbk-pick-empty {
+  font-size: 12px;
+  color: var(--muted, #64748b);
+  padding: 6px 4px;
+}
+
+/* บล็อก booking overlay (แผนเก่า) — สีเทา มีกรอบ ระบุว่าอ่านอย่างเดียว */
+.gbar.gbar-booking {
+  background: repeating-linear-gradient(135deg, #eef2f7, #eef2f7 6px, #e2e8f0 6px, #e2e8f0 12px);
+  color: #475569;
+  border: 1px dashed #94a3b8;
+  cursor: default;
+  opacity: 0.92;
+}
+:root[data-theme="dark"] .gbar.gbar-booking {
+  background: repeating-linear-gradient(135deg, #2a2f3a, #2a2f3a 6px, #333a47 6px, #333a47 12px);
+  color: #cbd5e1;
+  border-color: #64748b;
 }
 
 .gfield-list {
@@ -2925,6 +3168,12 @@ body.col-resizing {
   left: 46px;
   z-index: 1;
   background: #fff;
+}
+
+/* คอลัมน์ # (rownum) sticky ต้องมี z-index สูงกว่าเซลล์ข้อมูล (0) และคอลัมน์ ore frz (1)
+   ไม่งั้นเลื่อนแนวนอนแล้วเซลล์ข้อมูลที่อยู่หลังใน DOM จะวาดทับเลขแถว */
+.masters td.rownum {
+  z-index: 2;
 }
 
 .masters tbody tr:nth-child(even) td.frz {
@@ -4083,7 +4332,7 @@ table.grid b.late { color: #d1373b; }
   background: #f7f2ff;
 }
 
-/* ---------- เปลี่ยนกระบอก (AI) ---------- */
+/* ---------- Change Cylinder (AI) ---------- */
 .cylinder-btn {
   background: #e7f3ff;
   border: 1px solid #b9dcff;
@@ -4095,7 +4344,7 @@ table.grid b.late { color: #d1373b; }
   background: #d5e9ff;
 }
 
-/* แถวที่เปลี่ยนกระบอกไม่ได้ (ไม่มีเครื่องว่าง หรือกระบอกสำรองหมด) */
+/* แถวที่ทำ Change Cylinder ไม่ได้ (ไม่มีเครื่องว่าง หรือ Cylinder สำรองหมด) */
 .cyl-blocked {
   background: #fff7f5;
 }

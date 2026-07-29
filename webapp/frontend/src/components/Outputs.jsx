@@ -36,14 +36,16 @@ function FileTable({ files, onDelete }) {
 export default function Outputs() {
   const [files, setFiles] = useState([])
   const [booking, setBooking] = useState([])
+  const [sc, setSc] = useState([])
   const [msg, setMsg] = useState('')
 
   async function load() {
     setMsg('')
     try {
-      const [plans, bks] = await Promise.all([api.outputs(), api.outputsBooking()])
+      const [plans, bks, scs] = await Promise.all([api.outputs(), api.outputsBooking(), api.outputsSc()])
       setFiles(plans)
       setBooking(bks)
+      setSc(scs)
     } catch (e) { setMsg('โหลดไม่ได้: ' + e.message) }
   }
   useEffect(() => { load() }, [])
@@ -76,6 +78,14 @@ export default function Outputs() {
         </div>
         {!booking.length && <div className="hint">ยังไม่มีไฟล์ booking</div>}
         {booking.length > 0 && <FileTable files={booking} onDelete={del} />}
+      </div>
+
+      <div className="card">
+        <div className="editbar">
+          <h2>ไฟล์ข้อมูล SC (view_sc)</h2>
+        </div>
+        {!sc.length && <div className="hint">ยังไม่มีไฟล์ SC</div>}
+        {sc.length > 0 && <FileTable files={sc} onDelete={del} />}
       </div>
     </>
   )

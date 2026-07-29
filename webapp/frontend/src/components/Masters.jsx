@@ -501,7 +501,8 @@ export default function Masters() {
     const aux = new Set(['Lock_MC', 'MC Special', 'Item Special'])
     const mainSheet = file?.sheets.find(s => s !== sel.sheet && !aux.has(s)) || null
     Promise.all([
-      api.planWeekDays().catch(() => ({})),
+      // สัปดาห์ที่มีในปฏิทิน (สดจาก Calendar.xlsx บน server) — ไม่ผูกกับไฟล์แผนรอบก่อน
+      api.workday().then(d => d?.cal_days || {}).catch(() => ({})),
       mainSheet ? api.sheet(sel.name, mainSheet).catch(() => null) : Promise.resolve(null),
     ]).then(([wk, main]) => { if (!dead) setLockOpts(buildLockOpts(main, wk)) })
     return () => { dead = true }

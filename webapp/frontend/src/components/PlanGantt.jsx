@@ -101,6 +101,59 @@ function mcKind(newMc, carryMc, sharedMc, bookingMc, outsource) {
   return ''
 }
 
+// เครื่องหมายอื่นบนบล็อก (นอกจาก emoji ประเภทเครื่อง) — ใช้เรนเดอร์ legend ใต้ Gantt
+// sample = ตัวอย่างหน้าตาจริงบนบล็อก, cls = คลาสที่ทำให้ตัวอย่างสีตรงกับของจริง
+const BAR_MARKS = [
+  {
+    key: 'core', cls: 'lg-core', sample: 'FD5xxxx', label: 'Core item',
+    tip: 'ชื่อ item เป็นสีแดงหนา = item หลัก (IS_CORE_ITEM) — ผลิตประจำ ควรรักษาเครื่องไว้',
+  },
+  {
+    key: 'color', cls: 'lg-color', sample: '★', label: 'งานสี (ต้องย้อม)',
+    tip: 'บล็อกสีส้ม + ★ = งานที่ต้องผ่านย้อมสี (มาจากหน้า Order Color)',
+  },
+  {
+    key: 'fold', cls: 'lg-fold', sample: '⚠', label: 'order หาร 6 พับไม่ลงตัว',
+    tip: 'บล็อกแดงทั้งก้อน = ยอดที่ลูกค้าเปิดมา (ทั้ง SC) แบ่งพับแล้วหาร 6 ไม่ลงตัว (เฉพาะ IRMT/SJT)\n'
+      + 'ติดทุกสัปดาห์ของ SC นั้น — ต้องไปแก้ที่ยอดเปิด order ไม่ใช่แก้บนแผน',
+  },
+  {
+    key: 'rdd', cls: 'lg-rdd', sample: 'RDD W32', label: 'วางเลยกำหนดถักเสร็จ',
+    tip: 'ป้าย RDD สีแดง = PLAN_WEEK เลย TARGET_KNIT (RDD หักเวลางานหลังถักแล้ว) → ถักไม่ทันกำหนดส่ง\n'
+      + 'ต้องลากขึ้นสัปดาห์ก่อนหน้า หรือแบ่งงาน/จ้างทอ',
+  },
+  {
+    key: 'lock', cls: 'lg-lock', sample: '🔒', label: 'สัปดาห์ freeze (แก้ไม่ได้)',
+    tip: 'สัปดาห์ที่ล็อกไว้แล้ว — บล็อกจางลง ช่องเป็นลายทาง ลาก/แก้จำนวน/ลบไม่ได้',
+  },
+  {
+    key: 'booking', cls: 'lg-booking', sample: '📋', label: 'History แผนเดิม (ดูอย่างเดียว)',
+    tip: 'บล็อกลายเส้นประ = แผนเดิมย้อนหลังสูงสุด 2 สัปดาห์ ไว้เทียบว่าเครื่องเดิมถักอะไรอยู่\n'
+      + 'ไม่ใช่งานของแผนรอบนี้ — ลาก/แก้/หักเครื่องว่างไม่ได้',
+  },
+]
+
+// ชิปเครื่องว่างมุมขวาบนของแต่ละช่อง (คลาส .cellava) — เขียว/เหลือง/แดง
+const AVA_MARKS = [
+  {
+    key: 'free', cls: '', sample: 'ว่าง 3', label: 'ยังมีเครื่องว่าง',
+    tip: 'เครื่องว่าง live = เครื่องทั้งหมด − booking − ที่แผนจองเพิ่มในสัปดาห์นั้น',
+  },
+  {
+    key: 'full', cls: 'none', sample: 'เต็ม', label: 'ใช้ครบพอดี',
+    tip: 'เครื่องถูกใช้หมดพอดี — วางงานเพิ่มในช่องนี้จะเกินทันที',
+  },
+  {
+    key: 'over', cls: 'over', sample: 'ไม่ว่าง (เกิน 2)', label: 'วางเกินเครื่องที่มี',
+    tip: 'วางงานเกินจำนวนเครื่องที่มีจริง — ต้องย้ายงานออกไปสัปดาห์อื่น หรือลดจำนวน',
+  },
+  {
+    key: 'rsv', cls: 'lg-rsv', sample: '🔒 P2 C1', label: 'เครื่องกันไว้ POLY/COTTON คงเหลือ',
+    tip: 'เครื่องที่กันไว้ให้งาน POLY (P) / COTTON (C) โดยเฉพาะ — ใช้แทนงานปกติไม่ได้\n'
+      + 'เลข = กันไว้ − booking ที่ใช้ไปแล้ว − ที่แผนใช้ในสัปดาห์นั้น (แดง = วางเกิน)',
+  },
+]
+
 // เลขสัปดาห์ปัจจุบันตามนิยาม Fri–Thu (บวก 3 วันก่อนคิด ISO week) — ต้องตรงกับ Calendar.py
 function currentPlanWeek() {
   const now = new Date()
@@ -214,7 +267,7 @@ const PANEL_GROUPS = [
 ]
 const PANEL_KNOWN = new Set(PANEL_GROUPS.flatMap(g => g.fields.map(f => f[0])))
 
-export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingMc = {}, poolMap = {}, onMoveWeek, colorRows, onRemove, onEditQty, onSplit, lockBefore = null, loadFilter = null, setLoadFilter = () => {}, barFields = BAR_FIELDS_DEFAULT, selIdx = null, setSelIdx = () => {} }) {
+export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingMc = {}, poolMap = {}, onMoveWeek, colorRows, onRemove, onEditQty, onSplit, lockBefore = null, bookingItems = [], bookingMode = 'off', bookingPick = null, loadFilter = null, setLoadFilter = () => {}, barFields = BAR_FIELDS_DEFAULT, selIdx = null, setSelIdx = () => {} }) {
   const [dragIdx, setDragIdx] = useState(null)
   const [overWeek, setOverWeek] = useState(null)
   // double click บล็อก → แก้ตัวเลขจำนวน (กก.) inline แล้วส่งค่าใหม่ผ่าน onEditQty(idx, qty)
@@ -230,7 +283,15 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
   // ค่า = { cat, gauge, mcgroup(หรือ null) } ที่ normalize แล้ว, null = แสดงทั้งหมด
   const [catFilter, setCatFilter] = useState(null)
   // สัปดาห์ที่ล็อก (freeze) — โชว์ได้แต่ลาก/ถอด/วางไม่ได้
-  const isLocked = (w) => lockBefore != null && Number(w) < Number(lockBefore)
+  // ยกเว้นสัปดาห์ "ปีหน้า" (เลขเล็กที่วนข้ามปี) ที่เลข < lockBefore แต่จริง ๆ อยู่อนาคต
+  const isLocked = (w) => {
+    if (nextYearWeeks.has(String(w)) || Number(w) === 99) return false
+    if (lockBefore != null && Number(w) < Number(lockBefore)) return true
+    // booking overlay อาจเผยสัปดาห์ที่ freeze/ผ่านมาแล้ว (< current+2) → ล็อกไว้ดูอย่างเดียว
+    // กันลากงานแผนย้อนไปวางในสัปดาห์อดีต
+    if (bookingMode !== 'off' && Number(w) < currentPlanWeek() + 2) return true
+    return false
+  }
 
   // Esc = ปิด panel รายละเอียด
   useEffect(() => {
@@ -311,28 +372,84 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
   }
   const rsvOfRow = (vals) => rsvByCat.get(poolKeyOf(vals[avaCatI], vals[avaGaugeI], mcGroupI >= 0 ? vals[mcGroupI] : '')) || null
 
+  // item จาก booking (แผนเก่าที่ commit แล้ว) ที่จะ overlay บน Gantt เป็นบล็อกอ่านอย่างเดียว
+  //   off  = ไม่โชว์
+  //   all  = ทุก item ทุกสัปดาห์ใน booking
+  //   plan = เฉพาะ item ที่กำลังทำแผนวันนี้ (ITEM_CODE ∈ bookingPick ที่ user ติ๊กเลือก) — โชว์ประวัติของมัน
+  // จัดเป็น cells (key=rowKey||week), rows (rowKey→vals ให้เพิ่มแถวเครื่องที่แผนไม่มี), weeks (ไว้ขยายแกน)
+  const bookingData = useMemo(() => {
+    const empty = { cells: new Map(), rows: new Map(), weeks: new Set() }
+    if (bookingMode === 'off' || !supported || !bookingItems.length) return empty
+    const FIELD = { CAT: 'cat', MC_GUAGE: 'gauge', MC_GROUP: 'mc_group' }
+    // ต้อง map ทุกคอลัมน์หัวแถวเป็นฟิลด์ booking ได้ ไม่งั้น key ไม่ตรงแถวแผน → ไม่ overlay
+    if (!groups.every(g => FIELD[g.col])) return empty
+    // โหมด plan: กรองด้วยชุด ITEM_CODE ที่ติ๊กไว้ (null/ไม่มี = ไม่โชว์อะไร) ; all = ไม่กรอง item
+    const allowed = bookingMode === 'plan' ? (bookingPick || new Set()) : null
+    // โชว์เฉพาะสัปดาห์ปัจจุบันเป็นต้นไป — ไม่ดึงสัปดาห์อดีต (booking มี week ย้อนหลังถึง 24) มายืดแกนซ้าย
+    const wkFloor = currentPlanWeek()
+    const cells = new Map(), rowsM = new Map(), weeks = new Set()
+    for (const b of bookingItems) {
+      const wk = norm(b.week)
+      if (wk === '' || Number(b.week) < wkFloor || Number(b.week) === 99) continue
+      if (allowed && !allowed.has(String(b.item).toUpperCase())) continue
+      const vals = groups.map(g => norm(b[FIELD[g.col]]))
+      const key = vals.join('')             // ต้องตรงกับ rowKey(row) ของแผน
+      if (!rowsM.has(key)) rowsM.set(key, vals)
+      weeks.add(wk)
+      const ck = key + '||' + wk
+      let arr = cells.get(ck)
+      if (!arr) { arr = []; cells.set(ck, arr) }
+      arr.push(b)
+    }
+    return { cells, rows: rowsM, weeks }
+  }, [bookingItems, bookingMode, bookingPick, groups, supported])
+
   // แกนสัปดาห์ — โชว์ทุกสัปดาห์ที่ทำแผนได้ (ลากงานไปได้ทุก week)
   // รวมสัปดาห์จาก rows(งาน) + load(capacity) + ava(เครื่องว่าง) เพื่อครอบคลุม horizon เต็ม
   // ตัดสัปดาห์ที่ freeze ออก: เริ่มที่ current+2 (สัปดาห์ปัจจุบัน+สัปดาห์หน้าแก้แผนไม่ได้)
   const weeks = useMemo(() => {
     if (!supported) return []
     const vals = new Set()
-    for (const { row } of rows) { const v = norm(row[ci.week]); if (v !== '') vals.add(v) }
+    const jobW = new Set()   // สัปดาห์ที่มีงานวางจริง (จาก rows) — ใช้ระบุสัปดาห์ "ปีหน้า"
+    for (const { row } of rows) { const v = norm(row[ci.week]); if (v !== '') { vals.add(v); jobW.add(v) } }
     for (const w of Object.keys(load || {})) vals.add(String(w))
     for (const w of Object.keys(ava || {})) vals.add(String(w))
+    // สัปดาห์จาก booking overlay (แผนเก่า) — ต้องโผล่เป็นคอลัมน์แม้แผนไม่มีงานในสัปดาห์นั้น
+    for (const w of bookingData.weeks) vals.add(String(w))
     const arr = [...vals]
     const nums = arr.map(Number).filter(Number.isFinite)
     if (arr.length && nums.length === arr.length) {
       // ปกติเริ่ม current+2 (freeze ซ่อน); ถ้า lockBefore ส่งมา = โชว์รวมสัปดาห์ freeze (ล็อกไว้)
-      const lo = lockBefore != null ? Number(lockBefore) - 2 : currentPlanWeek() + 2
-      const mx = Math.max(...nums)
-      if (mx < lo) return []
-      const range = Array.from({ length: mx - lo + 1 }, (_, i) => String(lo + i))
-      // ตัดสัปดาห์หยุด (ไม่มีทั้งงาน/AVA/โหลด เช่น W31) ออกทั้งสองโหมด — วางงานที่นั่นไม่ได้
-      return range.filter(w => vals.has(w))
+      let lo = lockBefore != null ? Number(lockBefore) - 2 : currentPlanWeek() + 2
+      // เปิด booking overlay: ขยายขอบซ้ายให้ครอบสัปดาห์ booking ที่เก่าสุด (เป็นสัปดาห์ในปีนี้ที่ผ่านมา)
+      if (bookingData.weeks.size) {
+        const bk = [...bookingData.weeks].map(Number).filter(n => Number.isFinite(n) && n !== 99)
+        if (bk.length) lo = Math.min(lo, ...bk)
+      }
+      // W99 = sentinel "งานล้น" → ไม่โชว์ใน Gantt (ผู้ใช้ขอ)
+      // สัปดาห์ปีนี้ = เลข >= lo ; สัปดาห์ปีหน้า = สัปดาห์ที่มีงานจริงแต่เลข < lo (แผนวางไป
+      //   ข้างหน้าเท่านั้น เลขเล็กจึงคือปีหน้าที่วนรอบ 52/53 → 1,2,3) นำมาต่อท้ายปีนี้
+      // ตัดสัปดาห์หยุด (ไม่มีทั้งงาน/AVA/โหลด เช่น W31) ออกโดยปริยาย เพราะกรองจาก vals อยู่แล้ว
+      const thisYear = arr.filter(w => { const n = Number(w); return n >= lo && n !== 99 })
+        .sort((a, b) => Number(a) - Number(b))
+      const nextYear = arr.filter(w => { const n = Number(w); return n < lo && n !== 99 && jobW.has(w) })
+        .sort((a, b) => Number(a) - Number(b))
+      return [...thisYear, ...nextYear]
     }
-    return arr.sort((a, b) => String(a).localeCompare(String(b), 'th', { numeric: true }))
-  }, [rows, ci, supported, load, ava, lockBefore])
+    return arr.filter(w => w !== '99').sort((a, b) => String(a).localeCompare(String(b), 'th', { numeric: true }))
+  }, [rows, ci, supported, load, ava, lockBefore, bookingData])
+
+  // สัปดาห์ "ปีหน้า" (เลขเล็กที่วนข้ามปี) — ไม่ควรถูกล็อกในโหมด freeze แม้เลข < lockBefore
+  const nextYearWeeks = useMemo(() => {
+    const s = new Set()
+    if (!supported) return s
+    const lo = lockBefore != null ? Number(lockBefore) - 2 : currentPlanWeek() + 2
+    for (const { row } of rows) {
+      const v = norm(row[ci.week])
+      if (v !== '' && Number(v) < lo && Number(v) !== 99) s.add(v)
+    }
+    return s
+  }, [rows, ci, supported, lockBefore])
 
   // แถว (unique combo ของ เครื่อง/เกจ/CAT)
   const gantRows = useMemo(() => {
@@ -358,9 +475,11 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
         }
       }
     }
+    // เติมแถวเครื่องจาก booking overlay ที่แผนไม่มี — ให้เห็น item booking ครบทุกเครื่อง
+    for (const vals of bookingData.rows.values()) add(vals)
     return [...m.values()].sort((a, b) =>
       a.vals.join('|').localeCompare(b.vals.join('|'), 'th', { numeric: true }))
-  }, [rows, groups, supported, avaCatI, avaGaugeI, mcGroupI])
+  }, [rows, groups, supported, avaCatI, avaGaugeI, mcGroupI, bookingData])
 
   // ประเภทโหลด (OM / PHET_DOUBLE / PHET_SINGLE) ของแต่ละแถว gantt
   // ใช้ classifyType เดียวกับแถวสรุปโหลด → กด label แถวโหลดแล้วกรองแถวงานให้ตรงกัน
@@ -431,6 +550,7 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
         foldWarn: String(v('FOLD_WARN')) === '1',
         foldQty: v('FOLD_QTY'),
         foldRem: v('FOLD_REMAINDER'),
+        core: String(v('IS_CORE_ITEM')).trim() !== '',
       })
     }
     return m
@@ -635,7 +755,7 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
                   colSpan={groups.length + (showRsv ? 1 : 0)}>
                   {t.long || t.label}
                   {capByType[t.key] != null &&
-                    <span className="loadjobs-total"> · สูงสุด {capByType[t.key]} job</span>}
+                    <span className="loadjobs-total"> · Set up สูงสุด {capByType[t.key]} Job/Week</span>}
                 </th>
                 {weeks.map(w => {
                   const info = (load[w] && load[w][t.key]) || {}
@@ -808,7 +928,7 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
                               <span className="gbar-fold"
                                 title={`order เปิดมา ${j.foldQty} พับ — หาร 6 ไม่ลงตัว (เหลือเศษ ${j.foldRem} พับ)`}>⚠</span>
                             )}
-                            <span className="gbar-item">{j.item}</span>
+                            <span className={'gbar-item' + (j.core ? ' core' : '')}>{j.item}</span>
                             {j.tags.map(t => (
                               <span key={t.key} className={'gbar-tag' + (t.warn ? ' warn' : '')}>{t.text}</span>
                             ))}
@@ -827,6 +947,18 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
                           </div>
                         )
                       })}
+                      {/* overlay History แผนเดิม (สูงสุด 2 week) — บล็อกอ่านอย่างเดียว ลาก/แก้/หักเครื่องว่างไม่ได้ */}
+                      {(bookingData.cells.get(r.key + '||' + w) || []).map((b, bi) => (
+                        <div key={'bk' + bi} className="gbar gbar-booking"
+                          title={`📋 History แผนเดิม (สูงสุด 2 week)\n${b.item}${b.so ? ` • SO ${b.so}` : ''}\n${r.vals.join(' • ')} • สัปดาห์ ${w}`
+                            + `${b.qty > 0 ? `\nจำนวน ${b.qty} กก.` : ''}${b.mc > 0 ? ` • ใช้ ${b.mc} เครื่อง` : ''}`
+                            + `${b.material ? `\n${b.material}` : ''}\n(ดูอย่างเดียว — ลาก/แก้ไม่ได้)`}>
+                          <span className="gbar-mc">📋</span>
+                          <span className="gbar-item">{b.item}</span>
+                          {b.mc > 0 && <span className="gbar-tag">{b.mc} เครื่อง</span>}
+                          {b.qty > 0 && <span className="gbar-qty">{b.qty}<small className="gbar-qty-unit">kg</small></span>}
+                        </div>
+                      ))}
                     </td>
                   )
                 })}
@@ -856,6 +988,22 @@ export default function PlanGantt({ columns, rows, load = {}, ava = {}, bookingM
                 ))}
               </div>
             )}
+            <div className="gantt-legend">
+              <span className="glegend-title">สัญลักษณ์บนบล็อก:</span>
+              {BAR_MARKS.map(m => (
+                <span key={m.key} className="glegend" title={m.tip}>
+                  <span className={'glegend-chip ' + m.cls}>{m.sample}</span>{m.label}
+                </span>
+              ))}
+            </div>
+            <div className="gantt-legend">
+              <span className="glegend-title">เครื่องว่าง (มุมขวาบนของช่อง):</span>
+              {AVA_MARKS.map(m => (
+                <span key={m.key} className="glegend" title={m.tip}>
+                  <span className={'cellava glegend-ava' + (m.cls ? ' ' + m.cls : '')}>{m.sample}</span>{m.label}
+                </span>
+              ))}
+            </div>
             {colorCols.length > 0 && (
               <div className="gantt-legend">
                 <span className="glegend-title">สีตาม CAT / Guage:</span>

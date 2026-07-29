@@ -13,9 +13,9 @@ function fmtSources(sources) {
 }
 
 /**
- * เปลี่ยนกระบอก (AI) — เสนอว่าควรเปลี่ยนกระบอกให้ item ไหนก่อน
- * Planning ไม่เปลี่ยนกระบอกเองแล้ว (คนตัดสินใจ) โมดูลนี้แค่ "แนะนำ"
- * ตัวเลขคำนวณจากแผนล่าสุด + เครื่องว่างจริง + กระบอกสำรองใน MasterMC
+ * Change Cylinder (AI) — เสนอว่าควรทำ Change Cylinder ให้ item ไหนก่อน
+ * Planning ไม่ทำ Change Cylinder เองแล้ว (คนตัดสินใจ) โมดูลนี้แค่ "แนะนำ"
+ * ตัวเลขคำนวณจากแผนล่าสุด + เครื่องว่างจริง + Cylinder สำรองใน MasterMC
  */
 export default function CylinderAdvisor() {
   const [loading, setLoading] = useState(false)
@@ -40,16 +40,17 @@ export default function CylinderAdvisor() {
   return (
     <div className="card">
       <div className="editbar">
-        <h2>🔩 เปลี่ยนกระบอก (AI) — แนะนำว่าควรเปลี่ยนให้ item ไหน</h2>
+        <h2>🔩 Change Cylinder (AI) — แนะนำว่าควรเปลี่ยนให้ item ไหน</h2>
         <button onClick={analyze} disabled={loading}>
-          {loading ? 'กำลังวิเคราะห์…' : 'วิเคราะห์การเปลี่ยนกระบอก'}
+          {loading ? 'กำลังวิเคราะห์…' : 'วิเคราะห์ Change Cylinder'}
         </button>
       </div>
 
       <div className="hint">
-        แผนจะไม่เปลี่ยนกระบอกให้เอง — ที่นี่คือ<b>ข้อเสนอ</b>ว่างานที่ส่งไม่ทัน/ผลิตไม่ครบเพราะเครื่องในเกจนั้นหมด
-        จะปลดล็อกได้ถ้าถอดเครื่องว่างจากเกจอื่น (ใน MC_CAT และโรงงานเดียวกัน) มาเปลี่ยนกระบอก
-        ต้องมีทั้งเครื่องว่างในเกจต้นทาง และกระบอกสำรองของเกจปลายทาง — คุณเป็นคนตัดสินใจเอง
+        แผนจะไม่ทำ <b>Change Cylinder</b> ให้เอง — ตรงนี้เป็นแค่<b>ข้อเสนอ</b> ว่างานที่ส่งไม่ทัน/ผลิตไม่ครบเพราะเครื่องในเกจนั้นเต็ม
+        จะปลดล็อกได้ถ้าย้ายเครื่องว่างจากเกจอื่นมาทำ Change Cylinder (ต้องอยู่ใน MC_CAT และโรงงานเดียวกัน)
+        <br />
+        เงื่อนไข: ต้องมีเครื่องว่างในเกจต้นทาง <b>และ</b> มี Cylinder สำรองของเกจปลายทาง — การตัดสินใจขั้นสุดท้ายเป็นของคุณ
       </div>
 
       {err && <div className="msg">{err}</div>}
@@ -70,7 +71,7 @@ export default function CylinderAdvisor() {
           </div>
 
           {cands.length === 0 ? (
-            <div className="hint">ไม่มีงานที่ต้องเปลี่ยนกระบอก — แผนปัจจุบันไม่มีงานสายหรือค้างผลิตจากเครื่องไม่พอ</div>
+            <div className="hint">ไม่มีงานที่ต้อง Change Cylinder — แผนปัจจุบันไม่มีงานสายหรือค้างผลิตจากเครื่องไม่พอ</div>
           ) : (
             <table className="grid">
               <thead>
@@ -79,7 +80,7 @@ export default function CylinderAdvisor() {
                   <th>Item</th>
                   <th>CAT / เกจ</th>
                   <th>ต้องทำอะไร</th>
-                  <th>กระบอกสำรอง</th>
+                  <th>Cylinder สำรอง</th>
                   <th>สาย (สัปดาห์)</th>
                   <th>ค้าง (กก.)</th>
                   <th>ทำไมลำดับนี้</th>
@@ -92,7 +93,7 @@ export default function CylinderAdvisor() {
                     <td>
                       {c.item_code}
                       {c.feasible
-                        ? <span className="tag-ok" title="เปลี่ยนกระบอกได้เลย">ทำได้</span>
+                        ? <span className="tag-ok" title="Change Cylinder ได้เลย">ทำได้</span>
                         : <span className="tag-block" title={c.blocker}>ติด</span>}
                     </td>
                     <td>{c.cat || '-'} / {c.gauge || '-'}</td>
@@ -112,7 +113,7 @@ export default function CylinderAdvisor() {
       )}
 
       {!data && !loading && (
-        <div className="hint">กดปุ่ม "วิเคราะห์การเปลี่ยนกระบอก" เพื่อให้ AI แนะนำว่าควรเปลี่ยนกระบอกให้ item ไหนก่อน</div>
+        <div className="hint">กดปุ่ม "วิเคราะห์ Change Cylinder" เพื่อให้ AI แนะนำว่าควรทำ Change Cylinder ให้ item ไหนก่อน</div>
       )}
     </div>
   )

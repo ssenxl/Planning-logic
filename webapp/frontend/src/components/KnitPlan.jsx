@@ -10,9 +10,10 @@ import OutsourceAdvisor from './OutsourceAdvisor.jsx'
 import CylinderAdvisor from './CylinderAdvisor.jsx'
 
 // ค่าความคลาดเคลื่อนที่ยอมรับได้เวลาเทียบยอดสั่ง (กก.)
-// PRODUCE_QTY ปัดทศนิยม 2 หลักทีละแถว → ผลรวมคลาดจาก ORDERS_QTY ได้แค่เศษปัดหลักสุดท้าย
-// ยอมแค่ 0.01 กก. (+ epsilon กันขอบ float) เกินกว่านี้ = ขาด/เกินจริง ต้องเตือน
-const QTY_TOL = 0.01 + 1e-9
+// PRODUCE_QTY ถูกปัด "ลงเป็นพับเต็ม" (fold_round) ทีละสัปดาห์ → ออร์เดอร์ที่แบ่งวางหลายสัปดาห์
+// เศษปัดพับจะสะสมกันได้เกิน 0.01 (เช่น ขาด 0.02 ทั้งที่วางครบ) ซึ่งไม่มีความหมายเชิงธุรกิจ
+// ยอมได้ถึง 1 กก. เกินกว่านี้ = ขาด/เกินจริง ต้องเตือน
+const QTY_TOL = 1
 
 // แปลงเวลาไฟล์แผน (mtime = epoch วินาที) → วันที่+เวลาแบบไทย เช่น "17 ก.ค. 2569 14:32 น."
 // ใช้บอก user ว่าแผนที่กำลังดูอยู่รันเสร็จเมื่อไหร่ (mtime = เวลาที่ Planning.py เขียนไฟล์เสร็จ)
@@ -80,6 +81,27 @@ export default function KnitPlan({ active = true }) {
   const [editKey, setEditKey] = useState(null) // ช่องที่กำลังแก้ (โชว์ค่าดิบไม่มี comma)
   const [runStatus, setRunStatus] = useState({})
   const [showGantt, setShowGantt] = useState(true)
+  // overlay item จาก booking (แผนเก่า) บน Gantt: 'off' | 'all' (ทุก item) | 'plan' (เฉพาะ item ที่ทำแผนวันนี้)
+  const [bookingMode, setBookingMode] = useState('off')
+  const [bookingItems, setBookingItems] = useState([])   // item จาก booking DETAIL ต่อ (สัปดาห์×CAT×เกจ×เครื่อง)
+  const [bookingUnpick, setBookingUnpick] = useState(() => new Set())  // ITEM_CODE ที่ user "ติ๊กออก" ในโหมด plan (ว่าง = ติ๊กหมด)
+  const [showBkPick, setShowBkPick] = useState(false)    // เปิด dropdown เลือก item ในโหมด plan
+  const [bkSearch, setBkSearch] = useState('')           // คำค้นใน dropdown เลือก item (กรองการแสดงผลอย่างเดียว)
+  const bkPickRef = useRef(null)
+  // พับ dropdown เลือก item เมื่อคลิกนอกกล่อง หรือกด Esc (ไม่ล้างคำค้น เพราะคำค้นยังกรอง Gantt อยู่)
+  useEffect(() => {
+    if (!showBkPick) return
+    function onDown(e) {
+      if (bkPickRef.current && !bkPickRef.current.contains(e.target)) setShowBkPick(false)
+    }
+    function onKey(e) { if (e.key === 'Escape') setShowBkPick(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [showBkPick])
   const [loadFilter, setLoadFilter] = useState(null)   // กรองประเภทโหลด Gantt (ปุ่มอยู่แถบบน)
   const [barFields, setBarFields] = useState(loadBarFields)   // ฟิลด์ที่โชว์บนบล็อก Gantt (ปุ่มอยู่แถบ Gantt)
   const [showFieldBar, setShowFieldBar] = useState(false)
@@ -101,9 +123,7 @@ export default function KnitPlan({ active = true }) {
   const [poolMap, setPoolMap] = useState({})
   // เครื่องที่ booking ถักไอเทมนั้นอยู่แล้ว ต่อ (สัปดาห์ × ITEM|MC_GROUP|GUAGE)
   const [bookingMc, setBookingMc] = useState({})
-  // วันทำงานตามปฏิทินต่อสัปดาห์ — ใช้คำนวณเครื่องใหม่เมื่อลากงานข้ามสัปดาห์
-  const [weekDays, setWeekDays] = useState({})
-  // payload วันทำงานตามกลุ่มเครื่อง (ชีท Work Day) — ใช้คำนวณวันทำงานราย (mc,gauge,week) ตอนลากงาน
+  // payload วันทำงานตามกลุ่มเครื่อง (ชีท Work Day + ปฏิทินสด) — ใช้คำนวณวันทำงานราย (mc,gauge,week) ตอนลากงาน
   const [workdayData, setWorkdayData] = useState(null)
   const prevRunning = useRef(false)
 
@@ -124,7 +144,7 @@ export default function KnitPlan({ active = true }) {
     try { setAva(await retry(() => api.planAva(), { ok: notEmpty })) } catch { setAva({}) }
     try { setPoolMap(await retry(() => api.planPoolMap())) } catch { setPoolMap({}) }
     try { setBookingMc(await retry(() => api.planBookingMc())) } catch { setBookingMc({}) }
-    try { setWeekDays(await retry(() => api.planWeekDays())) } catch { setWeekDays({}) }
+    try { setBookingItems(await retry(() => api.planBookingItems())) } catch { setBookingItems([]) }
     try { setWorkdayData(await retry(() => api.workday())) } catch { setWorkdayData(null) }
   }
   async function loadSheet(sheet) {
@@ -260,10 +280,11 @@ export default function KnitPlan({ active = true }) {
     setDirty(true)
   }
   // resolver วันทำงานราย (mc_group, gauge, week) จากชีท Work Day (แหล่งเดียว — user ปรับเอง)
-  // ตรงกับ WorkDay.get_working_days() ใน backend: ไม่มีกฎ 17/32, ไม่หักวันหยุด, รวมยุบสัปดาห์
+  // ตรงกับ WorkDay.get_working_days() ใน backend: min(ค่าในแผง, วันที่ปฏิทินเปิด), รวมยุบสัปดาห์
+  // ปฏิทินมากับ payload /api/workday (อ่านสดจาก Calendar.xlsx บน server)
   const wdResolver = useMemo(
-    () => (workdayData ? makeWorkDayResolver(workdayData, (w) => Number(weekDays?.[String(w)]) || 0) : null),
-    [workdayData, weekDays]
+    () => (workdayData ? makeWorkDayResolver(workdayData) : null),
+    [workdayData]
   )
 
   // วันทำงานจริงของแถวในสัปดาห์ w — อ่านจากชีท Work Day ตาม (MC_GROUP, MC_GUAGE) ของแถว
@@ -299,7 +320,7 @@ export default function KnitPlan({ active = true }) {
     const n = gv('NEW_MC')
     const avail = n > 0 ? Math.max(0.5, awd - gv('SETUP_DAYS') / n) : awd
 
-    set('CALENDAR_WORKING_DAYS', Number(weekDays[String(w)]) || 0)
+    set('CALENDAR_WORKING_DAYS', Number(wdResolver?.calDays(w)) || 0)
     set('FACTORY_WORKING_DAYS', wdResolver ? wdResolver.workDays(mc, gauge, null) : awd)
     set('ACTUAL_WORKING_DAYS', awd)
     set('AVAILABLE_DAYS', avail)
@@ -444,6 +465,27 @@ export default function KnitPlan({ active = true }) {
   }, [grid, filters, search, openCol])
 
   const visible = useMemo(() => grid ? filterRows(grid, search, filters) : [], [grid, search, filters])
+
+  // ITEM_CODE ที่กำลังทำแผนวันนี้ (จากแผนปัจจุบัน) ที่ "มีประวัติใน booking" — ใช้ทำ dropdown โหมด plan
+  const bookingHistCodes = useMemo(() => {
+    if (!grid) return []
+    const ici = grid.columns.indexOf('ITEM_CODE')
+    if (ici < 0) return []
+    const planSet = new Set(grid.rows.map(r => norm(r[ici]).toUpperCase()).filter(Boolean))
+    const bk = new Set(bookingItems.map(b => String(b.item).toUpperCase()))
+    return [...planSet].filter(c => bk.has(c)).sort()
+  }, [grid, bookingItems])
+
+  // รายการที่ผ่านคำค้น (ว่าง = ทั้งหมด) — ใช้ทั้งรายการใน dropdown และเป็นขอบเขตของ overlay บน Gantt
+  const bkShownCodes = useMemo(() => {
+    const q = bkSearch.trim().toUpperCase()
+    return q ? bookingHistCodes.filter(c => c.toUpperCase().includes(q)) : bookingHistCodes
+  }, [bookingHistCodes, bkSearch])
+
+  // ชุด ITEM_CODE ที่จะโชว์ประวัติในโหมด plan = ตัวที่ผ่านคำค้น − ตัวที่ user ติ๊กออก
+  const bookingPick = useMemo(
+    () => new Set(bkShownCodes.filter(c => !bookingUnpick.has(c))),
+    [bkShownCodes, bookingUnpick])
 
   // คอลัมน์ตัวเลข (sample 200 แถวแรกพอ — ตารางนี้แก้ไขได้ คำนวณใหม่ทุกครั้งที่พิมพ์)
   const numCols = useMemo(() => numericCols(grid, 200), [grid])
@@ -627,6 +669,73 @@ export default function KnitPlan({ active = true }) {
               ))}
             </div>
           )}
+          {ganttReady && showGantt && (
+            <span className="gbooking-toggle" title="overlay item จาก History แผนเดิม (สูงสุด 2 week) บน Gantt — ดูอย่างเดียว ลาก/แก้ไม่ได้">
+              <span className="gbk-label">History แผนเดิม (สูงสุด 2 week)</span>
+              <button className={'gbk-btn' + (bookingMode === 'off' ? ' on' : '')}
+                onClick={() => { setBookingMode('off'); setShowBkPick(false); setBkSearch('') }}>ปิด</button>
+              <button className={'gbk-btn' + (bookingMode === 'all' ? ' on' : '')}
+                onClick={() => { setBookingMode('all'); setShowBkPick(false); setBkSearch('') }}
+                title="ทุก item ทุกสัปดาห์ที่มีใน booking">Item (ทั้งหมด)</button>
+              <button className={'gbk-btn' + (bookingMode === 'plan' ? ' on' : '')}
+                onClick={() => setBookingMode('plan')}
+                title="เฉพาะ item ที่กำลังทำแผนวันนี้ ที่มีประวัติใน booking">Item (วางแผนวันนี้)</button>
+              {bookingMode === 'plan' && (
+                <span className="gbk-pick" ref={bkPickRef}>
+                  <button className={'gbk-btn gbk-pick-toggle' + (bkSearch.trim() ? ' searching' : '')}
+                    onClick={() => setShowBkPick(s => !s)}
+                    title="เลือกว่าจะดูประวัติของ item ไหนบ้าง">
+                    เลือก item ({bookingPick.size}/{bkShownCodes.length}
+                    {bkSearch.trim() ? ` จาก "${bkSearch.trim()}"` : ''}) ▾
+                  </button>
+                  {showBkPick && (
+                    <div className="gbk-pick-list">
+                      {bookingHistCodes.length === 0 && (
+                        <div className="gbk-pick-empty">ไม่มี item ในแผนที่มีประวัติใน booking</div>
+                      )}
+                      {bookingHistCodes.length > 0 && (
+                        <div className="gbk-pick-head">
+                          {/* คำค้นกรอง overlay บน Gantt ด้วย จึงค้างไว้ตอนปิด dropdown — ล้างด้วยปุ่ม ✕ */}
+                          <span className="gbk-pick-searchwrap">
+                            <input className="gbk-pick-search" autoFocus type="text"
+                              placeholder="🔍 พิมพ์ค้นหา item..."
+                              value={bkSearch} onChange={e => setBkSearch(e.target.value)} />
+                            {!!bkSearch && (
+                              <button className="gbk-pick-clear" title="ล้างคำค้น"
+                                onClick={() => setBkSearch('')}>✕</button>
+                            )}
+                          </span>
+                          <div className="gbk-pick-actions">
+                            {/* ทำงานกับเฉพาะรายการที่ค้นเจอ — ไม่ได้พิมพ์ค้นหา = ทั้งหมด */}
+                            <button onClick={() => setBookingUnpick(s => {
+                              const n = new Set(s); bkShownCodes.forEach(c => n.delete(c)); return n
+                            })}>All</button>
+                            <button onClick={() => setBookingUnpick(s => {
+                              const n = new Set(s); bkShownCodes.forEach(c => n.add(c)); return n
+                            })}>ล้างทั้งหมด</button>
+                          </div>
+                        </div>
+                      )}
+                      {bookingHistCodes.length > 0 && bkShownCodes.length === 0 && (
+                        <div className="gbk-pick-empty">ไม่พบ item ที่ค้นหา</div>
+                      )}
+                      {bkShownCodes.map(c => (
+                        <label key={c} className={'gbk-pick-item' + (bookingUnpick.has(c) ? '' : ' on')}>
+                          <input type="checkbox" checked={!bookingUnpick.has(c)}
+                            onChange={e => setBookingUnpick(s => {
+                              const n = new Set(s)
+                              if (e.target.checked) n.delete(c); else n.add(c)
+                              return n
+                            })} />
+                          {c}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </span>
+              )}
+            </span>
+          )}
         </div>
       )}
 
@@ -666,7 +775,7 @@ export default function KnitPlan({ active = true }) {
               <button onClick={() => setShowGantt(s => !s)}>{showGantt ? 'ซ่อน' : 'แสดง'}</button>
             </div>
           </div>
-          {showGantt && <PlanGantt columns={grid.columns} rows={visible} load={load} ava={ava} bookingMc={bookingMc} poolMap={poolMap} onMoveWeek={moveJob} onEditQty={editQty} onSplit={splitJob} onRemove={delRow} loadFilter={loadFilter} setLoadFilter={setLoadFilter} barFields={barFields} selIdx={selJob} setSelIdx={setSelJob} />}
+          {showGantt && <PlanGantt columns={grid.columns} rows={visible} load={load} ava={ava} bookingMc={bookingMc} poolMap={poolMap} onMoveWeek={moveJob} onEditQty={editQty} onSplit={splitJob} onRemove={delRow} bookingItems={bookingItems} bookingMode={bookingMode} bookingPick={bookingPick} loadFilter={loadFilter} setLoadFilter={setLoadFilter} barFields={barFields} selIdx={selJob} setSelIdx={setSelJob} />}
         </div>
       )}
 

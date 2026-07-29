@@ -5,7 +5,7 @@ import numpy as np
 import sys
 import configparser as _cp
 from pathlib import Path
-from Calendar import load_calendar
+from Calendar import load_calendar, calendar_week_map
 
 # Load calendar from SharePoint URL (auto-sync)
 CALENDAR_FILE = "https://nanyangtextilegroup.sharepoint.com/:x:/s/SCM_Cloud/IQCXP4jH73zhQozDNvw1XF8OAY5m4p-UFv35Tcpza6v8mJo?e=43ffCc"
@@ -14,14 +14,18 @@ _calendar_df.columns = _calendar_df.columns.str.strip()
 _calendar_df["DATE"] = pd.to_datetime(_calendar_df["DATE"], errors="coerce")
 _calendar_df = _calendar_df[_calendar_df["DATE"].notna()].copy()
 _calendar_df["is_working_day"] = _calendar_df["status"].map({1: 1, 0: 0}).fillna(0)
+# สรุปวันเปิด "ต่อสัปดาห์" แยกรายปี (ปฏิทินมีหลายปี → WEEK เดียวกันซ้ำหลายแถว)
+_calendar_week = calendar_week_map(_calendar_df)
 
 
 def get_working_days_in_week(week):
-    """Get working days for a specific week from calendar"""
-    week_data = _calendar_df[_calendar_df["WEEK"] == week]
-    if week_data.empty:
+    """จำนวนวันที่ปฏิทินเปิดของ "หนึ่งสัปดาห์" (ไม่รวมข้ามปี) — ตรงกับ Planning
+    ปฏิทินมีหลายปี (2026–2031) จึงห้าม sum ทุกแถว WEEK==week (จะได้ ~30 วัน)
+    ใช้แถวแรก (ปีแรก = ปีที่กำลังวางแผน) ของ calendar_week_map"""
+    wd = _calendar_week[_calendar_week["week"] == week]
+    if wd.empty:
         return 6  # fallback
-    return int(week_data["is_working_day"].sum())
+    return int(wd.iloc[0]["working_days"])
 
 # =========================
 # CONFIG
@@ -257,20 +261,11 @@ def _norm_gauge_ava(gauge) -> str:
     return s
 
 # =========================
-# WORKING HOURS MAP  (โหลดค่า Working Hours. จริงจาก MasterMC.xlsx)
-# key=(MC, Guage), value=ชั่วโมง (int), default=24
+# วัน/ชั่วโมงทำงาน: อ่านจากชีท Work Day (Calendar.xlsx) ผ่าน WorkDay เท่านั้น
+# — ไม่ใช้ Working Day / Working Hours. ของ MasterMC และไม่มีกฎพิเศษ Week 17/32 อีกต่อไป
+# — วันทำงาน = min(ค่าที่ตั้งในแผง, วันที่ปฏิทินเปิดของสัปดาห์นั้น) คิดให้แล้วใน WorkDay
+# (working_hour ของ Item Special ยังชนะเสมอ — ดู _apply_cap_adj)
 # =========================
-WORKING_HOURS_MAP: dict = {}
-for _, _wh_row in _master_mc_df.iterrows():
-    _wh_raw = _wh_row.get("Working Hours.", "")
-    if pd.notna(_wh_raw) and str(_wh_raw).strip() not in ("", "-", "nan"):
-        try:
-            WORKING_HOURS_MAP[(_wh_row["MC"], _norm_gauge_ava(_wh_row["Guage"]))] = int(float(str(_wh_raw).strip()))
-        except (ValueError, TypeError):
-            pass
-
-# วันทำงานย้ายไปอ่านจากชีท Work Day (Calendar.xlsx) ผ่าน WorkDay.get_working_days()
-# — ไม่ใช้ Working Day ของ MasterMC และไม่มีกฎพิเศษ Week 17/32 อีกต่อไป
 
 # =========================
 # ITEM SPECIAL: per-(Item, MC, Guage) override for Working day and Working hour
@@ -702,6 +697,12 @@ df = df[~df["MC_GROUP"].isin(EXCLUDE_MC_GROUP)]
 df["TYPE"] = df["TYPE"].astype(str).str.strip().str.upper()
 df = df[df["TYPE"] != "COLLAR"]
 
+# สอน WorkDay ว่าเครื่องในบุ๊คกิ้งอยู่กลุ่มไหนของแผง (ใช้ FACTORY+CAT+เกจ ซึ่งเป็นคีย์ของแผง)
+# ต้องทำก่อนตัดคอลัมน์ FACTORY ทิ้ง — ครอบคลุมเครื่องที่ไม่มีใน MasterMC เช่น SKPHF/SKPSL/SKPAO
+_wd_alias = WorkDay.register_aliases(df[[c for c in ("FACTORY", "CAT", "MC_GROUP", "GUAGE") if c in df.columns]])
+if _wd_alias:
+    print(f"✅ จับคู่เครื่อง→กลุ่มในแผงวันทำงานเพิ่ม {_wd_alias} คู่ (จาก FACTORY+CAT+เกจ)")
+
 df = df[[c for c in KEEP_COLUMNS if c in df.columns]]
 
 # ใช้ CAT จาก booking โดยตรง (ตรงกับ Type_1 ใน MasterMC)
@@ -718,12 +719,9 @@ def _apply_cap_adj(r):
     _is = _get_item_special_ava(r["ITEM_CODE"], r["MC_GROUP"], r["GUAGE"])
     if _is is not None:
         return r["CAP_KNIT"] * (_is[1] / 24)  # Item Special working_hour override (ชนะเสมอ)
-    # ชั่วโมง override ต่อกลุ่มจากชีท Work Day (หน้า WorkDayPanel) — รองจาก Item Special
-    _ov = WorkDay.get_working_hours(r["MC_GROUP"], r["GUAGE"])
-    if _ov is not None:
-        return r["CAP_KNIT"] * (_ov / 24)
-    wh = WORKING_HOURS_MAP.get((r["MC_GROUP"], _norm_gauge_ava(r["GUAGE"])), 24)
-    return r["CAP_KNIT"] * (wh / 24)
+    # ชั่วโมงของกลุ่มจากชีท Work Day (หน้า WorkDayPanel) — แหล่งเดียว, ไม่ตั้ง = 24 ชม.
+    # (ไม่ใช้ Working Hours. ของ MasterMC แล้ว)
+    return r["CAP_KNIT"] * (WorkDay.get_working_hours(r["MC_GROUP"], r["GUAGE"]) / 24)
 
 df["_CAP_ADJ"] = df.apply(_apply_cap_adj, axis=1)
 
@@ -763,6 +761,21 @@ def _get_working_day_for_row(r):
     return WorkDay.get_working_days(r["MC_GROUP"], gauge=r["GUAGE"], week=int(r["WEEK"]))
 
 df["WORKING_DAY"] = df.apply(_get_working_day_for_row, axis=1, result_type="reduce")
+
+# เตือนคู่ (เครื่อง, เกจ) ที่จับเข้ากลุ่มในแผง "วันทำงานตามกลุ่มเครื่อง" ไม่ได้
+# → ใช้ค่า fallback 6 วัน ไม่ใช่ค่าที่ตั้งไว้ ต้องให้เห็นเพื่อไปเพิ่มใน MasterMC/แผง
+_wd_missing = sorted({
+    (str(r["MC_GROUP"]).strip(), str(r["GUAGE"]).strip(), str(r["MC_CAT"]).strip())
+    for _, r in df.iterrows()
+    if not WorkDay.has_group(r["MC_GROUP"], r["GUAGE"])
+})
+if _wd_missing:
+    print(f"⚠️  {len(_wd_missing)} คู่ (เครื่อง,เกจ) จับกลุ่มในแผง 'วันทำงานตามกลุ่มเครื่อง' ไม่ได้ "
+          f"→ ใช้ค่า fallback {WorkDay.DEFAULT_WORK_DAYS:g} วัน:")
+    for _mc, _g, _cat in _wd_missing[:30]:
+        print(f"     - {_mc} เกจ {_g} (CAT={_cat})")
+    if len(_wd_missing) > 30:
+        print(f"     ... และอีก {len(_wd_missing) - 30} คู่")
 
 # =========================
 # SETUP DETECTION (เหมือน Planning.py: SETUP_GAP_WEEK = 3)
@@ -831,12 +844,15 @@ df = df.join(
 # =========================
 # MC USE — INITIAL (คำนวณด้วย WORKING_DAY เต็ม)
 # =========================
+# กัน WORKING_DAY = 0 (กลุ่มไม่ได้ตั้งค่าในแผง / สัปดาห์ถูกยุบ / ปฏิทินปิดทั้งสัปดาห์)
+# ไม่งั้นหารด้วยศูนย์ → inf → astype(int) ระเบิด
+_wd_ok = df["WORKING_DAY"].fillna(0) > 0
 df["MC_USE"] = np.where(
-    df["_CAP_ADJ"] > 0,
-    df["KP_WEIGHT"] / (df["_CAP_ADJ"] * df["WORKING_DAY"]),
+    (df["_CAP_ADJ"] > 0) & _wd_ok,
+    df["KP_WEIGHT"] / (df["_CAP_ADJ"] * df["WORKING_DAY"].where(_wd_ok, 1)),
     0
 )
-df["MC_USE_CEIL"] = np.ceil(df["MC_USE"]).fillna(0).astype(int)
+df["MC_USE_CEIL"] = np.ceil(df["MC_USE"]).replace([np.inf, -np.inf], 0).fillna(0).astype(int)
 
 # =========================
 # PASS 1: eff_days หัก setup เฉพาะ _is_new_setup

@@ -282,6 +282,19 @@ def api_outputs_booking():
     return out
 
 
+@app.get("/api/outputs/sc")
+def api_outputs_sc():
+    """ไฟล์ข้อมูล SC (view_sc_*.xlsx) ที่ View_SC.py เก็บติด timestamp ไว้ทุกครั้งที่รัน"""
+    out = []
+    if config.OUTPUT_DIR.exists():
+        for f in sorted(config.OUTPUT_DIR.glob("view_sc_*.xlsx"),
+                        key=lambda p: p.stat().st_mtime, reverse=True):
+            st = f.stat()
+            out.append({"name": f.name, "size": st.st_size,
+                        "mtime": st.st_mtime, "kind": "sc"})
+    return out
+
+
 @app.get("/api/outputs/{fname}")
 def api_output_download(fname: str):
     f = config.OUTPUT_DIR / fname
@@ -408,10 +421,10 @@ def api_plan_booking_mc():
     return plan_view.booking_mc_by_item_week()
 
 
-@app.get("/api/plan/week-days")
-def api_plan_week_days():
-    """วันทำงานตามปฏิทินต่อสัปดาห์ — Gantt ใช้คำนวณเครื่องใหม่เมื่อลากงานข้ามสัปดาห์"""
-    return plan_view.week_days()
+@app.get("/api/plan/booking-items")
+def api_plan_booking_items():
+    """item ทั้งหมดจาก booking (แผนเก่า) — Gantt overlay เป็นบล็อกอ่านอย่างเดียว"""
+    return plan_view.booking_items_by_week()
 
 
 @app.get("/api/plan/download")
@@ -610,7 +623,7 @@ def api_outsource_split_delete(item_code: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ---------------- Cylinder Advisor (เปลี่ยนกระบอก AI) ----------------
+# ---------------- Cylinder Advisor (Change Cylinder AI) ----------------
 @app.post("/api/cylinder/advise")
 def api_cylinder_advise():
     try:

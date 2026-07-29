@@ -14,10 +14,10 @@ import WorkDay  # ต้อง import ก่อน _base_work_hours ถูกเ
 
 def _base_work_hours(mc_group, gauge=None) -> float:
     """ชั่วโมงฐานของกลุ่มสำหรับแปลง CAP (ฐาน 24 ชม.) → กำลังผลิตจริง
-    override จากชีท Work Day (หน้า WorkDayPanel) ถ้าตั้งไว้ · ไม่งั้น 20 (ค่าเดิมของ Planning)
+    ชั่วโมงของกลุ่มมาจากชีท Work Day (หน้า WorkDayPanel) เท่านั้น · ไม่ตั้ง = 24 ชม.
+    ไม่ใช้ Working Hours. ของ MasterMC แล้ว
     หมายเหตุ: Item Special ยังชนะเสมอ — จัดการที่ adjust_daily_cap_for_item_special แยกต่างหาก"""
-    ov = WorkDay.get_working_hours(mc_group, gauge)
-    return float(ov) if ov is not None else 20.0
+    return WorkDay.get_working_hours(mc_group, gauge)
 
 
 # Set UTF-8 encoding for Windows console
@@ -160,9 +160,19 @@ else:
 item_cap_data = pd.DataFrame(columns=["ITEM_CODE", "MC_GROUP", "CAP ทอ", "REVOLUTION/WEIGHT", "GUAGE"])
 master_mc = pd.read_excel(_MASTER_MC_PATH)
 # โหลด Itemcore สำหรับเช็ค RTS items
+# อ่านทะเบียน Core Item จากไฟล์ Target_Stock (คอลัมน์ Item code + Customer) ซึ่ง user แก้บน server ได้
+# → ตัดปัญหาไฟล์ Itemcore.xlsx แยกที่ค้างของเก่า (data drift). ถ้าอ่านไม่ได้ค่อย fallback ไฟล์เดิม
 try:
 
-    itemcore_df = pd.read_excel(ITEMCORE_FILE)
+    try:
+        _itemcore_src = os.path.expandvars(_cfg["paths"]["target_stock"])
+    except KeyError:
+        _itemcore_src = None
+
+    if _itemcore_src and Path(_itemcore_src).exists():
+        itemcore_df = pd.read_excel(_itemcore_src)
+    else:
+        itemcore_df = pd.read_excel(ITEMCORE_FILE)
 
     itemcore_df.columns = itemcore_df.columns.str.strip()
 
@@ -888,7 +898,7 @@ if not itemcore_df.empty:
 
         customer = str(row.get('Customer', '')).strip()
 
-        if item:
+        if item and item not in ('NAN', 'NONE'):
 
             itemcore_lookup[item] = customer
 
@@ -2937,49 +2947,9 @@ def _analyze_and_balance_load(plan_week, current_plan):
 
 
 
-# Create working hours lookup from Master_MC_5
-
-# All machines now work 20 hours
-
-WORKING_HOURS_MAP = {}
-
-for _, row in master_mc.iterrows():
-
-    mc_name = str(row["MC"]).strip().upper()
-
-    WORKING_HOURS_MAP[mc_name] = 20  # All machines work 20 hours
-
-
-
-def _get_working_hours_for_mc(mc_group: str) -> int:
-
-    """Get working hours for MC_GROUP (20 or 24)"""
-
-    mc_group_upper = mc_group.strip().upper()
-
-    
-
-    # Direct lookup first
-
-    if mc_group_upper in WORKING_HOURS_MAP:
-
-        return int(WORKING_HOURS_MAP[mc_group_upper])
-
-    
-
-    # Try to match by prefix (e.g., "SKP 20G" should match "SKP")
-
-    for mc_key, hours in WORKING_HOURS_MAP.items():
-
-        if mc_group_upper.startswith(mc_key + " ") or mc_group_upper.startswith(mc_key):
-
-            return int(hours)
-
-    
-
-    # Default to 20 hours (all machines work 20 hours)
-
-    return 20
+# ชั่วโมงทำงานอ่านจากแผง Work Day ผ่าน _base_work_hours() เท่านั้น
+# (WORKING_HOURS_MAP / _get_working_hours_for_mc ที่ hard-code 20 ชม. ถูกลบแล้ว — ไม่มีใครเรียก
+#  และขัดกับแหล่งเดียว)
 
 
 
@@ -3513,6 +3483,11 @@ for _, row in master_mc.iterrows():
 # ส่ง lambda นับวันทำงานตามปฏิทิน (get_working_days_in_week นิยามด้านล่าง — resolve ตอนเรียกใช้)
 # หมายเหตุ: import WorkDay + def _base_work_hours ย้ายไปไว้ต้นไฟล์แล้ว (ถูกเรียกที่ระดับ module ก่อนถึงจุดนี้)
 WorkDay.init(master_mc, lambda w: len(get_working_days_in_week(w)))
+# สอนคู่ (เครื่อง, เกจ) → กลุ่มในแผง จาก booking (คีย์แผงคือ FACTORY·MC_CAT·เกจ)
+# ครอบคลุมเครื่องที่ไม่มีใน MasterMC เช่น SKPHF/SKPSL/SKPAO — ไม่งั้นได้ 0 วันทั้งที่ตั้งค่าไว้แล้ว
+_wd_alias_cnt = WorkDay.register_aliases(detail_mc)
+if _wd_alias_cnt:
+    print(f"✅ จับคู่เครื่อง→กลุ่มในแผงวันทำงานเพิ่ม {_wd_alias_cnt} คู่ (จาก FACTORY+MC_CAT+เกจ)")
 
 
 # set คู่ (MC_GROUP, gauge_normalized) ที่มีจริงใน MasterMC — ใช้ skip order ที่ไม่มีใน Master
@@ -3690,12 +3665,9 @@ def adjust_daily_cap_for_item_special(daily_cap, item_code, mc_group, gauge=None
 
     """ปรับ daily_cap ตาม Working hour จาก Item Special (Item Special ชนะเสมอ)
 
-    daily_cap เข้ามาถูกแปลงด้วยชั่วโมงฐานของกลุ่มแล้ว (base = WORK_HOUR override หรือ 20)
-
-    ถ้า item อยู่ใน Item Special และ Working hour ต่างจาก base → rescale จาก base เป็นชั่วโมงของ Item Special
-
-    → ผลลัพธ์ = cap(24hr) * (item_special_wh / 24) เสมอ ไม่ว่ากลุ่มจะตั้ง override ไว้เท่าใด
-
+    daily_cap เข้ามาถูกแปลงด้วยชั่วโมงของกลุ่มจากแผง Work Day แล้ว (base)
+    ถ้า item อยู่ใน Item Special และ Working hour ต่างจาก base → rescale เป็นชั่วโมงของ Item Special
+    → ผลลัพธ์ = cap(24hr) * (item_special_wh / 24) เสมอ ไม่ว่ากลุ่มจะตั้งไว้เท่าใด
     """
 
     if not item_code or not daily_cap:
@@ -4544,12 +4516,12 @@ def get_total_pending_qty_for_item(item_code, current_sc_so, current_fg_week, or
 # ทอครึ่งพับไม่ได้ → ทุกกลุ่มปัดลงเป็นจำนวนเต็มพับ
 # กลุ่ม IRMT/SJT ปัดที่ระดับ "ต่อเครื่อง" (เครื่องละกี่พับก็ได้ ขอให้เต็มพับ) แล้วคูณจำนวนเครื่อง
 #
-# เงื่อนไข "หารด้วย 6 ลงตัว" เป็นเรื่องของ "ยอดรวมทั้ง order" ไม่ใช่ของแต่ละสัปดาห์
+# เงื่อนไข "เป็นพับคู่ (หาร 2 ลงตัว)" เป็นเรื่องของ "ยอดรวมทั้ง order" ไม่ใช่ของแต่ละสัปดาห์
 # → ตรวจที่ ORDERS_QTY ด้วย fold_check_order() แล้วเตือน (ดู FOLD_WARN ในชีท PLAN)
 #   สัปดาห์ไหนจะทอกี่พับก็ได้ ขอแค่รวมกันครบยอด order
 # =========================
 FOLD_ROUND_MC_GROUPS = {"IRMT", "SJT"}
-FOLD_MULTIPLE = 6
+FOLD_MULTIPLE = 2
 
 
 def fold_round(total_cap, rev_weight, mc_group, per_mc_cap=None, mc_count=None):
@@ -4590,14 +4562,14 @@ def fold_round_mixed(
 
 
 def fold_check_order(orders_qty, rev_weight, mc_groups=None):
-    """ตรวจยอดที่ลูกค้าเปิดมาว่าแบ่งเป็นพับแล้วหารด้วย 6 ลงตัวหรือไม่
+    """ตรวจยอดที่ลูกค้าเปิดมาว่าแบ่งเป็นพับแล้วเป็นพับคู่ (หาร 2 ลงตัว) หรือไม่
 
-    ⚠️ กฎ "หาร 6 ลงตัว" ใช้เฉพาะกลุ่ม IRMT / SJT เท่านั้น — กลุ่มอื่นไม่มีข้อบังคับนี้
+    ⚠️ กฎ "พับคู่" ใช้เฉพาะกลุ่ม IRMT / SJT เท่านั้น — กลุ่มอื่นไม่มีข้อบังคับนี้
     (mc_groups = MC_GROUP ทั้งหมดที่ order นี้ใช้; ไม่ส่ง = ไม่เช็ค)
 
     คืน (folds, remainder, warn)
       folds     = จำนวนพับของยอด order (ปัดทศนิยม 2 ตำแหน่ง — เศษพับก็ต้องเห็น)
-      remainder = เศษพับที่หาร 6 ไม่ลงตัว (0 = ลงตัวพอดี)
+      remainder = เศษพับที่ไม่เป็นคู่ (0 = เป็นพับคู่พอดี)
       warn      = True เมื่อเป็น IRMT/SJT แล้วหารไม่ลงตัว
     แผนยังวางเต็มตามยอดจริงเสมอ — ค่านี้ใช้เตือน planner ให้ไปแก้ที่ต้นทาง (ยอดเปิด order)
     """
@@ -6815,6 +6787,11 @@ _BOOKING_EXCLUDE_MC = {
 
 }
 
+# กลุ่มที่ "ไม่ใช่เครื่องถัก" → ห้ามนับเป็น setup job ต่อสัปดาห์
+# IMPORT = ผ้านำเข้า ไม่ได้ถักเอง (ไม่มี Factory/TOTAL_MC ใน MasterMC) แต่ MC_USE_CEIL
+# ถูกคำนวณจากน้ำหนักผ้าล้วนๆ จนได้เลขหลักร้อย แล้วไปกินโควตา job ของ PHET_DOUBLE (default)
+_JOB_EXCLUDE_MC = {"IMPORT"}
+
 booking_last_production = {}  # {(item, mc_group): week_index} — week สุดท้ายที่ผลิตจริง
 
 booking_last_so = {}  # {(item, mc_group): so_no_normalized} — SO หมายเลขสุดท้าย
@@ -7277,6 +7254,8 @@ if (
         print("⚠️  _IS_NEW_SETUP ไม่อยู่ใน DETAIL — fallback: นับ MC_USE_CEIL ทั้งหมด (อาจ overcount)")
 
     _det_active = _det[_det["MC_USE_CEIL"] > 0].copy()
+    # ตัดกลุ่มที่ไม่ใช่เครื่องถัก (IMPORT = ผ้านำเข้า) ออกก่อนนับ job — ไม่งั้นโควตา setup เพี้ยน
+    _det_active = _det_active[~_det_active["MC_GROUP"].isin(_JOB_EXCLUDE_MC)]
 
     for _, _drow in _det_active.iterrows():
         _wk = int(_drow["WEEK"])
@@ -8038,13 +8017,8 @@ def _run_planning_loop() -> list:
 
                                     _bk_kp_weight = float(_last_bk_row.iloc[0].get("KP_WEIGHT", 0) or 0)
 
-                                    _bk_wd = int(_last_bk_row.iloc[0].get("WORKING_DAY", 5) or 5)
-
-                                    _bk_cal_wd = len(get_working_days_in_week(int(w)))
-
-                                    if _bk_cal_wd > 0:
-
-                                        _bk_wd = min(_bk_wd, _bk_cal_wd)
+                                    # WORKING_DAY มาจากชีท Work Day แล้ว — ใช้ตรง ๆ (float: 5.5 วันต้องไม่ปัดเป็น 5)
+                                    _bk_wd = float(_last_bk_row.iloc[0].get("WORKING_DAY", 0) or 0)
 
                                     _bk_gauge = str(_last_bk_row.iloc[0].get("GUAGE", "")).strip()
 
@@ -8776,10 +8750,8 @@ def _run_planning_loop() -> list:
                                 continue
                             _dm_mc_ceil = float(_dm_last_row.get("MC_USE_CEIL", 0) or 0)
                             _dm_kp_weight = float(_dm_last_row.get("KP_WEIGHT", 0) or 0)
-                            _dm_wd = int(_dm_last_row.get("WORKING_DAY", 5) or 5)
-                            _dm_cal_wd = len(get_working_days_in_week(int(_dm_last_w)))
-                            if _dm_cal_wd > 0:
-                                _dm_wd = min(_dm_wd, _dm_cal_wd)
+                            # ใช้ค่าจากชีท Work Day ตรง ๆ (float: 5.5 วันต้องไม่ปัดเป็น 5)
+                            _dm_wd = float(_dm_last_row.get("WORKING_DAY", 0) or 0)
                             _dm_gauge = str(_dm_last_row.get("GUAGE", "")).strip()
                             _dm_cap = _get_capacity_for_mc_group(item, _dm_mc_str, _dm_gauge)
                             # 🔧 FIX: ตรวจสอบว่า booking week นี้มีการ setup เพิ่มเครื่องหรือไม่
@@ -9953,7 +9925,7 @@ def _run_planning_loop() -> list:
                 # ถ้า required_mc > available_machines (carry) → trigger cylinder change เท่าที่ทำได้ใน week นี้
                 # machine พร้อมใน NEXT week — จำนวนที่ trigger ขึ้นกับ quota (CYLINDER_CHANGE_LIMIT)
                 _req_mc_carry = required_machines_info[2] if required_machines_info and len(required_machines_info) > 2 else 0
-                _cyl_this_wk_cap = (available_machines * daily_capacity * get_working_days_by_factory(mc_group, 1, week=plan_week)) if daily_capacity else 0
+                _cyl_this_wk_cap = (available_machines * daily_capacity * get_working_days_by_factory(mc_group, 1, week=plan_week, gauge=_sel_gauge)) if daily_capacity else 0
                 # เช็คว่า native gauge pool ยังมีเครื่องเหลืออยู่ไหม — ถ้ายังมี ไม่ต้อง cylinder change
                 # (available_machines อาจต่ำกว่า required เพราะ MAX_NEW_SETUP_MC cap ไม่ใช่เพราะ pool หมด)
                 _cyl_native_pool = get_actual_mc_remain(mc_group, plan_week, gauge=_sel_gauge, item_code=item) if _sel_gauge else 0
@@ -9989,7 +9961,7 @@ def _run_planning_loop() -> list:
                 # ป้องกันกรณี carryover เครื่องเยอะแต่ qty_left น้อย (เช่น FD1BASMZ26B0 W23)
                 if daily_capacity and qty_left > 0 and carryover_mc > 1:
                     # คำนวณ weekly capacity สำหรับ 1 เครื่อง
-                    factory_wd = get_working_days_by_factory(mc_group, 1, week=plan_week)
+                    factory_wd = get_working_days_by_factory(mc_group, 1, week=plan_week, gauge=_sel_gauge)
                     weekly_cap_per_mc = daily_capacity * factory_wd
                     # 🔧 FIX: ใช้ _qty_for_machine_calc (รวมทุก FG ของ item) ไม่ใช่แค่ qty_left (FG ปัจจุบัน)
                     # ป้องกันลดเครื่องทั้งที่ item ยังมี FG ถัดไปรอผลิตอยู่
@@ -10018,7 +9990,7 @@ def _run_planning_loop() -> list:
                 # Trigger cylinder change ใน setup week — trigger เท่าที่ทำได้เพื่อทัน target
                 # machine พร้อมใน NEXT week — จำนวนขึ้นกับ quota (CYLINDER_CHANGE_LIMIT)
                 _req_mc_setup = required_machines_info[2] if required_machines_info and len(required_machines_info) > 2 else 0
-                _cyl_this_wk_cap_s = (available_machines * daily_capacity * get_working_days_by_factory(mc_group, 1, week=plan_week)) if daily_capacity else 0
+                _cyl_this_wk_cap_s = (available_machines * daily_capacity * get_working_days_by_factory(mc_group, 1, week=plan_week, gauge=_sel_gauge)) if daily_capacity else 0
                 # เช็คว่า native gauge pool ยังมีเครื่องเหลืออยู่ไหม — ถ้ายังมี ไม่ต้อง cylinder change
                 # (new_mc อาจต่ำกว่า required เพราะ MAX_NEW_SETUP_MC cap ไม่ใช่เพราะ pool หมด)
                 _cyl_native_pool_s = get_actual_mc_remain(mc_group, plan_week, gauge=_sel_gauge, item_code=item) if _sel_gauge else 0
@@ -10106,9 +10078,8 @@ def _run_planning_loop() -> list:
                     # ถ้า carry-only ผลิตครบภายใน 2 สัปดาห์ → ไม่ต้อง setup เพิ่ม
                     if _is_past_rdd and _sim_count >= 2:
                         break
-                    cal = len(get_working_days_in_week(wk))
-                    fac = get_working_days_by_factory(mc_group, carry + new, week=wk)
-                    wd = min(cal, fac)
+                    # หักวันหยุดตามปฏิทินให้แล้วใน WorkDay.get_working_days() — ห้าม min ซ้ำ
+                    wd = get_working_days_by_factory(mc_group, carry + new, week=wk, gauge=_sel_gauge)
                     if first:
                         # YD-ORDERS: SUB_COLOR เปลี่ยน → carryover ต้องเสีย 1 วัน setup
                         _carry_wd = max(0, wd - _yd_sub_color_setup) if carry > 0 else wd
@@ -10151,9 +10122,8 @@ def _run_planning_loop() -> list:
                 _guard = 0
                 while wk is not None and q > _rw and _guard < 26:
                     _guard += 1
-                    cal = len(get_working_days_in_week(wk))
-                    fac = get_working_days_by_factory(mc_group, total_mc, week=wk)
-                    wd = min(cal, fac)
+                    # หักวันหยุดตามปฏิทินให้แล้วใน WorkDay.get_working_days() — ห้าม min ซ้ำ
+                    wd = get_working_days_by_factory(mc_group, total_mc, week=wk, gauge=_sel_gauge)
                     if first:
                         prod = (
                             carry * wd * daily_capacity
@@ -10249,10 +10219,8 @@ def _run_planning_loop() -> list:
                 _rw_pb = rev_weight or 0
 
                 def _wd_pb(wk_, mc_):
-                    return min(
-                        len(get_working_days_in_week(wk_)),
-                        get_working_days_by_factory(mc_group, mc_, week=wk_),
-                    )
+                    # หักวันหยุดตามปฏิทินให้แล้วใน WorkDay.get_working_days() — ห้าม min ซ้ำ
+                    return get_working_days_by_factory(mc_group, mc_, week=wk_, gauge=_sel_gauge)
 
                 def _round_pb(v):
                     if _rw_pb > 0 and v > 0:
@@ -10397,9 +10365,8 @@ def _run_planning_loop() -> list:
                         # เลย target แล้ว → จำลองได้สูงสุด 2 สัปดาห์
                         if _is_past_tgt_fit and _sim_cnt_fit >= 2:
                             break
-                        _cal = len(get_working_days_in_week(_wk))
-                        _fac = get_working_days_by_factory(mc_group, total_mc, week=_wk)
-                        _wd = min(_cal, _fac)
+                        # หักวันหยุดตามปฏิทินให้แล้วใน WorkDay.get_working_days() — ห้าม min ซ้ำ
+                        _wd = get_working_days_by_factory(mc_group, total_mc, week=_wk, gauge=_sel_gauge)
                         if _first:
                             _c_cnt = min(total_mc, carryover_mc)
                             _n_cnt = max(0, total_mc - _c_cnt)
@@ -10627,9 +10594,8 @@ def _run_planning_loop() -> list:
                                 break
                             if _latest_tgt_idx_opt is not None and _wi > _latest_tgt_idx_opt:
                                 break
-                            _cal = len(get_working_days_in_week(_wk))
-                            _fac = get_working_days_by_factory(mc_group, total_mc, week=_wk)
-                            _wd = min(_cal, _fac)
+                            # หักวันหยุดตามปฏิทินให้แล้วใน WorkDay.get_working_days() — ห้าม min ซ้ำ
+                            _wd = get_working_days_by_factory(mc_group, total_mc, week=_wk, gauge=_sel_gauge)
                             if _first:
                                 _c_cnt = min(total_mc, carryover_mc)
                                 _n_cnt = max(0, total_mc - _c_cnt)
@@ -10700,7 +10666,10 @@ def _run_planning_loop() -> list:
                 _type_used_now = get_type_used_jobs(plan_week, mc_group)
                 # carryover ไม่ควรนับเป็น new setup jobs เสมอ
                 _committed_carryover = carryover_mc
-                _allowed_new = check_job_capacity_limit(mc_group, new_mc, False, _type_used_now, committed_carryover=_committed_carryover)
+                # check_job_capacity_limit รับ "จำนวนเครื่องรวม" (carryover+new) แล้วคืนจำนวนรวมที่อนุญาต
+                # ต้องส่ง carryover_mc + new_mc ไม่ใช่ new_mc เดี่ยว ไม่งั้น carryover จะถูกลบซ้ำ → cap ไม่ทำงาน
+                _total_allowed = check_job_capacity_limit(mc_group, carryover_mc + new_mc, False, _type_used_now, committed_carryover=_committed_carryover)
+                _allowed_new = max(0, _total_allowed - carryover_mc)
                 if _allowed_new < new_mc:
                     new_mc = _allowed_new
                 available_machines = carryover_mc + new_mc
@@ -11078,10 +11047,14 @@ def _run_planning_loop() -> list:
                     if not _is_fg_split:
                         _week_mc_key = (week_index(plan_week), mc_group)
                         weekly_mc_usage[_week_mc_key] = weekly_mc_usage.get(_week_mc_key, 0) + available_machines
-                        # อัพเดท job usage สำหรับสัปดาห์นี้ (นับเฉพาะ new_mc = machines ที่ setup ใหม่)
-                        # เครื่อง carry ต่อ (carryover_mc) ไม่ต้องนับเป็น job ใหม่เพราะไม่ต้อง setup
-                        if plan_week not in weekly_job_usage:
-                            weekly_job_usage[plan_week] = {}
+                    # อัพเดท job usage สำหรับสัปดาห์นี้ (นับเฉพาะ new_mc = machines ที่ setup ใหม่)
+                    # เครื่อง carry ต่อ (carryover_mc) ไม่ต้องนับเป็น job ใหม่เพราะไม่ต้อง setup
+                    # ⚠️ ต้องหักนอกเงื่อนไข _is_fg_split — FG split / YD-ORDERS ก็ตั้งเครื่องใหม่จริง
+                    # (SETUP_TRACKING นับทุกแถวที่ NEW_MC>0 ถ้าไม่หักตรงนี้ job/week cap จะรั่ว → แผนเกินโควตา)
+                    # ⚠️ ต้อง setdefault เสมอ (แม้ new_mc=0) — โค้ดตรวจ overload ท้ายลูปอ่าน
+                    # weekly_job_usage[_produced_week] ตรงๆ ถ้าไม่มี key จะ KeyError
+                    weekly_job_usage.setdefault(plan_week, {})
+                    if new_mc > 0:
                         weekly_job_usage[plan_week][mc_group] = (
                             weekly_job_usage[plan_week].get(mc_group, 0) + new_mc
                         )
@@ -11343,10 +11316,14 @@ def _run_planning_loop() -> list:
             if not _is_fg_split:
                 _week_mc_key = (week_index(plan_week), mc_group)
                 weekly_mc_usage[_week_mc_key] = weekly_mc_usage.get(_week_mc_key, 0) + available_machines
-                # อัพเดท job usage สำหรับสัปดาห์นี้ (นับเฉพาะ new_mc = machines ที่ setup ใหม่)
-                # เครื่อง carry ต่อ (carryover_mc) ไม่ต้องนับเป็น job ใหม่เพราะไม่ต้อง setup
-                if plan_week not in weekly_job_usage:
-                    weekly_job_usage[plan_week] = {}
+            # อัพเดท job usage สำหรับสัปดาห์นี้ (นับเฉพาะ new_mc = machines ที่ setup ใหม่)
+            # เครื่อง carry ต่อ (carryover_mc) ไม่ต้องนับเป็น job ใหม่เพราะไม่ต้อง setup
+            # ⚠️ ต้องหักนอกเงื่อนไข _is_fg_split — FG split / YD-ORDERS ก็ตั้งเครื่องใหม่จริง
+            # (SETUP_TRACKING นับทุกแถวที่ NEW_MC>0 ถ้าไม่หักตรงนี้ job/week cap จะรั่ว → แผนเกินโควตา)
+            # ⚠️ ต้อง setdefault เสมอ (แม้ new_mc=0) — โค้ดตรวจ overload ท้ายลูปอ่าน
+            # weekly_job_usage[_produced_week] ตรงๆ ถ้าไม่มี key จะ KeyError
+            weekly_job_usage.setdefault(plan_week, {})
+            if new_mc > 0:
                 weekly_job_usage[plan_week][mc_group] = (
                     weekly_job_usage[plan_week].get(mc_group, 0) + new_mc
                 )
@@ -11432,7 +11409,7 @@ def _run_planning_loop() -> list:
                         .to_dict()
                     )
                     # ตรวจสอบแต่ละ MC_GROUP ว่าเกินแผนเก่าหรือไม่
-                    for used_mc_group, new_jobs in weekly_job_usage[_produced_week].items():
+                    for used_mc_group, new_jobs in weekly_job_usage.get(_produced_week, {}).items():
                         old_jobs = old_jobs_by_mc.get(used_mc_group, 0)
                         if new_jobs > old_jobs:
                             print(
@@ -11440,7 +11417,7 @@ def _run_planning_loop() -> list:
                             )
                     # ตรวจสอบ capacity ที่เหลือหลังจากแผนเก่า
                     remaining_capacity_by_type = {}
-                    for used_mc_group in weekly_job_usage[_produced_week]:
+                    for used_mc_group in weekly_job_usage.get(_produced_week, {}):
                         mc_info = master_mc[master_mc["MC"] == used_mc_group]
                         if not mc_info.empty:
                             factory = str(mc_info.iloc[0]["Factory"]).strip().upper()
@@ -11484,9 +11461,9 @@ def _run_planning_loop() -> list:
                     for type_key, remaining_capacity in remaining_capacity_by_type.items():
                         # หาจำนวน jobs ใหม่ใน type เดียวกัน
                         new_type_jobs = 0
-                        for used_mc_group, new_jobs in weekly_job_usage[
-                            _produced_week
-                        ].items():
+                        for used_mc_group, new_jobs in weekly_job_usage.get(
+                            _produced_week, {}
+                        ).items():
                             mc_info = master_mc[master_mc["MC"] == used_mc_group]
                             if not mc_info.empty:
                                 factory = str(mc_info.iloc[0]["Factory"]).strip().upper()
@@ -11505,7 +11482,7 @@ def _run_planning_loop() -> list:
             total_jobs_by_type = {}
             max_capacity_by_type = {}
             # คำนวณ jobs และ capacity ตาม factory type
-            for used_mc_group in weekly_job_usage[_produced_week]:
+            for used_mc_group in weekly_job_usage.get(_produced_week, {}):
                 mc_info = master_mc[master_mc["MC"] == used_mc_group]
                 if not mc_info.empty:
                     factory = str(mc_info.iloc[0]["Factory"]).strip().upper()
@@ -11887,6 +11864,7 @@ if not detail_mc.empty:
             )
             if _is is not None:
                 return cap * (_is[1] / 24)  # Item Special working_hour override (ชนะเสมอ)
+            # ไม่มีใน Item Special → ชั่วโมงของกลุ่มจากแผง Work Day (ไม่ใช้ MasterMC)
             return cap * (_base_work_hours(row.get("MC_GROUP"), row.get("MC_GUAGE")) / 24)
         old_booking_df["DAILY_CAPACITY"] = old_booking_df.apply(_adj_old_cap, axis=1)
     # ตัด S นำหน้า SC_SO_NO (เช่น "S717455" → "717455")
@@ -12332,6 +12310,8 @@ if (
     _det_trk["ITEM_CODE"] = _det_trk["ITEM_CODE"].astype(str).str.strip().str.upper()
     _det_trk["MC_GROUP"] = _det_trk["MC_GROUP"].astype(str).str.strip().str.upper()
     _det_trk_active = _det_trk[_det_trk["MC_USE_CEIL"] > 0].copy()
+    # ตัด IMPORT ออกด้วยเกณฑ์เดียวกับ weekly_job_usage — SETUP_TRACKING ต้องนับตรงกับตัวคุมโควตา
+    _det_trk_active = _det_trk_active[~_det_trk_active["MC_GROUP"].isin(_JOB_EXCLUDE_MC)]
 
     _has_ava_flags_trk = "_IS_NEW_SETUP" in _det_trk.columns and "_MC_INCREASE" in _det_trk.columns
 
@@ -12561,10 +12541,10 @@ _cylinder_change_df = pd.DataFrame(_cyl_rows) if _cyl_rows else pd.DataFrame(
     columns=["WEEK", "FACTORY", "MC_CAT", "GAUGE_FROM", "GAUGE_TO", "MC_CHANGED", "ITEM_CODE"]
 )
 
-# ===== FOLD CHECK: ยอดที่ลูกค้าเปิดมา แบ่งเป็นพับแล้วหารด้วย 6 ลงตัวหรือไม่ =====
+# ===== FOLD CHECK: ยอดที่ลูกค้าเปิดมา แบ่งเป็นพับแล้วเป็นพับคู่ (หาร 2 ลงตัว) หรือไม่ =====
 # เช็คที่ "ยอดรวมทั้ง order" (ITEM_CODE + SC_SO_NO) — ไม่ใช่รายสัปดาห์
 # → SC ไหนหารไม่ลงตัว ทุกสัปดาห์ของ SC นั้นติดธงเตือนเหมือนกันหมด
-# เฉพาะกลุ่ม IRMT/SJT เท่านั้น (กลุ่มอื่นไม่มีกฎหาร 6)
+# เฉพาะกลุ่ม IRMT/SJT เท่านั้น (กลุ่มอื่นไม่มีกฎพับคู่)
 # แผนวางเต็มตามยอดจริงเสมอ ค่าพวกนี้เป็นแค่ธงเตือนให้ planner ไปแก้ที่ยอดเปิด order
 if not plan_df.empty and {"ORDERS_QTY", "REVOLUTION_WEIGHT", "MC_GROUP"} <= set(plan_df.columns):
     _fold_cache = {}
@@ -12607,23 +12587,12 @@ if _tail_cols:
     _other_cols = [c for c in plan_df.columns if c not in _tail_cols]
     plan_df = plan_df[_other_cols + _tail_cols]
 
-# วันทำงานตามปฏิทินของทุกสัปดาห์ (รวมสัปดาห์ที่ไม่มีงานในแผน)
-# หน้าเว็บใช้คำนวณจำนวนเครื่องใหม่เมื่อลากงานข้ามสัปดาห์:
-#   actual_wd(w) = w in (17,32) ? WD_W32/8 : max(1, WD_BASE - max(0, 6 - CAL_DAYS[w]))
-_week_days_df = pd.DataFrame(
-    [
-        {"WEEK": int(_w), "CAL_DAYS": len(get_working_days_in_week(int(_w)))}
-        for _w in sorted(calendar_week["WEEK"].unique())
-    ]
-)
-
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as _writer:
     plan_df.to_excel(_writer, sheet_name="PLAN", index=False)
     remaining_df.to_excel(_writer, sheet_name="REMAINING_JOBS", index=False)
     setup_tracking_df.to_excel(_writer, sheet_name="SETUP_TRACKING", index=False)
     _unplanned_df.to_excel(_writer, sheet_name="UNPLANNED", index=False)
     _cylinder_change_df.to_excel(_writer, sheet_name="CYLINDER_CHANGE", index=False)
-    _week_days_df.to_excel(_writer, sheet_name="WEEK_DAYS", index=False)
 
 # ใส่สีให้ PLAN sheet: เหลือง=CYLINDER_CHANGE, แดง=S9_ROUTING
 _need_color = _cyl_trigger_keys or (

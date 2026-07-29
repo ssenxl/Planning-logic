@@ -1,9 +1,9 @@
 """
-cylinder_advisor.py — แนะนำว่าควร "เปลี่ยนกระบอก (cylinder change)" ให้ item ไหน
+cylinder_advisor.py — แนะนำว่าควรทำ "Change Cylinder" ให้ item ไหน
 เพื่อปลดล็อกงานที่วางแผนไม่ได้/วางแล้วสาย
 
-Planning.py ไม่เปลี่ยนกระบอกให้เองอีกแล้ว (CYLINDER_CHANGE_ENABLED = False) —
-การเปลี่ยนกระบอกมีต้นทุนและเวลา จึงต้องให้คนตัดสินใจ โมดูลนี้ทำหน้าที่ "เสนอ" เท่านั้น
+Planning.py ไม่ทำ Change Cylinder ให้เองอีกแล้ว (CYLINDER_CHANGE_ENABLED = False) —
+Change Cylinder มีต้นทุนและเวลา จึงต้องให้คนตัดสินใจ โมดูลนี้ทำหน้าที่ "เสนอ" เท่านั้น
 
 หลักการเดียวกับ outsource_advisor: Python คำนวณตัวเลขทั้งหมดเอง (กัน LLM มั่วตัวเลข)
 แล้วส่ง shortlist ให้ LLM จัดอันดับ + อธิบายเหตุผลเป็นภาษาไทย
@@ -13,8 +13,8 @@ Planning.py ไม่เปลี่ยนกระบอกให้เอง�
   2. ค้างผลิต  — PLAN_QTY > 0 (เครื่องไม่พอจนผลิตไม่ครบ)
 
 สำหรับแต่ละงาน หา "เกจต้นทาง" ที่มีเครื่องว่างจริงในสัปดาห์ที่ต้องการ (ภายใน Factory+MC_CAT
-เดียวกัน) และเช็คกระบอกสำรองจาก MasterMC[Spare part] — ถ้าไม่มีแหล่งหรือกระบอกหมด
-ก็ยังแสดงพร้อมเหตุผล เพราะนั่นบอกว่าต้องไปซื้อกระบอกเพิ่มตรงไหน
+เดียวกัน) และเช็ค Cylinder สำรองจาก MasterMC[Spare part] — ถ้าไม่มีแหล่งหรือ Cylinder หมด
+ก็ยังแสดงพร้อมเหตุผล เพราะนั่นบอกว่าต้องไปซื้อ Cylinder เพิ่มตรงไหน
 """
 import json
 
@@ -23,7 +23,7 @@ import plan_view
 
 _W_LATE = 10.0        # ต่อสัปดาห์ที่สาย
 _W_PENDING = 1.0      # ต่อ 1000 กก. ค้างผลิต
-_W_FEASIBLE = 15.0    # โบนัสถ้าเปลี่ยนกระบอกได้จริง (มี source + spare)
+_W_FEASIBLE = 15.0    # โบนัสถ้าทำ Change Cylinder ได้จริง (มี source + spare)
 _MAX_SHORTLIST = 20
 
 
@@ -71,7 +71,7 @@ def _col_index(columns, *names):
 
 
 def _load_spare_map() -> dict:
-    """กระบอกสำรองจาก MasterMC[Spare part] → {(FACTORY, MC_CAT, GUAGE): total_spare}"""
+    """Cylinder สำรองจาก MasterMC[Spare part] → {(FACTORY, MC_CAT, GUAGE): total_spare}"""
     reg = config.master_files()
     path = reg.get("MasterMC")
     out: dict = {}
@@ -139,8 +139,8 @@ def _editable_from_week() -> int:
 
 def _bottleneck_week(remain_live, cat, gauge, upto_week, from_week):
     """สัปดาห์แรกที่เครื่องในเกจนี้หมด (remain ≤ 0) ในช่วงที่ยังแก้แผนได้ จนถึงสัปดาห์ที่งานถูกวางไว้
-    = สัปดาห์ที่งานอยากผลิตแต่ไม่มีเครื่อง → เป็นสัปดาห์ที่ควรเปลี่ยนกระบอกให้
-    ข้ามสัปดาห์ที่ผ่านไปแล้ว/freeze เพราะเปลี่ยนกระบอกย้อนหลังไม่ได้
+    = สัปดาห์ที่งานอยากผลิตแต่ไม่มีเครื่อง → เป็นสัปดาห์ที่ควรทำ Change Cylinder ให้
+    ข้ามสัปดาห์ที่ผ่านไปแล้ว/freeze เพราะทำ Change Cylinder ย้อนหลังไม่ได้
     คืน None ถ้าไม่มีสัปดาห์ไหนเครื่องหมดเลย (แปลว่าไม่ใช่ปัญหาเครื่อง เช่น รอด้าย)"""
     key = f"{cat}|{gauge}"
     weeks = sorted(int(w) for w in remain_live if str(w).isdigit())
@@ -172,7 +172,7 @@ def _find_sources(remain_live, factory_cats, week, cat, target_gauge) -> list:
 
 
 def gather_candidates() -> dict:
-    """งานที่ควรพิจารณาเปลี่ยนกระบอก + ตัวเลือกการเปลี่ยน (deterministic — ไม่พึ่ง LLM)"""
+    """งานที่ควรพิจารณา Change Cylinder + ตัวเลือกการเปลี่ยน (deterministic — ไม่พึ่ง LLM)"""
     grid = plan_view.read_grid()
     cols = grid.get("columns", [])
     rows = grid.get("rows", [])
@@ -244,7 +244,7 @@ def gather_candidates() -> dict:
         late = max(0, week - rdd) if (week is not None and rdd is not None) else 0
         pend = pending_by_key.get((item, sc), 0.0)
         if late <= 0 and pend <= 0:
-            continue  # ส่งทัน + ผลิตครบ → ไม่ต้องเปลี่ยนกระบอก
+            continue  # ส่งทัน + ผลิตครบ → ไม่ต้องทำ Change Cylinder
 
         k = (item, cat, gauge, fac)
         a = agg.setdefault(k, {
@@ -270,8 +270,8 @@ def gather_candidates() -> dict:
     editable_from = _editable_from_week()
     candidates = []
     for a in agg.values():
-        # สัปดาห์ที่ควรเปลี่ยนกระบอกให้ = สัปดาห์แรกที่เครื่องเกจนี้หมด ในช่วงที่งานวิ่งอยู่
-        # ถ้าไม่มีสัปดาห์ไหนเครื่องหมดเลย → งานสาย/ค้างด้วยเหตุอื่น (เช่น รอด้าย) ไม่ใช่เรื่องกระบอก
+        # สัปดาห์ที่ควรทำ Change Cylinder = สัปดาห์แรกที่เครื่องเกจนี้หมด ในช่วงที่งานวิ่งอยู่
+        # ถ้าไม่มีสัปดาห์ไหนเครื่องหมดเลย → งานสาย/ค้างด้วยเหตุอื่น (เช่น รอด้าย) ไม่ใช่เรื่อง Cylinder
         need_week = _bottleneck_week(
             remain_live, a["cat"], a["gauge"], a["plan_week_last"], editable_from
         )
@@ -283,11 +283,11 @@ def gather_candidates() -> dict:
         spare = spare_map.get((a["factory"], a["cat"].upper(), a["gauge"]), 0)
 
         if not sources and spare <= 0:
-            blocker = f"ไม่มีเครื่องว่างในเกจอื่นของ {a['cat']} ที่ W{need_week} และไม่มีกระบอกสำรองเกจ {a['gauge']}"
+            blocker = f"ไม่มีเครื่องว่างในเกจอื่นของ {a['cat']} ที่ W{need_week} และไม่มี Cylinder สำรองเกจ {a['gauge']}"
         elif not sources:
-            blocker = f"มีกระบอกสำรองเกจ {a['gauge']} {spare} อัน แต่ไม่มีเครื่องว่างในเกจอื่นให้ถอดมาเปลี่ยนที่ W{need_week}"
+            blocker = f"มี Cylinder สำรองเกจ {a['gauge']} {spare} อัน แต่ไม่มีเครื่องว่างในเกจอื่นให้ถอดมาเปลี่ยนที่ W{need_week}"
         elif spare <= 0:
-            blocker = f"มีเครื่องว่างให้เปลี่ยน แต่ไม่มีกระบอกสำรองเกจ {a['gauge']} (Total Spare = 0) → ต้องซื้อกระบอกเพิ่ม"
+            blocker = f"มีเครื่องว่างให้เปลี่ยน แต่ไม่มี Cylinder สำรองเกจ {a['gauge']} (Total Spare = 0) → ต้องซื้อ Cylinder เพิ่ม"
         else:
             blocker = ""
 
@@ -299,7 +299,7 @@ def gather_candidates() -> dict:
         # ประโยคปฏิบัติการ — Python เขียนเอง ไม่ให้ LLM ประกอบตัวเลข/เกจเองแล้วมั่ว
         if feasible:
             src_txt = " หรือ ".join(f"เกจ {s['gauge']}" for s in sources[:2])
-            action = (f"เปลี่ยนกระบอก {need_mc} เครื่อง จาก{src_txt} → เกจ {a['gauge']} "
+            action = (f"Change Cylinder {need_mc} เครื่อง จาก{src_txt} → เกจ {a['gauge']} "
                       f"ที่ {a['factory']} {a['cat']} สัปดาห์ W{need_week}")
         else:
             action = f"ยังเปลี่ยนไม่ได้ที่ W{need_week} — {blocker}"
@@ -331,13 +331,13 @@ def gather_candidates() -> dict:
 
 
 _SYSTEM_PROMPT = (
-    "คุณเป็นผู้ช่วยวางแผนการผลิตผ้าถัก หน้าที่คือ 'จัดอันดับ' ว่าควรเปลี่ยนกระบอก (cylinder change) "
+    "คุณเป็นผู้ช่วยวางแผนการผลิตผ้าถัก หน้าที่คือ 'จัดอันดับ' ว่าควรทำ Change Cylinder "
     "ให้ item ใดก่อน เพื่อปลดล็อกงานที่ส่งไม่ทันหรือผลิตไม่ครบเพราะเครื่องในเกจนั้นหมด "
-    "การเปลี่ยนกระบอกคือถอดเครื่องที่ว่างในเกจหนึ่ง มาเปลี่ยนกระบอกเป็นอีกเกจหนึ่ง (ภายใน MC_CAT และโรงงานเดียวกัน) "
+    "Change Cylinder คือถอดเครื่องที่ว่างในเกจหนึ่ง มาเปลี่ยน Cylinder เป็นอีกเกจหนึ่ง (ภายใน MC_CAT และโรงงานเดียวกัน) "
     "แต่ละรายการมีฟิลด์ action ที่เขียนไว้แล้วว่าต้องทำอะไร — ห้ามแต่งวิธีทำใหม่ "
     "\n\nกฎเหล็ก: ห้ามพูดถึงตัวเลข เกจ สัปดาห์ หรือจำนวนเครื่องใดๆ ในเหตุผลของคุณเด็ดขาด "
     "เพราะระบบแสดง action กับตัวเลขให้ผู้ใช้เห็นอยู่แล้ว หน้าที่คุณคืออธิบายว่า 'ทำไมควรทำอันนี้ก่อน/หลัง' เท่านั้น "
-    "เช่น 'สายมากที่สุดและมีของค้างเยอะ ทำได้ทันที' หรือ 'ยังทำไม่ได้เพราะกระบอกสำรองหมด ต้องสั่งซื้อก่อน' "
+    "เช่น 'สายมากที่สุดและมีของค้างเยอะ ทำได้ทันที' หรือ 'ยังทำไม่ได้เพราะ Cylinder สำรองหมด ต้องสั่งซื้อก่อน' "
     "\n\nเกณฑ์จัดอันดับ: งานที่ feasible=true มาก่อน feasible=false เสมอ; ในกลุ่มเดียวกันเรียงตามความเร่งด่วน "
     "(late_weeks = สายกี่สัปดาห์) และปริมาณค้างผลิต (pending_qty) "
     "ตอบกลับเป็น JSON เท่านั้น รูปแบบ: "
@@ -358,8 +358,8 @@ def _call_llm(candidates: list) -> dict:
         kwargs["base_url"] = cfg["base_url"]
     client = OpenAI(**kwargs)
     user_msg = (
-        "รายการงานที่ติดเครื่อง/ส่งไม่ทัน พร้อมตัวเลือกการเปลี่ยนกระบอก (คำนวณตัวเลขมาแล้ว) "
-        "— โปรดจัดอันดับว่าควรเปลี่ยนกระบอกให้ item ไหนก่อน:\n"
+        "รายการงานที่ติดเครื่อง/ส่งไม่ทัน พร้อมตัวเลือก Change Cylinder (คำนวณตัวเลขมาแล้ว) "
+        "— โปรดจัดอันดับว่าควรทำ Change Cylinder ให้ item ไหนก่อน:\n"
         + json.dumps(candidates, ensure_ascii=False)
     )
     # ไม่ส่ง temperature — โมเดลรุ่นใหม่ (เช่น gpt-5.x) รับเฉพาะค่า default และจะ error 400
@@ -380,7 +380,7 @@ def advise() -> dict:
     cands = base["candidates"]
     if not cands:
         return {**base, "summary": "", "ai": False,
-                "note": base.get("note") or "ไม่มีงานที่ต้องเปลี่ยนกระบอก — แผนปัจจุบันไม่มีงานสายหรือค้างผลิต"}
+                "note": base.get("note") or "ไม่มีงานที่ต้อง Change Cylinder — แผนปัจจุบันไม่มีงานสายหรือค้างผลิต"}
 
     ai_ok = False
     summary = ""

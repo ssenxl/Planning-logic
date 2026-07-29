@@ -316,28 +316,59 @@ def booking_mc_by_item_week() -> dict:
     return out
 
 
-def week_days() -> dict:
-    """วันทำงานตามปฏิทินของทุกสัปดาห์ จากชีท WEEK_DAYS → { week(str): cal_days }
+def booking_items_by_week() -> list:
+    """item ทั้งหมดจาก booking (ชีท DETAIL ของ booking_final ล่าสุด) — "แผนเก่า" ที่ commit แล้ว
+    → [ {week, cat, gauge, mc_group, item, mc, qty, so, material} ]
 
-    หน้าเว็บใช้คำนวณจำนวนเครื่องใหม่เมื่อลากงานข้ามสัปดาห์ (สัปดาห์ที่ไม่มีงานในแผน
-    ก็ต้องรู้วันทำงาน) — ไฟล์แผนเก่าที่ไม่มีชีทนี้จะได้ {} แล้วหน้าเว็บจะไม่คำนวณใหม่"""
-    p = latest_path()
+    หน้าเว็บ overlay รายการนี้เป็นบล็อกอ่านอย่างเดียวบน Gantt (map เข้าแถว CAT|เกจ|เครื่อง
+    และช่องสัปดาห์เดียวกับแผน) เพื่อให้ planner เห็นว่าเครื่องไหน/สัปดาห์ไหนมีงาน booking อยู่แล้ว
+    รวมยอดต่อ (สัปดาห์×CAT×เกจ×เครื่อง×item) — DETAIL แตกได้หลายแถวต่อ item เดียวกัน"""
+    p = _latest_booking_path()
     if p is None:
-        return {}
+        return []
     try:
         import pandas as pd
-        df = pd.read_excel(p, sheet_name="WEEK_DAYS")
+        df = pd.read_excel(p, sheet_name="DETAIL")
     except Exception:
-        return {}
-    if not {"WEEK", "CAL_DAYS"} <= set(df.columns):
-        return {}
-    out: dict = {}
+        return []
+    need = {"MC_GROUP", "GUAGE", "ITEM_CODE", "WEEK", "CAT", "MC_USE_CEIL"}
+    if not need <= set(df.columns):
+        return []
+    has_qty = "KP_WEIGHT" in df.columns
+    has_so = "SO_NO" in df.columns
+    has_mat = "MATERIAL_CONTENT" in df.columns
+
+    agg: dict = {}
     for _, r in df.iterrows():
         wk = _wk_str(r["WEEK"])
         if wk is None:
             continue
-        out[wk] = int(_num(r["CAL_DAYS"]) or 0)
+        cat = str(r["CAT"]).strip()
+        gauge = _gkey(r["GUAGE"])
+        mcg = str(r["MC_GROUP"]).strip()
+        item = str(r["ITEM_CODE"]).strip()
+        key = (wk, cat, gauge, mcg, item)
+        slot = agg.get(key)
+        if slot is None:
+            slot = {"week": wk, "cat": cat, "gauge": gauge, "mc_group": mcg,
+                    "item": item, "mc": 0, "qty": 0.0,
+                    "so": str(r["SO_NO"]).strip() if has_so else "",
+                    "material": str(r["MATERIAL_CONTENT"]).strip() if has_mat else ""}
+            agg[key] = slot
+        slot["mc"] += int(_num(r["MC_USE_CEIL"]) or 0)
+        if has_qty:
+            slot["qty"] += float(_num(r["KP_WEIGHT"]) or 0)
+
+    out = []
+    for slot in agg.values():
+        slot["qty"] = round(slot["qty"], 2)
+        out.append(slot)
     return out
+
+
+# หมายเหตุ: week_days() (อ่านชีท WEEK_DAYS จากไฟล์แผน) ถูกลบแล้ว —
+# หน้าเว็บอ่านวันที่ปฏิทินเปิดสดจาก Calendar.xlsx ผ่าน /api/workday (cal_days) แทน
+# เพื่อให้แก้ปฏิทินบน server แล้วเห็นผลทันทีโดยไม่ต้องรันแผนใหม่
 
 
 def ava_by_week() -> dict:
