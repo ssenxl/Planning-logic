@@ -573,7 +573,7 @@ button {
   flex: none;
 }
 
-/* บล็อกของ SC ที่ยอดรวมแบ่งพับแล้วหาร 6 ไม่ลงตัว (เฉพาะ IRMT/SJT)
+/* บล็อกของ SC ที่ยอดรวมแบ่งพับแล้วไม่เป็นพับคู่ (เฉพาะ IRMT/SJT)
    → ทั้งกล่องแดง ติดทุกสัปดาห์ของ SC นั้น ให้เห็นทันทีว่าต้องไปแก้ยอดเปิด order
    ทับสีตาม CAT ที่ตั้งจาก inline style (JSX ตัด inline style ทิ้งเมื่อ foldWarn) */
 .gbar-foldwarn {
@@ -1662,7 +1662,7 @@ button.ghost.sm:hover {
   box-shadow: inset 0 0 0 2px #b45309;
 }
 
-/* order หาร 6 พับไม่ลงตัว — แดงทั้งก้อน (ตรงกับ .gbar-foldwarn) */
+/* order แบ่งพับไม่เป็นคู่ — แดงทั้งก้อน (ตรงกับ .gbar-foldwarn) */
 .glegend-chip.lg-fold {
   background: #dc2626;
   color: #fff;
@@ -2465,7 +2465,7 @@ button.ghost.sm:hover {
   color: var(--fail);
 }
 
-/* ยอดรวมทั้ง SC หารด้วย 6 พับไม่ลงตัว — ต้องแก้ที่ยอดเปิด order ไม่ใช่ที่แผน */
+/* ยอดรวมทั้ง SC แบ่งพับแล้วไม่เป็นพับคู่ — ต้องแก้ที่ยอดเปิด order ไม่ใช่ที่แผน */
 .jobflag.fold {
   background: var(--fail, #dc2626);
   color: #fff;
@@ -2919,12 +2919,20 @@ button:disabled {
 .plan-modal-orders {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 6px 10px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--line);
   background: #fbfcff;
-  max-height: 92px;
+  max-height: 140px;
   overflow-y: auto;
+}
+
+/* 1 ออร์เดอร์ = badge สถานะ + หมายเหตุ (ถ้ามี) ต่อกันแนวตั้ง */
+.order-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
 }
 
 /* สถานะยอดออร์เดอร์: ครบพอดี (เขียว) / ขาด-เกิน (แดง) */
@@ -2934,6 +2942,17 @@ button:disabled {
   padding: 3px 10px;
   border-radius: 999px;
   white-space: nowrap;
+}
+
+/* หมายเหตุออร์เดอร์จาก SC (LINE_REMARK) — ผูกกับ badge ของ SC นั้นๆ */
+.order-remark {
+  font-size: 11.5px;
+  color: #7a5c00;
+  background: #fff8e1;
+  padding: 2px 8px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  max-width: 260px;
 }
 
 /* ออร์เดอร์ของบล็อกที่คลิก — เน้นกรอบ */
@@ -4276,6 +4295,20 @@ table.grid b.late { color: #d1373b; }
   background: transparent;
 }
 
+/* ปุ่มหยุดรัน — โผล่เฉพาะตอนมีงานรันอยู่ (แผนผลิต / DATA / Map Item) */
+.stopbtn {
+  background: linear-gradient(120deg, #dc2626 0%, #ef4444 100%);
+  border: 1px solid transparent;
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 4px 12px rgba(220, 38, 38, .28);
+}
+
+.stopbtn:hover {
+  background: linear-gradient(120deg, #b91c1c 0%, #dc2626 100%);
+  box-shadow: 0 6px 16px rgba(220, 38, 38, .38);
+}
+
 /* ปุ่มจ้างทอ (AI) ในหน้าแผนผลิต */
 .outsource-btn {
   background: #f3ecff;
@@ -4989,8 +5022,8 @@ table.grid b.late { color: #d1373b; }
 .lkfield select.lksel.chg { background-color: #fffbeb; border-color: #f5c451; }
 .lkfield select.lksel.wk { font-weight: 700; color: var(--pri-d); text-align: center; }
 
-.lkfield.wk { width: 96px; }
-.lkfield.wk .wkbox {
+.lkfield.wk, .lkfield.wk2 { width: 96px; }
+.lkfield.wk .wkbox, .lkfield.wk2 .wkbox {
   display: flex;
   align-items: stretch;
   border: 1px solid var(--line);
@@ -4998,16 +5031,16 @@ table.grid b.late { color: #d1373b; }
   overflow: hidden;
   background: #fff;
 }
-.lkfield.wk .wkbox:focus-within { border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-ring); }
-.lkfield.wk .wprefix {
+.lkfield.wk .wkbox:focus-within, .lkfield.wk2 .wkbox:focus-within { border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-ring); }
+.lkfield.wk .wprefix, .lkfield.wk2 .wprefix {
   padding: 7px 8px;
   background: var(--pri-soft);
   color: var(--pri-d);
   font-weight: 700;
   font-size: 13px;
 }
-.lkfield.wk .wkbox input { border: 0; border-radius: 0; }
-.lkfield.wk .wkbox input:focus { box-shadow: none; }
+.lkfield.wk .wkbox input, .lkfield.wk2 .wkbox input { border: 0; border-radius: 0; }
+.lkfield.wk .wkbox input:focus, .lkfield.wk2 .wkbox input:focus { box-shadow: none; }
 
 .lkfield.qty { width: 120px; }
 .lkfield.qty input.big {
@@ -5028,6 +5061,39 @@ table.grid b.late { color: #d1373b; }
   line-height: 1.4;
 }
 .lkwarn b { color: #9a3412; }
+
+.lkrange {
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  color: #0369a1;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.lkrange b { color: #075985; }
+
+/* ---- การ์ด MC_Total (จำนวนเครื่องรายสัปดาห์) — ใช้โครง .lockcard เดิม เปลี่ยนเฉพาะสีเน้น ---- */
+.lockcard.mct { border-left-color: #0ea5e9; }
+.lockcard.mct .lkfield.qty input.big { color: #0369a1; }
+
+.mctbase {
+  padding: 7px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: var(--bg-soft, #f8fafc);
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mctbase b { color: var(--ink); }
+.mctbase .up { color: #15803d; font-weight: 700; }
+.mctbase .down { color: #b91c1c; font-weight: 700; }
+.mctbase .same { color: var(--muted); }
+.mctbase.none { font-style: italic; }
 
 .lkfield.item > span { color: var(--pri-d); }
 .lkfield.item input {
@@ -5652,3 +5718,27 @@ table.grid b.late { color: #d1373b; }
   line-height: 1;
 }
 .mmcdel:hover { background: #fff1f3; border-color: var(--fail); color: var(--fail); }
+/* ---------------- ErrorBoundary — กันหน้าขาวเวลามี error ตอน render ---------------- */
+.errbound {
+  margin: 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--fail);
+  border-radius: 10px;
+  background: #fff5f6;
+}
+.errbound h3 { margin: 0 0 6px; color: var(--fail); font-size: 15px; }
+.errbound p { margin: 0 0 10px; color: var(--ink); font-size: 13px; }
+.errbound-msg {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.errbound-btns { display: flex; gap: 8px; }

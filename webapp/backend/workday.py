@@ -28,6 +28,10 @@ DEFAULT_WORK_DAYS = 6.0     # หากลุ่มไม่เจอ → 6 ว�
 DEFAULT_WORK_HOURS = 24.0   # ไม่ตั้ง = 24 ชม. (ไม่ลดกำลังผลิต)
 SEED_WORK_DAYS = DEFAULT_WORK_DAYS   # ใช้ตอน seed จาก MasterMC (แถวที่ MasterMC ไม่มีค่า)
 
+# กลุ่มที่ไม่ใช่เครื่องถัก (ตรวจ/ตัด/จ้างทอ) — ต้องตรงกับลิสต์ exclude ใน AVA_MC.py
+NON_KNIT_MC = {"CL-NP", "CL-OM", "COMKN", "F-CL", "CL", "FQCCL-NP", "FQCCL-OM",
+               "FQC-OMNOI", "FQC-PHET", "FQC", "F-TSD"}
+
 
 def _norm(v) -> str:
     s = "" if v is None else str(v).strip()
@@ -121,6 +125,41 @@ def mc_group_map() -> dict:
         if not mc:
             continue
         out.setdefault(f"{mc}|{guage}", f"{g(fi)}|{g(ci)}|{guage}")
+    return out
+
+
+def mc_rows() -> list:
+    """ทุกกลุ่มเครื่องใน MasterMC → [{cat, gauge, mc_group}] (ไม่ยุบรวมเหมือน mc_groups)
+
+    ใช้ตั้ง "แถว" ของ Gantt ในโหมด Item (ทั้งหมด) — ให้เห็นทุกกลุ่มเครื่องทุก CAT
+    แม้สัปดาห์นั้นไม่มีทั้งงานแผนและงาน booking (เดิมแถวมาจากงานที่มีอยู่เท่านั้น)
+
+    - MasterMC สะกด SINGEL-xx แต่ booking/แผนใช้ SINGLE-xx → แปลงให้ตรงกัน ไม่งั้นได้แถวซ้ำ
+    - ตัดกลุ่มที่ไม่ใช่เครื่องถัก (NON_KNIT_MC) ออก ให้ตรงกับที่ AVA_MC ตัด"""
+    path = _path("MasterMC")
+    wb = load_workbook(path, read_only=True, data_only=True)
+    ws = wb["Master MC"] if "Master MC" in wb.sheetnames else wb[wb.sheetnames[0]]
+    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    wb.close()
+    if not rows:
+        return []
+    hdr = {str(c).strip().upper(): i for i, c in enumerate(rows[0]) if c is not None}
+    ci, gi, mi, fi = hdr.get("MC_CAT"), hdr.get("GUAGE"), hdr.get("MC"), hdr.get("FACTORY")
+    if None in (ci, gi, mi):
+        return []
+    out, seen = [], set()
+    for r in rows[1:]:
+        def g(i):
+            return _norm(r[i]).upper() if i < len(r) else ""
+        cat, guage, mc = g(ci).replace("SINGEL-", "SINGLE-"), g(gi), g(mi)
+        factory = g(fi) if fi is not None else ""
+        if not mc or mc in NON_KNIT_MC:
+            continue
+        key = (cat, guage, mc)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"cat": cat, "gauge": guage, "mc_group": mc, "factory": factory})
     return out
 
 
@@ -224,6 +263,8 @@ def get_workday() -> dict:
             "cal_days": calendar_week_days(),
             # ทุกเครื่องใน MasterMC → กลุ่มในแผง (ให้ Gantt แปลงเครื่องไม่ใช่ตัวแทนได้ถูก)
             "mc_map": mc_group_map(),
+            # ทุกกลุ่มเครื่องใน MasterMC (CAT|เกจ|เครื่อง) — Gantt โหมด Item (ทั้งหมด) ใช้ตั้งแถว
+            "mc_rows": mc_rows(),
             # เครื่องที่ไม่มีใน MasterMC → กลุ่มในแผง (ให้ Gantt คำนวณตรงกับ pipeline)
             "aliases": _aliases(known)}
 

@@ -7,6 +7,7 @@ import S9Editor from './S9Editor.jsx'
 import ConfigEditor from './ConfigEditor.jsx'
 import LookupEditor from './LookupEditor.jsx'
 import MasterMcTable from './MasterMcTable.jsx'
+import McTotalEditor from './McTotalEditor.jsx'
 
 // ชีทที่ pipeline ใช้จริง — แสดง hint ให้ user
 const USED_SHEETS = {
@@ -44,36 +45,63 @@ const normGauge = v => String(v ?? '').trim().toUpperCase().replace('GAUGE', '')
 const numCmp = (a, b) => String(a).localeCompare(String(b), 'th', { numeric: true })
 const sortSet = s => [...s].sort(numCmp)
 
-// สร้าง option ให้ dropdown ของ Lock_MC จากชีทหลัก MasterMC + รายการสัปดาห์ของแผน
+// สร้าง option ให้ dropdown ของ Lock_MC / MC_Total จากชีทหลัก MasterMC + รายการสัปดาห์ของแผน
 // - cats: รายชื่อกลุ่มเครื่อง (MC_CAT) ทั้งหมด
-// - gaugeByCat / mcByCat: เกจ / เครื่อง (FA/SKP) ที่ใช้ได้ของแต่ละกลุ่ม (cascading)
-// รองรับ merged cell ในไฟล์ (MC_CAT/MC เว้นว่างในแถวถัดไป) ด้วยการ forward-fill
+// - gaugeByCat / mcByCat / facByCat: เกจ / เครื่อง (FA/SKP) / โรงงาน ของแต่ละกลุ่ม (cascading)
+// - totalByCatGauge: จำนวนเครื่องเดิม "CAT|เกจ" → { all, byFac } ให้ MC_Total เทียบค่าเดิมได้
+// รองรับ merged cell ในไฟล์ (MC_CAT/MC/Factory เว้นว่างในแถวถัดไป) ด้วยการ forward-fill
 function buildLockOpts(main, weekMap) {
   const cats = []
   const gaugeByCat = {}
   const mcByCat = {}
+  const facByCat = {}
+  const factories = new Set()
+  const totalByCatGauge = {}
   if (main && main.columns) {
     const up = main.columns.map(c => String(c).trim().toUpperCase())
     const catCi = up.indexOf('MC_CAT')
     const gCi = up.indexOf('GUAGE') >= 0 ? up.indexOf('GUAGE') : up.indexOf('GAUGE')
     const mcCi = up.indexOf('MC')
-    let lastCat = '', lastMc = ''
+    const facCi = up.indexOf('FACTORY')
+    const totCi = up.indexOf('TOTAL MC')
+    let lastCat = '', lastMc = '', lastFac = ''
     for (const r of main.rows) {
       let cat = String(r[catCi] ?? '').trim(); if (cat) lastCat = cat; else cat = lastCat
       let mc = mcCi >= 0 ? String(r[mcCi] ?? '').trim() : ''; if (mc) lastMc = mc; else mc = lastMc
+      let fac = facCi >= 0 ? String(r[facCi] ?? '').trim() : ''; if (fac) lastFac = fac; else fac = lastFac
       const g = gCi >= 0 ? normGauge(r[gCi]) : ''
       if (!cat) continue
-      if (!gaugeByCat[cat]) { gaugeByCat[cat] = new Set(); mcByCat[cat] = new Set(); cats.push(cat) }
+      if (!gaugeByCat[cat]) {
+        gaugeByCat[cat] = new Set(); mcByCat[cat] = new Set(); facByCat[cat] = new Set()
+        cats.push(cat)
+      }
       if (g) gaugeByCat[cat].add(g)
       if (mc) mcByCat[cat].add(mc)
+      if (fac) { facByCat[cat].add(fac); factories.add(fac) }
+      // ยอดเครื่องเดิม: รวมทั้ง CAT+เกจ และแยกรายโรงงาน (ตรงกับที่ AVA_MC ใช้ตัดสิน)
+      const tot = totCi >= 0 ? Number(String(r[totCi] ?? '').trim()) : NaN
+      if (g && !isNaN(tot) && String(r[totCi] ?? '').trim() !== '') {
+        const k = `${cat.toUpperCase()}|${g}`
+        const slot = totalByCatGauge[k] || (totalByCatGauge[k] = { all: 0, byFac: {} })
+        slot.all += tot
+        if (fac) {
+          const fk = fac.toUpperCase()
+          slot.byFac[fk] = (slot.byFac[fk] || 0) + tot
+        }
+      }
     }
   }
-  const gOut = {}, mOut = {}
-  for (const c of cats) { gOut[c] = sortSet(gaugeByCat[c]); mOut[c] = sortSet(mcByCat[c]) }
+  const gOut = {}, mOut = {}, fOut = {}
+  for (const c of cats) {
+    gOut[c] = sortSet(gaugeByCat[c]); mOut[c] = sortSet(mcByCat[c]); fOut[c] = sortSet(facByCat[c])
+  }
   return {
     cats: cats.sort(numCmp),
     gaugeByCat: gOut,
     mcByCat: mOut,
+    facByCat: fOut,
+    factories: sortSet(factories),
+    totalByCatGauge,
     weeks: Object.keys(weekMap || {}).sort(numCmp),
   }
 }
@@ -397,6 +425,25 @@ export default function Masters() {
   }, [grid])
   const lockView = !!lockInfo && view === 'cal'
 
+  // ชีท MC_Total (WEEK + MC_CAT + TOTAL MC แต่ไม่มี SUBGROUP = ไม่ใช่ Master MC หลัก)
+  // → การ์ด "จำนวนเครื่องรายสัปดาห์" ที่ใช้แทน Total MC เฉพาะสัปดาห์ที่ระบุ
+  const mcTotalInfo = useMemo(() => {
+    if (!grid) return null
+    const up = grid.columns.map(c => String(c).trim().toUpperCase().replace(/\s+/g, ' '))
+    const find = (...names) => { for (const n of names) { const i = up.indexOf(n); if (i >= 0) return i } return -1 }
+    const weekCi = find('WEEK', 'W')
+    const catCi = find('MC_CAT', 'MC CAT')
+    const totalCi = find('TOTAL MC')
+    if (weekCi < 0 || catCi < 0 || totalCi < 0) return null
+    if (find('SUBGROUP', 'SUB GROUP') >= 0 || find('MC LOCK', 'LOCK') >= 0) return null
+    return {
+      weekCi, catCi, totalCi,
+      facCi: find('FACTORY'), gaugeCi: find('GUAGE', 'GAUGE'), remarkCi: find('REMARK'),
+      weekToCi: find('WEEK TO', 'ถึงสัปดาห์'),
+    }
+  }, [grid])
+  const mcTotalView = !!mcTotalInfo && view === 'cal'
+
   // ชีทกลุ่ม S9 (จ้างทอ) ในไฟล์ MasterMC — ตรวจจากหัวคอลัมน์:
   //   MC S9   : MC_CAT + (MC Group/Cap-Day) ไม่มี ITEM_CODE → การ์ด pool เครื่อง
   //   Item S9 : ITEM_CODE + MACHINE_GROUP            → ค้นหา item จ้างทอได้
@@ -487,18 +534,19 @@ export default function Masters() {
   const mastermcView = !!mastermcInfo && view === 'cal'
 
   // ชีทใหญ่มาก (เช่น Master_Item) — ตารางดิบเปิดไม่ไหว → บังคับมุมมองค้นหาเสมอ
-  const bigView = !!grid && !calInfo && !lockInfo && !s9Info && !configInfo && !mastermcInfo && grid.rows.length > 1500
+  const bigView = !!grid && !calInfo && !lockInfo && !mcTotalInfo && !s9Info && !configInfo && !mastermcInfo && grid.rows.length > 1500
 
-  const specialView = calView || lockView || s9View || configView || mastermcView || bigView
+  const specialView = calView || lockView || mcTotalView || s9View || configView || mastermcView || bigView
 
-  // โหลดรายการ MC_CAT/เกจ/เครื่อง (ชีทหลัก MasterMC) + สัปดาห์ (แผน) มาทำ dropdown ของ Lock_MC
+  // โหลดรายการ MC_CAT/เกจ/เครื่อง/โรงงาน + ยอดเครื่องเดิม (ชีทหลัก MasterMC) + สัปดาห์ (ปฏิทิน)
+  // มาทำ dropdown ของ Lock_MC และ MC_Total
   const [lockOpts, setLockOpts] = useState(null)
-  const isLock = !!lockInfo
+  const isLock = !!lockInfo || !!mcTotalInfo
   useEffect(() => {
     if (!isLock || !sel) { setLockOpts(null); return }
     let dead = false
     const file = files.find(f => f.name === sel.name)
-    const aux = new Set(['Lock_MC', 'MC Special', 'Item Special'])
+    const aux = new Set(['Lock_MC', 'MC_Total', 'MC Special', 'Item Special'])
     const mainSheet = file?.sheets.find(s => s !== sel.sheet && !aux.has(s)) || null
     Promise.all([
       // สัปดาห์ที่มีในปฏิทิน (สดจาก Calendar.xlsx บน server) — ไม่ผูกกับไฟล์แผนรอบก่อน
@@ -522,6 +570,23 @@ export default function Masters() {
     }))
     setIds(s => ({ ...s, cid: [...s.cid, nextId.current.c++] }))
     setWidths(w => [...w, 130])
+    setDirty(true)
+  }
+
+  // ใส่ "ถึงสัปดาห์" ในการ์ด MC_Total — ถ้าชีทยังไม่มีคอลัมน์ Week To ให้สร้างท้ายสุดแล้วใส่ค่าทันที
+  // (เหมือน setItemCell) → row/แถวเดิมที่ไม่เคยกรอกช่องนี้ไม่กระทบ เพราะค่าว่าง = สัปดาห์เดียวเหมือนเดิม
+  function setMcWeekToCell(ri, val) {
+    const ci = mcTotalInfo?.weekToCi
+    if (ci != null && ci >= 0) { setCell(ri, ci, val); return }
+    const newCi = grid.columns.length
+    pushHist({ t: 'addCol', ci: newCi })
+    setGrid(g => ({
+      ...g,
+      columns: [...g.columns, 'Week To'],
+      rows: g.rows.map((r, i) => [...r, i === ri ? val : '']),
+    }))
+    setIds(s => ({ ...s, cid: [...s.cid, nextId.current.c++] }))
+    setWidths(w => [...w, 110])
     setDirty(true)
   }
 
@@ -627,7 +692,13 @@ export default function Masters() {
                     <button className={!lockView ? 'on' : ''} onClick={() => setView('table')}>🧾 ตาราง</button>
                   </div>
                 )}
-                {s9Info && !calInfo && !lockInfo && (
+                {mcTotalInfo && !calInfo && !lockInfo && (
+                  <div className="viewtoggle" title="สลับมุมมองของชีท MC_Total">
+                    <button className={mcTotalView ? 'on' : ''} onClick={() => setView('cal')}>🔢 จำนวนเครื่อง</button>
+                    <button className={!mcTotalView ? 'on' : ''} onClick={() => setView('table')}>🧾 ตาราง</button>
+                  </div>
+                )}
+                {s9Info && !calInfo && !lockInfo && !mcTotalInfo && (
                   <div className="viewtoggle" title="สลับมุมมองของชีท S9 (จ้างทอ)">
                     <button className={s9View ? 'on' : ''} onClick={() => setView('cal')}>
                       {s9Info.kind === 'mcs9' ? '📇 การ์ด' : '🔍 ค้นหา'}
@@ -635,7 +706,7 @@ export default function Masters() {
                     <button className={!s9View ? 'on' : ''} onClick={() => setView('table')}>🧾 ตาราง</button>
                   </div>
                 )}
-                {configInfo && !calInfo && !lockInfo && !s9Info && (
+                {configInfo && !calInfo && !lockInfo && !mcTotalInfo && !s9Info && (
                   <div className="viewtoggle" title="สลับมุมมองของชีท config">
                     <button className={configView ? 'on' : ''} onClick={() => setView('cal')}>
                       {configInfo.kind === 'spare' ? '🧰 ลิสต์' : '📇 การ์ด'}
@@ -643,7 +714,7 @@ export default function Masters() {
                     <button className={!configView ? 'on' : ''} onClick={() => setView('table')}>🧾 ตาราง</button>
                   </div>
                 )}
-                {mastermcInfo && !calInfo && !lockInfo && !s9Info && !configInfo && (
+                {mastermcInfo && !calInfo && !lockInfo && !mcTotalInfo && !s9Info && !configInfo && (
                   <div className="viewtoggle" title="สลับมุมมองของ Master MC">
                     <button className={mastermcView ? 'on' : ''} onClick={() => setView('cal')}>📋 ตรึงคีย์</button>
                     <button className={!mastermcView ? 'on' : ''} onClick={() => setView('table')}>🧾 ตาราง</button>
@@ -728,6 +799,20 @@ export default function Masters() {
                 delRow={delRow}
                 isChanged={isChanged}
                 onItemInput={setItemCell}
+              />
+            )}
+
+            {grid && mcTotalView && (
+              <McTotalEditor
+                grid={grid}
+                cols={mcTotalInfo}
+                opts={lockOpts}
+                rids={ids.rid}
+                setCell={setCell}
+                addRow={addRow}
+                delRow={delRow}
+                isChanged={isChanged}
+                onWeekToInput={setMcWeekToCell}
               />
             )}
 

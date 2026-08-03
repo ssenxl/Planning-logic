@@ -6,6 +6,7 @@ import OrderColor from './components/OrderColor.jsx'
 import Masters from './components/Masters.jsx'
 import Outputs from './components/Outputs.jsx'
 import Login from './components/Login.jsx'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 
 import { api, auth, setOnUnauthorized } from './api.js'
 
@@ -123,17 +124,23 @@ export default function App() {
           <span className="ico">⎋</span>ออกจากระบบ
         </button>
       </header>
+      {/* ครอบด้วย ErrorBoundary แยก 2 ก้อน: แผนผลิต (mount ค้าง) กับแท็บอื่น (key=tab → สลับแท็บ
+          แล้ว error เคลียร์เอง) — error ที่หน้าหนึ่งจะไม่ทำให้ทั้งแอปกลายเป็นหน้าขาว */}
       <main className="content">
-        {tab === 'dashboard' && isAdmin && <Dashboard />}
         {/* หน้าแผนผลิต mount ค้างไว้เสมอ ซ่อนด้วย CSS ตอนไม่ได้อยู่ tab นี้
             เพื่อไม่ให้ state (แผนที่แก้ค้าง + filter) หายเมื่อสลับ tab */}
         <div style={{ display: tab === 'plan' ? undefined : 'none' }}>
-          <KnitPlan active={tab === 'plan'} />
+          <ErrorBoundary>
+            <KnitPlan active={tab === 'plan'} />
+          </ErrorBoundary>
         </div>
-        {tab === 'data' && <Data />}
-        {tab === 'order-color' && <OrderColor />}
-        {tab === 'masters' && <Masters />}
-        {tab === 'outputs' && <Outputs />}
+        <ErrorBoundary key={tab}>
+          {tab === 'dashboard' && isAdmin && <Dashboard />}
+          {tab === 'data' && <Data />}
+          {tab === 'order-color' && <OrderColor />}
+          {tab === 'masters' && <Masters />}
+          {tab === 'outputs' && <Outputs />}
+        </ErrorBoundary>
       </main>
 
     </div>

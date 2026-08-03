@@ -5,7 +5,7 @@ import {
   ROWNUM_W, isIdName, numericCols, fmtNum, autoColWidths, makeColResizer,
 } from './ColumnFilter.jsx'
 import { makeWorkDayResolver } from '../workday.js'
-import PlanGantt, { LOAD_TYPES, BAR_FIELDS, BAR_FIELDS_DEFAULT, loadBarFields, saveBarFields } from './PlanGantt.jsx'
+import PlanGantt, { LOAD_TYPES, BAR_FIELDS_DEFAULT, barFieldsFor, loadBarFields, saveBarFields } from './PlanGantt.jsx'
 import OutsourceAdvisor from './OutsourceAdvisor.jsx'
 import CylinderAdvisor from './CylinderAdvisor.jsx'
 
@@ -14,6 +14,9 @@ import CylinderAdvisor from './CylinderAdvisor.jsx'
 // เศษปัดพับจะสะสมกันได้เกิน 0.01 (เช่น ขาด 0.02 ทั้งที่วางครบ) ซึ่งไม่มีความหมายเชิงธุรกิจ
 // ยอมได้ถึง 1 กก. เกินกว่านี้ = ขาด/เกินจริง ต้องเตือน
 const QTY_TOL = 1
+
+// อาร์เรย์ว่างค่าคงที่ — ส่งเป็น prop แทน [] สดๆ ไม่ให้ useMemo ฝั่ง PlanGantt คิดใหม่ทุกเรนเดอร์
+const EMPTY_ROWS = []
 
 // แปลงเวลาไฟล์แผน (mtime = epoch วินาที) → วันที่+เวลาแบบไทย เช่น "17 ก.ค. 2569 14:32 น."
 // ใช้บอก user ว่าแผนที่กำลังดูอยู่รันเสร็จเมื่อไหร่ (mtime = เวลาที่ Planning.py เขียนไฟล์เสร็จ)
@@ -39,6 +42,12 @@ const QUICK_COLS = [
   { col: 'CAT', label: 'CAT' },
   { col: 'MC_GUAGE', label: 'Gauge' },
 ]
+
+// ชีทที่ไม่ต้องโชว์ใน dropdown ของหน้าแผนผลิต — ซ่อนแค่ UI เท่านั้น
+// ไฟล์ Excel ยังมีชีทครบ (ดาวน์โหลดได้) และ backend ยังอ่านไปคำนวณ cap/Change Cylinder ตามเดิม
+const HIDDEN_SHEETS = new Set(['REMAININGJOBS', 'CYLINDERCHANGE'])
+// ตัด _ / ช่องว่าง / ขีด แล้วทำเป็นตัวใหญ่ — กันชื่อชีทเขียนต่างกันเล็กน้อย (REMAINING JOBS ฯลฯ)
+const sheetKey = s => String(s || '').toUpperCase().replace(/[\s_-]/g, '')
 
 function fmtSize(b) {
   if (b < 1024) return b + ' B'
@@ -106,6 +115,9 @@ export default function KnitPlan({ active = true }) {
   const [barFields, setBarFields] = useState(loadBarFields)   // ฟิลด์ที่โชว์บนบล็อก Gantt (ปุ่มอยู่แถบ Gantt)
   const [showFieldBar, setShowFieldBar] = useState(false)
   useEffect(() => { saveBarFields(barFields) }, [barFields])
+  // chip "ข้อมูลบนบล็อก" ที่ใช้ได้กับชีทที่กำลังดู — ชีทต่างกันมีคอลัมน์ไม่เหมือนกัน
+  // (เช่น SETUP_TRACKING ไม่มี PO/RDD/ลูกค้า/สี/เนื้อผ้า → ติ๊กแล้วไม่มีอะไรขึ้น จึงไม่โชว์ chip)
+  const sheetBarFields = useMemo(() => barFieldsFor(grid?.columns || []), [grid?.columns])
   const [showOutsource, setShowOutsource] = useState(false)
   const [showCylinder, setShowCylinder] = useState(false)
   // แถวที่เลือกจากการคลิกบล็อก Gantt (idx ของแถวในชีท) → เปิด modal ตาราง + การ์ดคู่กัน
@@ -216,6 +228,17 @@ export default function KnitPlan({ active = true }) {
       setMsg(r.message)
       setTimeout(loadRunStatus, 300)
     } catch (e) { setMsg('สั่งรันไม่ได้: ' + e.message) }
+  }
+
+  // หยุดงานที่กำลังรัน — backend จะ kill ทั้ง process tree (run_all.py + step ลูก)
+  async function stopRun() {
+    if (!window.confirm('ยืนยันหยุดการรัน? งานที่กำลังทำอยู่จะถูกยกเลิกทันที')) return
+    setMsg('')
+    try {
+      const r = await api.runStop()
+      setMsg(r.message)
+      setTimeout(loadRunStatus, 300)
+    } catch (e) { setMsg('สั่งหยุดไม่ได้: ' + e.message) }
   }
 
   async function changeSheet(sheet) {
@@ -501,6 +524,12 @@ export default function KnitPlan({ active = true }) {
   const gridKey = grid ? `${grid.name}|${grid.sheet}|${grid.columns.length}` : ''
   useEffect(() => { setColW(autoColWidths(grid)) }, [gridKey])
 
+  // ชีทที่โชว์ใน dropdown — ตัด HIDDEN_SHEETS ออก แต่ถ้ากำลังเปิดชีทที่ซ่อนอยู่ (เช่นค้างจากก่อนหน้า)
+  // ยังคงไว้ในลิสต์ ไม่งั้น select จะไม่มี option ที่ตรงกับค่าปัจจุบัน
+  const sheetOptions = grid?.sheets
+    ? grid.sheets.filter(s => !HIDDEN_SHEETS.has(sheetKey(s)) || s === grid.sheet)
+    : []
+
   const startResize = makeColResizer(colW, setColW)
   // มีคอลัมน์เลขแถวหัว-ท้าย (# และปุ่มลบ) รวม ROWNUM_W × 2
   const totalW = grid
@@ -552,14 +581,15 @@ export default function KnitPlan({ active = true }) {
   // ตารางแผน (ใช้ซ้ำทั้งท้ายหน้า + ใน modal ที่เด้งตอนคลิกบล็อก Gantt)
   // highlight = idx แถวที่จะไฮไลต์/ผูก ref ไว้เลื่อนหา (เฉพาะใน modal)
   // rowsList = ชุดแถวที่จะโชว์ (default = ทั้งหมดที่ผ่านตัวกรอง; modal ส่งเฉพาะแถวของ item ที่คลิก)
-  const renderGrid = (highlight = null, rowsList = visible) => (
-    <table className="grid" style={{ tableLayout: 'fixed', width: totalW }}>
+  // allowDelete = false → ตัดคอลัมน์ปุ่มลบทิ้งทั้งคอลัมน์ (ชีทรายงานอย่าง UNPLANNED ห้ามลบแถว)
+  const renderGrid = (highlight = null, rowsList = visible, allowDelete = true) => (
+    <table className="grid" style={{ tableLayout: 'fixed', width: allowDelete ? totalW : totalW - ROWNUM_W }}>
       <colgroup>
         <col style={{ width: ROWNUM_W }} />
         {grid.columns.map((_, ci) => (
           <col key={ci} style={{ width: colW[ci] || 120 }} />
         ))}
-        <col style={{ width: ROWNUM_W }} />
+        {allowDelete && <col style={{ width: ROWNUM_W }} />}
       </colgroup>
       <thead>
         <tr>
@@ -576,7 +606,7 @@ export default function KnitPlan({ active = true }) {
               <span className="colresize" onMouseDown={e => startResize(e, ci)} />
             </th>
           ))}
-          <th className="rownum actcol"></th>
+          {allowDelete && <th className="rownum actcol"></th>}
         </tr>
       </thead>
       <tbody>
@@ -598,14 +628,16 @@ export default function KnitPlan({ active = true }) {
                 </td>
               )
             })}
-            <td className="rownum actcol">
-              <button className="del" title="ลบแถว" onClick={() => delRow(idx)}>✕</button>
-            </td>
+            {allowDelete && (
+              <td className="rownum actcol">
+                <button className="del" title="ลบแถว" onClick={() => delRow(idx)}>✕</button>
+              </td>
+            )}
           </tr>
         ))}
         {!rowsList.length && (
           <tr><td className="rownum"></td>
-            <td colSpan={grid.columns.length + 1} className="hint">ไม่มีแถวตรงตัวกรอง</td>
+            <td colSpan={grid.columns.length + (allowDelete ? 1 : 0)} className="hint">ไม่มีแถวตรงตัวกรอง</td>
           </tr>
         )}
       </tbody>
@@ -617,9 +649,9 @@ export default function KnitPlan({ active = true }) {
       <div className="editbar plan-head">
         <h2>แผนผลิต {dirty && <span className="dot">●</span>}</h2>
         <div className="actions">
-          {grid && grid.sheets && grid.sheets.length > 1 && (
+          {sheetOptions.length > 1 && (
             <select value={grid.sheet} onChange={e => changeSheet(e.target.value)}>
-              {grid.sheets.map(s => <option key={s} value={s}>{s}</option>)}
+              {sheetOptions.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           )}
           <button className="primary" onClick={runPlan} disabled={isRunning}>▶ รันแผนใหม่</button>
@@ -630,6 +662,7 @@ export default function KnitPlan({ active = true }) {
           </button>
           {meta?.exists && <a className="dl" href={api.planDownloadUrl(meta.mtime)}>⬇ ดาวน์โหลด Excel</a>}
           <button onClick={refresh}>รีเฟรช</button>
+          {isRunning && <button className="stopbtn" onClick={stopRun}>⛔ หยุดรัน</button>}
           <span className={'badge ' + (isRunning ? 'run' : 'idle')}>{runLabel}</span>
           {isRunning && runStatus.progress != null && <small className="run-hint">ความคืบหน้า {runStatus.progress}%</small>}
           {meta?.exists && meta.mtime && <small className="run-hint">แผนล่าสุด: {fmtPlanTime(meta.mtime)}</small>}
@@ -670,13 +703,13 @@ export default function KnitPlan({ active = true }) {
             </div>
           )}
           {ganttReady && showGantt && (
-            <span className="gbooking-toggle" title="overlay item จาก History แผนเดิม (สูงสุด 2 week) บน Gantt — ดูอย่างเดียว ลาก/แก้ไม่ได้">
-              <span className="gbk-label">History แผนเดิม (สูงสุด 2 week)</span>
+            <span className="gbooking-toggle" title="overlay item จาก History แผนเดิม (ย้อนหลัง 5 week) บน Gantt — ดูอย่างเดียว ลาก/แก้ไม่ได้">
+              <span className="gbk-label">History แผนเดิม (ย้อนหลัง 5 week)</span>
               <button className={'gbk-btn' + (bookingMode === 'off' ? ' on' : '')}
                 onClick={() => { setBookingMode('off'); setShowBkPick(false); setBkSearch('') }}>ปิด</button>
               <button className={'gbk-btn' + (bookingMode === 'all' ? ' on' : '')}
                 onClick={() => { setBookingMode('all'); setShowBkPick(false); setBkSearch('') }}
-                title="ทุก item ทุกสัปดาห์ที่มีใน booking">Item (ทั้งหมด)</button>
+                title="ทุก item ทุกสัปดาห์ที่มีใน booking + โชว์ทุกกลุ่มเครื่อง/CAT ใน MasterMC แม้ยังไม่มีงาน">Item (ทั้งหมด)</button>
               <button className={'gbk-btn' + (bookingMode === 'plan' ? ' on' : '')}
                 onClick={() => setBookingMode('plan')}
                 title="เฉพาะ item ที่กำลังทำแผนวันนี้ ที่มีประวัติใน booking">Item (วางแผนวันนี้)</button>
@@ -748,11 +781,11 @@ export default function KnitPlan({ active = true }) {
                 <div className="gantt-fields">
                   <button className="gfield-toggle" onClick={() => setShowFieldBar(s => !s)}
                     title="เลือกว่าจะให้บล็อกโชว์ข้อมูลอะไรบ้าง">
-                    ⚙ ข้อมูลบนบล็อก ({BAR_FIELDS.filter(f => barFields[f.key]).length})
+                    ⚙ ข้อมูลบนบล็อก ({sheetBarFields.filter(f => barFields[f.key]).length})
                   </button>
                   {showFieldBar && (
                     <div className="gfield-list">
-                      {BAR_FIELDS.map(f => (
+                      {sheetBarFields.map(f => (
                         <label key={f.key} className={'gfield-chip' + (barFields[f.key] ? ' on' : '')}>
                           <input type="checkbox" checked={!!barFields[f.key]}
                             onChange={e => setBarFields(s => ({ ...s, [f.key]: e.target.checked }))} />
@@ -775,7 +808,15 @@ export default function KnitPlan({ active = true }) {
               <button onClick={() => setShowGantt(s => !s)}>{showGantt ? 'ซ่อน' : 'แสดง'}</button>
             </div>
           </div>
-          {showGantt && <PlanGantt columns={grid.columns} rows={visible} load={load} ava={ava} bookingMc={bookingMc} poolMap={poolMap} onMoveWeek={moveJob} onEditQty={editQty} onSplit={splitJob} onRemove={delRow} bookingItems={bookingItems} bookingMode={bookingMode} bookingPick={bookingPick} loadFilter={loadFilter} setLoadFilter={setLoadFilter} barFields={barFields} selIdx={selJob} setSelIdx={setSelJob} />}
+          {showGantt && <PlanGantt columns={grid.columns} rows={visible} sheet={grid.sheet} load={load} ava={ava} bookingMc={bookingMc} poolMap={poolMap} onMoveWeek={moveJob} onEditQty={editQty} onSplit={splitJob} onRemove={delRow} bookingItems={bookingItems} bookingMode={bookingMode} bookingPick={bookingPick} allMcRows={workdayData?.mc_rows || EMPTY_ROWS} loadFilter={loadFilter} setLoadFilter={setLoadFilter} barFields={barFields} selIdx={selJob} setSelIdx={setSelJob} />}
+        </div>
+      )}
+
+      {/* ชีทที่ไม่มี MC_GROUP+PLAN_WEEK (เช่น UNPLANNED, DETAIL) ไม่มี Gantt ให้โชว์ →
+          ต้องมีตารางธรรมดาให้เห็น ไม่งั้นเลือกชีทแล้วหน้าจะว่างเปล่าไม่มีอะไรขึ้นเลย */}
+      {grid && !ganttReady && !loading && (
+        <div className="gridwrap">
+          {renderGrid(null, visible, false)}
         </div>
       )}
 
@@ -800,12 +841,18 @@ export default function KnitPlan({ active = true }) {
         // ออร์เดอร์นิยามด้วย ORDER_KEY_COLS (SC เดียวมีหลายออร์เดอร์: ต่าง PO / ORDERS_QTY / FG week)
         const okey = row => orderKeyOf(row, grid.columns)
         const selKey = okey(grid.rows[selJob])
+        // LINE_REMARK ผูกกับ SC — เก็บแยกต่อออร์เดอร์ ไม่รวมข้าม SC (item เดียวกันแต่คนละ SC อาจมีหมายเหตุคนละอัน)
+        const lrI = grid.columns.indexOf('LINE_REMARK')
         const ordMap = new Map()
         itemRows.forEach(({ row }) => {
           const key = okey(row)
-          const m = ordMap.get(key) || { key, sc: scI >= 0 ? norm(row[scI]) : '', line: lnI >= 0 ? norm(row[lnI]) : '', ordered: 0, placed: 0 }
+          const m = ordMap.get(key) || { key, sc: scI >= 0 ? norm(row[scI]) : '', line: lnI >= 0 ? norm(row[lnI]) : '', ordered: 0, placed: 0, remark: '' }
           m.ordered = Math.max(m.ordered, Number(norm(row[oqI])) || 0)
           m.placed += Number(norm(row[pqI])) || 0
+          if (!m.remark && lrI >= 0) {
+            const r = norm(row[lrI])
+            if (r) m.remark = r
+          }
           ordMap.set(key, m)
         })
         const orders = [...ordMap.values()]
@@ -822,11 +869,14 @@ export default function KnitPlan({ active = true }) {
               {orders.length > 0 && (
                 <div className="plan-modal-orders">
                   {orders.map(o => (
-                    <span key={o.key}
-                      className={'order-status ' + (Math.abs(o.diff) <= QTY_TOL ? 'ok' : o.diff > 0 ? 'short' : 'over') + (o.key === selKey ? ' cur' : '')}>
-                      SC {o.sc || '-'}{o.line ? `/${o.line}` : ''} · สั่ง {o.ordered.toLocaleString()} · วาง {o.placed.toLocaleString()}
-                      {Math.abs(o.diff) <= QTY_TOL ? ' ✓' : o.diff > 0 ? ` ⚠ ขาด ${o.diff.toLocaleString()}` : ` ⚠ เกิน ${(-o.diff).toLocaleString()}`}
-                    </span>
+                    <div key={o.key} className="order-item">
+                      <span
+                        className={'order-status ' + (Math.abs(o.diff) <= QTY_TOL ? 'ok' : o.diff > 0 ? 'short' : 'over') + (o.key === selKey ? ' cur' : '')}>
+                        SC {o.sc || '-'}{o.line ? `/${o.line}` : ''} · สั่ง {o.ordered.toLocaleString()} · วาง {o.placed.toLocaleString()}
+                        {Math.abs(o.diff) <= QTY_TOL ? ' ✓' : o.diff > 0 ? ` ⚠ ขาด ${o.diff.toLocaleString()}` : ` ⚠ เกิน ${(-o.diff).toLocaleString()}`}
+                      </span>
+                      {o.remark && <div className="order-remark">📝 {o.remark}</div>}
+                    </div>
                   ))}
                 </div>
               )}

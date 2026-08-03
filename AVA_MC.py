@@ -31,6 +31,9 @@ def get_working_days_in_week(week):
 # CONFIG
 # =========================
 SETUP_DAYS = 5  # default setup days
+# โรงอ้อมน้อย (OMNOI): ทุก item ใช้ setup เท่ากันหมด ไม่ดู prefix ITEM / COTTON / POLY / DTY
+# ต้องตรงกับ OMNOI_SETUP_DAYS ใน Planning.py ไม่งั้น MC_USE (AVA) กับแผน (Planning) หัก setup คนละจำนวน
+OMNOI_SETUP_DAYS = 3
 BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 _cfg = _cp.ConfigParser(interpolation=None)  # ปิด interpolation ให้ใช้ %USERPROFILE% ใน path ได้
 if not _cfg.read(BASE_DIR / "config.ini", encoding="utf-8"):
@@ -53,6 +56,7 @@ def get_setup_days_for_item(material_content: str, yarn_used: str, mc_group: str
     คำนวณ setup days
 
     Logic:
+    - Factory OMNOI (อ้อมน้อย) → OMNOI_SETUP_DAYS ทุก item เสมอ (ไม่ดู prefix / COTTON / POLY / DTY)
     - Type SINGLE (เช็คจาก _MC_GROUP_TO_TYPE[mc_group]) → ใช้ prefix ของ ITEM code จับคู่แบบ
       longest-prefix match จากชีท "Item Setup" (ไม่ดูตรรกะ COTTON/POLY/DTY เดิม)
       ถ้าไม่ match prefix ใดเลย (รวม prefix ที่เว้นว่าง เช่น F9) → default 3 วัน
@@ -64,6 +68,9 @@ def get_setup_days_for_item(material_content: str, yarn_used: str, mc_group: str
       4. ถ้าไม่มีทั้งสองอย่าง → default 3 วัน
     """
     _mc_u = str(mc_group).strip().upper() if mc_group else ""
+    # โรงอ้อมน้อย → setup คงที่ทุก item (ด่านแรก ชนะทุกกฎอื่น)
+    if _mc_u and _MC_GROUP_TO_FACTORY.get(_mc_u, "") in ("OMNOI", "OM"):
+        return OMNOI_SETUP_DAYS
     # เฉพาะ Type SINGLE → ใช้ prefix ของ ITEM (ไม่ดูตรรกะเดิม)
     # ครอบคลุม "SINGLE", "SINGLE (TUBE)" และเผื่อสะกด "SINGEL"
     _mc_type = _MC_GROUP_TO_TYPE.get(_mc_u, "").replace("SINGEL", "SINGLE")
@@ -207,10 +214,14 @@ print(f"✅ MC→SetupTime map: {len(_mc_setup_time_map)} entries")
 
 # MC group → Type map: mc_upper → Type (SINGLE/DOUBLE/...) — ใช้เช็คว่าเป็น Type SINGLE
 _MC_GROUP_TO_TYPE: dict = {}
+# MC group → Factory map: mc_upper → Factory (OMNOI/PHET/OUTSOURCE) — ใช้กติกา setup ต่อโรงงาน
+# MasterMC ไม่มี MC group ที่อยู่ 2 โรงงาน → mc_group ตัวเดียวระบุ factory ได้เลย
+_MC_GROUP_TO_FACTORY: dict = {}
 for _, _mrow in _master_mc_df.iterrows():
     _mmc = str(_mrow.get("MC", "")).strip().upper()
     if _mmc:
         _MC_GROUP_TO_TYPE[_mmc] = str(_mrow.get("Type", "")).strip().upper()
+        _MC_GROUP_TO_FACTORY.setdefault(_mmc, str(_mrow.get("Factory", "")).strip().upper())
 
 # Item prefix → Setup days map (จากชีท "Item Setup" ใน MasterMC) — ใช้เฉพาะ Type SINGLE
 # format: prefix_upper → setup_days (เช่น "FD1" → 2) จับคู่แบบ longest-prefix match
@@ -356,6 +367,57 @@ try:
         print("ℹ️ Lock_MC: ไม่มีแถวที่ระบุ ITEM → ไม่มีเครื่องกันไว้แบบ 'คงความอุ่น'")
 except Exception as _e_lk:
     print(f"⚠️ ไม่สามารถโหลด Lock_MC sheet: {_e_lk}")
+
+
+# =========================
+# MC_TOTAL OVERRIDE: จำนวนเครื่องทั้งหมดของ (สัปดาห์ + MC_CAT + เกจ) ที่ user กำหนดเอง
+# Source: MasterMC.xlsx sheet "MC_Total" — คอลัมน์ Week | Factory | MC_CAT | Guage | Total MC
+#
+# ความหมาย: "สัปดาห์นี้ CAT+เกจ นี้มีเครื่องทั้งหมด N ตัว" → ใช้แทน Total MC จากชีท Master MC
+#   - มีผลเฉพาะสัปดาห์ที่ระบุ (สัปดาห์อื่นกลับไปใช้ค่าเดิม)
+#   - Factory เว้นว่าง = ทุกโรงงาน (กระจายยอดตามสัดส่วนเครื่องเดิมของแต่ละพูล)
+#   - booking / Lock_MC ยังหักต่ออีกชั้นตามปกติ (TOTAL_MC_REMAIN = TOTAL_MC − MC_USE_CEIL)
+# =========================
+_MC_TOTAL_OVERRIDE: dict = {}  # (week, cat_upper, gauge_norm, factory_upper|"") → total
+
+try:
+    _mt_df = pd.read_excel(MASTER_MC_FILE, sheet_name="MC_Total")
+    _mt_df.columns = _mt_df.columns.str.strip()
+
+    def _mt_int(v):
+        # ทนค่าว่าง/NaN/ทศนิยม/สตริง — คืน None ถ้าแปลงไม่ได้ (นิยามซ้ำ ไม่พึ่ง _lk_int
+        # เผื่อบล็อก Lock_MC ด้านบนพังก่อนถึงบรรทัดที่นิยาม)
+        try:
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return None
+            s = str(v).strip()
+            if not s or s.lower() == "nan":
+                return None
+            return int(float(s))
+        except (ValueError, TypeError):
+            return None
+
+    for _, _mt_row in _mt_df.iterrows():
+        _mt_week = _mt_int(_mt_row.get("Week"))
+        _mt_total = _mt_int(_mt_row.get("Total MC"))
+        _mt_cat = str(_mt_row.get("MC_CAT", "") or "").strip().upper()
+        _mt_g = _norm_gauge_ava(_mt_row.get("Guage", ""))
+        # ยอม total = 0 (ปิดกลุ่มทั้งสัปดาห์) แต่ไม่ยอมค่าว่าง/ติดลบ
+        if _mt_week is None or _mt_total is None or _mt_total < 0 or not _mt_cat or not _mt_g:
+            continue
+        _mt_fac = str(_mt_row.get("Factory", "") or "").strip().upper().replace("NAN", "")
+        # Week To (ไม่บังคับ): ระบุช่วงสัปดาห์ที่ใช้ยอดเดียวกัน — ไม่มี/น้อยกว่า Week = สัปดาห์เดียว
+        _mt_week_to = _mt_int(_mt_row.get("Week To"))
+        _mt_week_end = _mt_week_to if (_mt_week_to is not None and _mt_week_to >= _mt_week) else _mt_week
+        # คีย์ซ้ำ = user แก้ยอดเดิม → ใช้แถวหลังสุด (ไม่บวกรวมแบบ Lock_MC เพราะเป็น "ยอดรวม")
+        for _mt_w in range(_mt_week, _mt_week_end + 1):
+            _MC_TOTAL_OVERRIDE[(_mt_w, _mt_cat, _mt_g, _mt_fac)] = _mt_total
+    if _MC_TOTAL_OVERRIDE:
+        print(f"✅ MC_Total override: {_MC_TOTAL_OVERRIDE}")
+    else:
+        print("ℹ️ MC_Total: ไม่มีการกำหนดจำนวนเครื่องรายสัปดาห์ → ใช้ Total MC จาก Master MC")
+except Exception as _e_mt:
+    print(f"⚠️ ไม่สามารถโหลด MC_Total sheet: {_e_mt}")
 
 
 def _lock_warm_weeks(item, mc_cat, gauge, mc_group) -> dict:
@@ -802,9 +864,14 @@ df["_setup_days"] = df.apply(
 # เดินเป็นทอด ๆ จากสัปดาห์ผลิตล่าสุดผ่านสัปดาห์ที่ lock ไว้ โดยแต่ละช่วงห้ามเกิน
 # SETUP_GAP_WEEK (เครื่องเย็นระหว่างทางไม่ได้) → ถ้าต่อถึงสัปดาห์นี้ได้ = เครื่องยังอุ่น
 # _lock_warm_mc = จำนวนที่กันไว้ (แคบสุดตลอดเส้นทาง) = เพดานเครื่องที่อุ่นได้
+#
+# _lock_same_week_mc = ล็อกที่ตรงกับ "สัปดาห์ที่ item ผลิตเอง" พอดี — คนละกรณีกับด้านบน
+# ล็อกแบบนี้ไม่ได้ใช้เชื่อมช่วงที่หยุดผลิต แต่เป็นเครื่องอีกชุดที่กันไว้เพิ่มจากเครื่องที่รันอยู่
+# (Planning หักออกจาก pool ไปแล้วตาม _LOCK_MC_MAP) → ต้องบวกเข้ากับเครื่องที่รันจริง
+# เวลาส่ง carry-over ไปสัปดาห์ถัดไป ไม่ใช่ใช้เป็นเพดาน
 # =========================
 def _detect_setup_group(g):
-    """หา _prev_week / _week_gap / _is_new_setup / _lock_warm_mc ของ _carry_key หนึ่งชุด"""
+    """หา _prev_week / _week_gap / _is_new_setup / _lock_warm_mc / _lock_same_week_mc"""
     _item = str(g["ITEM_CODE"].iloc[0]).strip().upper()
     _cat = str(g["MC_CAT"].iloc[0]).strip().upper() if "MC_CAT" in g.columns else ""
     _locks = _lock_warm_weeks(_item, _cat, g["GUAGE"].iloc[0], g["MC_GROUP"].iloc[0])
@@ -830,6 +897,7 @@ def _detect_setup_group(g):
             "_week_gap": gap,
             "_is_new_setup": is_new,
             "_lock_warm_mc": warm_cap if warm_cap is not None else np.nan,
+            "_lock_same_week_mc": int(_locks.get(wk, 0)) if _locks else 0,
         })
         prev_week = wk
     return pd.DataFrame(out, index=g.index)
@@ -839,6 +907,12 @@ df = df.join(
     df.groupby("_carry_key", group_keys=False)[
         ["WEEK", "ITEM_CODE", "MC_GROUP", "GUAGE", "MC_CAT"]
     ].apply(_detect_setup_group)
+)
+# กัน df ว่าง / groupby ไม่คืนคอลัมน์ → ลูกโซ่ carry/setup ต้องมีคอลัมน์นี้เสมอ
+if "_lock_same_week_mc" not in df.columns:
+    df["_lock_same_week_mc"] = 0
+df["_lock_same_week_mc"] = (
+    pd.to_numeric(df["_lock_same_week_mc"], errors="coerce").fillna(0).astype(int)
 )
 
 # =========================
@@ -855,130 +929,119 @@ df["MC_USE"] = np.where(
 df["MC_USE_CEIL"] = np.ceil(df["MC_USE"]).replace([np.inf, -np.inf], 0).fillna(0).astype(int)
 
 # =========================
-# PASS 1: eff_days หัก setup เฉพาะ _is_new_setup
-# → ได้ FINAL MC_USE_CEIL ที่สะท้อนเครื่องจริงที่รันใน setup week
-# =========================
-_eff_pass1 = np.where(
-    df["_is_new_setup"],
-    np.maximum(df["WORKING_DAY"] - df["_setup_days"], 0.5),
-    df["WORKING_DAY"]
-)
-df["_mc_use_ceil_pass1"] = np.ceil(
-    np.where(
-        (df["_CAP_ADJ"] > 0) & (_eff_pass1 > 0),
-        df["KP_WEIGHT"] / (df["_CAP_ADJ"] * _eff_pass1),
-        0
-    )
-).astype(float)
-df["_mc_use_ceil_pass1"] = df["_mc_use_ceil_pass1"].fillna(0).astype(int)
-
-# =========================
-# PASS 2: mc_increase เทียบกับ FINAL ของ week ก่อนหน้า (ไม่ใช่ INITIAL)
-# carry machines = เครื่องที่รันจริงใน prev week (FINAL)
-# new machines   = INITIAL ปัจจุบัน - FINAL prev (ส่วนที่เพิ่มขึ้นจริง)
-# =========================
-# carry-over machines = เครื่องจาก "สัปดาห์ล่าสุดที่ยังรันจริง (pass1 > 0)" ที่ยังอยู่ใน SETUP_GAP_WEEK
-# เดิมใช้ shift(1) มองแค่สัปดาห์ติดกัน → ถ้ามีสัปดาห์ KP=0 คั่นกลาง เครื่องที่กลับมารัน (rerun)
-# จะถูกนับเป็น "เครื่องใหม่" ผิด ทำให้โดน setup penalty ซ้ำและพองจำนวนเครื่องเกินจริง
-# (เช่น item รัน week 25 → ว่าง 26,27 → กลับมา week 28 ควร carry 2 เครื่องเดิม ไม่ใช่ setup ใหม่)
+# CARRY / SETUP CHAIN — เดินทีละสัปดาห์ต่อ _carry_key (item × เครื่อง × เกจ) ในการรันเดียวกัน
 #
-# Lock_MC: สัปดาห์ที่ user กันเครื่องไว้ให้ item ใช้เชื่อมช่วงที่ item ไม่ได้ผลิต (เครื่องยังอุ่น)
-# และจำนวนที่กันไว้เป็นเพดานของเครื่องที่ carry ได้ (กัน 3 → carry 3, ตัวที่ 4 ต้อง setup)
-def _carry_prev_active_ceil(g):
-    prev_vals = []
-    last_week = None
-    last_ceil = 0
-    for wk, c, _cap in zip(
-        g["WEEK"].tolist(),
-        g["_mc_use_ceil_pass1"].tolist(),
-        g["_lock_warm_mc"].tolist(),
-    ):
-        # _cap ไม่ใช่ NaN = สัปดาห์นี้ต่อความอุ่นมาได้เพราะ Lock_MC → ข้ามเกณฑ์ gap ปกติ
-        _lock_used = not pd.isna(_cap)
-        if last_week is not None and ((wk - last_week) <= SETUP_GAP_WEEK or _lock_used):
-            _carry = last_ceil
+# ⚠️ ไม่ได้อ่าน "ผลของการรันแผนรอบก่อน" ใด ๆ (ไม่มีการอ่าน booking_final/production_plan เก่า)
+#    ลูกโซ่นี้เดินภายในข้อมูล booking ชุดเดียวกันของการรันครั้งนั้น → input เดิม รันกี่ครั้งก็ผลเดิม
+#
+# ทำไมต้องเดินเป็นลูกโซ่ (เลิกใช้ 2-pass แบบเวคเตอร์เดิม):
+#   จำนวนเครื่องของสัปดาห์นี้ขึ้นกับ "เครื่องอุ่นที่ยกมาจากสัปดาห์ก่อน" = จำนวนเครื่องสุดท้าย
+#   ของสัปดาห์ก่อน จึงต้องคิดตามลำดับสัปดาห์ ของเดิมคิดแยกกัน 2 รอบ (pass1 = วันเต็ม,
+#   pass2 = หักวัน setup) แล้วเอา setup จาก pass1 มาคู่กับจำนวนเครื่องจาก pass2
+#   → ส่วนต่างโป่งเป็น "carry ผี" ที่ไม่มีเครื่องรองรับ (เช่น 36 เครื่อง = setup 4 + carry 32
+#     ทั้งที่สัปดาห์ก่อนรัน 0 เครื่อง) และสัปดาห์ถัดไปก็ได้ carry น้อยกว่าเครื่องที่รันจริง
+#
+# กฎต่อ 1 แถว (สัปดาห์ w):
+#   warm  = เครื่องสุดท้ายของ "สัปดาห์ล่าสุดที่รันจริง" ถ้ายังอุ่นถึงสัปดาห์นี้
+#           (ห่าง ≤ SETUP_GAP_WEEK หรือมี Lock_MC เชื่อม — Lock_MC เป็นเพดานของ carry)
+#   n     = จำนวนเครื่องที่งานต้องใช้ = ceil(KP / (cap × WORKING_DAY)) — คิดตรง ๆ จากวันทำงาน
+#   setup = max(n − warm, 0) = เครื่องที่ต้องตั้งใหม่, carry = min(warm, n)
+#   ยกไปสัปดาห์หน้า = n + เครื่องที่ user กันไว้สัปดาห์เดียวกัน (_lock_same_week_mc = อีกชุด
+#           ที่อุ่นเหมือนกัน Planning หักจาก pool ไปแล้ว)
+#
+# ⚠️ ไม่หักวัน setup ออกจากกำลังผลิตแล้ว (เดิมหัก แล้ววน n ใหม่จนลงตัว):
+#   การหักวัน setup ทำให้เกิดวงจรป้อนกลับ — เพิ่มเครื่องเพื่อชดเชยวันที่เสียไป แต่เครื่องที่เพิ่ม
+#   ก็ต้อง setup อีก → วันเหลือยิ่งน้อย → ต้องเพิ่มอีก ลู่เข้าที่พื้น 0.5 วัน ทำให้เครื่องบานเป็น
+#   หลายเท่า (เคสจริง: 1466 kg 6 วันทำงาน ควรใช้ 4 เครื่อง กลายเป็น 14 / สัปดาห์ที่วันทำงาน ≤
+#   วัน setup บานถึง 33-36 เครื่อง) และหักโควตา job ทั้งสัปดาห์ของโรงงานด้วย item เดียว
+#   → ตอนนี้บอกตรง ๆ ว่างานนี้ต้องใช้กี่เครื่อง และในนั้นต้องตั้งใหม่กี่เครื่อง เท่านั้น
+#
+# สัปดาห์ baseline (สัปดาห์แรกสุดของข้อมูล + W99 sentinel "งานล้น") ไม่นับ setup:
+#   สัปดาห์แรกไม่มีสัปดาห์ก่อนหน้าในข้อมูลให้ carry (เป็นขอบข้อมูล ไม่ใช่การตั้งเครื่องใหม่จริง)
+#   → ถือว่าเครื่องวิ่งอยู่แล้ว: setup = 0, carry = n → ไม่กินโควตา job
+# =========================
+_wk_num_all = pd.to_numeric(df["WEEK"], errors="coerce")
+_BASELINE_WEEK = int(_wk_num_all[_wk_num_all != 99].min()) if _wk_num_all.notna().any() else -1
+_SENTINEL_WEEK = 99
+
+
+def _solve_mc(kp, cap, wd, warm, charge_setup=True):
+    """เครื่องที่งานต้องใช้ + เครื่องที่ต้องตั้งใหม่ → (n, setup, eff)
+
+    n     = ceil(KP / (cap ต่อวัน × วันทำงาน)) — งานเท่านี้ ต้องใช้เครื่องเท่านี้ จบ
+    setup = เครื่องที่ไม่มีของอุ่นรองรับ = max(n − warm, 0)
+    eff   = วันทำงานของสัปดาห์นั้น (ไม่หักวัน setup — ดูเหตุผลในหัวข้อ CARRY / SETUP CHAIN)
+    charge_setup=False → สัปดาห์ baseline: ถือว่าเครื่องวิ่งอยู่แล้ว setup = 0"""
+    if not (cap > 0 and kp > 0 and wd > 0):
+        return 0, 0, (wd if wd > 0 else 0.0)
+    n = int(np.ceil(kp / (cap * wd)))
+    return n, (max(n - warm, 0) if charge_setup else 0), wd
+
+
+_pos = {_ix: _i for _i, _ix in enumerate(df.index)}
+_ch_use = np.zeros(len(df))
+_ch_ceil = np.zeros(len(df), dtype=int)
+_ch_setup = np.zeros(len(df), dtype=int)
+_ch_warm = np.zeros(len(df), dtype=int)
+_ch_eff = np.zeros(len(df))
+_ch_new = np.zeros(len(df), dtype=bool)
+_n_lock_rows = 0
+
+for _key, _g in df.groupby("_carry_key", sort=False):
+    _last_week, _last_n = None, 0
+    for _ix in _g.sort_values("WEEK").index:
+        _wk = pd.to_numeric(df.at[_ix, "WEEK"], errors="coerce")
+        _wk = int(_wk) if pd.notna(_wk) else -1
+        _kp = float(pd.to_numeric(df.at[_ix, "KP_WEIGHT"], errors="coerce") or 0)
+        _cap = float(pd.to_numeric(df.at[_ix, "_CAP_ADJ"], errors="coerce") or 0)
+        _wd = float(pd.to_numeric(df.at[_ix, "WORKING_DAY"], errors="coerce") or 0)
+        _lock_cap = df.at[_ix, "_lock_warm_mc"]
+        _lock_used = not pd.isna(_lock_cap)
+
+        # เครื่องอุ่นที่ยกมาได้จากสัปดาห์ล่าสุดที่รันจริง
+        _warm = 0
+        if _last_week is not None and ((_wk - _last_week) <= SETUP_GAP_WEEK or _lock_used):
+            _warm = _last_n
             if _lock_used:
-                _carry = min(_carry, int(_cap))   # กันไว้กี่เครื่อง = carry ได้แค่นั้น
-            prev_vals.append(_carry)
-        else:
-            prev_vals.append(np.nan)      # นอก gap / ครั้งแรก → ไม่มี carry (= setup ใหม่)
-        if c > 0:                          # อัปเดต active week เฉพาะสัปดาห์ที่มีเครื่องรันจริง
-            last_week = wk
-            last_ceil = c
-    return pd.Series(prev_vals, index=g.index)
+                _warm = min(_warm, int(_lock_cap))   # กันไว้กี่เครื่อง = carry ได้แค่นั้น
+                _n_lock_rows += 1
 
-df["_prev_mc_use_ceil"] = df.groupby("_carry_key", group_keys=False).apply(_carry_prev_active_ceil)
-df["_mc_increase"] = np.maximum(
-    df["MC_USE_CEIL"] - df["_prev_mc_use_ceil"].fillna(0), 0
-).astype(int)
-df["_has_mc_increase"] = (df["_mc_increase"] > 0) & (~df["_is_new_setup"])
+        _is_baseline = (_wk == _BASELINE_WEEK) or (_wk == _SENTINEL_WEEK)
+        _n, _setup, _eff = _solve_mc(_kp, _cap, _wd, _warm, charge_setup=not _is_baseline)
+        if _is_baseline:
+            _warm = _n          # ถือว่าวิ่งอยู่แล้วทั้งหมด → carry = n, setup = 0
 
-# =========================
-# คำนวณ effective working days
-# - new_setup : ทุกเครื่องต้อง setup → WORKING_DAY - setup_days
-# - mc_increase: เฉพาะเครื่องที่เพิ่ม setup → weighted average
-# - carry       : วันเต็ม
-# =========================
-df["_effective_working_days"] = np.where(
-    df["_is_new_setup"],
-    np.maximum(df["WORKING_DAY"] - df["_setup_days"], 0.5),
-    np.where(
-        df["_has_mc_increase"] & (df["MC_USE_CEIL"] > 0),
-        np.maximum(df["WORKING_DAY"] - (df["_setup_days"] * df["_mc_increase"] / df["MC_USE_CEIL"]), 0.5),
-        df["WORKING_DAY"]
-    )
+        _p = _pos[_ix]
+        _ch_ceil[_p] = _n
+        _ch_setup[_p] = _setup
+        _ch_warm[_p] = min(_warm, _n)          # carry จริงไม่เกินเครื่องที่รันสัปดาห์นี้
+        _ch_eff[_p] = _eff
+        _ch_use[_p] = (_kp / (_cap * _eff)) if (_cap > 0 and _eff > 0) else 0.0
+        # setup ใหม่ทั้งตัว = ไม่มีเครื่องอุ่นเลย (ให้ตรงกับ setup = n) — ใช้ตัดสินใจ job
+        # ที่ Planning.py / order_color_advisor.py ซึ่งอ่าน _is_new_setup คู่กับ _mc_increase
+        _ch_new[_p] = bool(_n > 0 and _setup >= _n and not _is_baseline)
+
+        if _n > 0:
+            _last_week = _wk
+            # เครื่องที่กันไว้สัปดาห์เดียวกัน = อีกชุดหนึ่ง → บวกเพิ่ม ไม่ใช่ทับ
+            _last_n = _n + int(pd.to_numeric(df.at[_ix, "_lock_same_week_mc"], errors="coerce") or 0)
+
+df["MC_USE"] = _ch_use
+df["MC_USE_CEIL"] = _ch_ceil
+df["_effective_working_days"] = _ch_eff
+df["_prev_mc_use_ceil"] = _ch_warm          # = carry (เครื่องอุ่นที่ยกมาจริง) — ตรงกับ carry ที่รายงาน
+df["_mc_increase"] = _ch_setup
+df["_is_new_setup"] = _ch_new
+df["_has_mc_increase"] = (_ch_setup > 0) & (~_ch_new)
+
+print(
+    f"[CARRY CHAIN] คิด carry/setup แบบลูกโซ่รายสัปดาห์: {len(df)} แถว"
+    f" | ตั้งเครื่องใหม่ {int((_ch_setup > 0).sum())} แถว (รวม {int(_ch_setup.sum())} เครื่อง)"
+    f" | สูงสุดในแถวเดียว {int(_ch_setup.max()) if len(_ch_setup) else 0} เครื่อง"
+    f" | carry + setup = จำนวนเครื่อง ครบทุกแถว"
+    f" | baseline ไม่นับ setup: W{_BASELINE_WEEK} + W{_SENTINEL_WEEK}"
+    f" | ใช้เพดาน Lock_MC {_n_lock_rows} แถว"
 )
-
-df["MC_USE"] = np.where(
-    (df["_CAP_ADJ"] > 0) & (df["_effective_working_days"] > 0),
-    df["KP_WEIGHT"] / (df["_CAP_ADJ"] * df["_effective_working_days"]),
-    0
-)
-df["MC_USE_CEIL"] = np.ceil(df["MC_USE"]).fillna(0).astype(int)
-
-# =========================
-# แถวที่ Lock_MC เชื่อมความอุ่นมา: วนหาจุดลงตัวให้ carry/setup ตรงกับที่ user กันไว้จริง
-#
-# สูตร 2-pass ด้านบนคิด _mc_increase จาก ceil ตอน INITIAL แต่ ceil สุดท้ายพองขึ้น
-# (เพราะโดนหักวัน setup) → ส่วนต่างตกไปเป็น carryover ที่ไม่มีตัวตน เช่น กันไว้ 3 เครื่อง
-# แต่รายงาน carry 4 → เกินจำนวนที่กันไว้ ซึ่งขัดกับความหมายของ Lock_MC โดยตรง
-#
-# จึงวนซ้ำเฉพาะแถวพวกนี้จน n = carry + setup ลงตัว (n เพิ่มทางเดียว มีเพดาน eff ≥ 0.5 → ลู่เข้าเสมอ)
-# ⚠️ แถวอื่นปล่อยตามสูตรเดิม — บั๊กเครื่องผีของเดิมยังอยู่ ตั้งใจไม่แตะเพื่อไม่ให้ตัวเลขทั้งไฟล์ขยับ
-# =========================
-_lk_fix = (
-    df["_lock_warm_mc"].notna()
-    & (df["_CAP_ADJ"] > 0)
-    & (df["KP_WEIGHT"] > 0)
-    & (df["WORKING_DAY"] > 0)
-)
-for _i in df.index[_lk_fix]:
-    _kp = float(df.at[_i, "KP_WEIGHT"])
-    _cap = float(df.at[_i, "_CAP_ADJ"])
-    _wd = float(df.at[_i, "WORKING_DAY"])
-    _sd = float(df.at[_i, "_setup_days"])
-    _warm = int(pd.to_numeric(df.at[_i, "_prev_mc_use_ceil"], errors="coerce") or 0)
-    _n = int(np.ceil(_kp / (_cap * _wd)))
-    _eff = _wd
-    for _ in range(50):
-        _inc = max(_n - _warm, 0)
-        _eff = max(_wd - (_sd * _inc / _n), 0.5) if (_n > 0 and _inc > 0) else _wd
-        _n2 = int(np.ceil(_kp / (_cap * _eff)))
-        if _n2 == _n:
-            break
-        _n = _n2
-    _use = _kp / (_cap * _eff)
-    _n = int(np.ceil(_use))
-    _inc = max(_n - _warm, 0)
-    df.at[_i, "_effective_working_days"] = _eff
-    df.at[_i, "MC_USE"] = _use
-    df.at[_i, "MC_USE_CEIL"] = _n
-    df.at[_i, "_mc_increase"] = _inc
-    df.at[_i, "_has_mc_increase"] = bool(_inc > 0)
-    print(
-        f"[LOCK WARM] {df.at[_i, 'ITEM_CODE']} {df.at[_i, 'MC_GROUP']} W{int(df.at[_i, 'WEEK'])}:"
-        f" {_n} เครื่อง = carry {_n - _inc} (กันไว้ {int(df.at[_i, '_lock_warm_mc'])}) + setup {_inc}"
-    )
 
 # เก็บ CAP หลังปรับ 20/24 ไว้ก่อน drop — ใช้เป็นคอลัมน์ CAP ในชีท AVA_MC_ITEM
 _CAP_ADJ_SNAP = (
@@ -988,7 +1051,7 @@ _CAP_ADJ_SNAP = (
 )
 
 # drop temp columns
-df = df.drop(columns=["_CAP_ADJ", "_mc_use_ceil_pass1"])
+df = df.drop(columns=["_CAP_ADJ"])
 
 # =========================
 # TOTAL MC
@@ -1260,6 +1323,59 @@ if not summary.empty and "FACTORY" in summary.columns:
         print(f"🔧 ตัดแถว non-pool ซ้ำซ้อน {int(_dup_np.sum())} แถว (มี pool row แล้ว)")
         summary = summary[~_dup_np].reset_index(drop=True)
 
+# 🔢 MC_Total override: เขียนทับ TOTAL_MC ของสัปดาห์ที่ user กำหนดเอง แล้วคิด remain ใหม่
+#    ทำ "หลัง" ตัดแถวซ้ำ เพื่อให้ยอดที่ user เห็น (= ผลรวมของ CAT+เกจ+สัปดาห์) ตรงกับที่กรอก
+#    หลายพูล/โรงงาน → กระจายตามสัดส่วนเครื่องเดิม (เศษให้พูลใหญ่สุด) เพราะพูลแยกกันใช้แทนกันไม่ได้
+#    _MC_TOTAL_DELTA เก็บ "ส่วนต่าง" ไว้ให้ชีทรายงาน AVA_MC (ซึ่งใช้ Total mc จาก MasterMC ตรง ๆ)
+#    ปรับตาม — ใช้ delta แทนยอดรวม เพราะ override อาจระบุแค่โรงงานเดียว แต่ชีทนั้นรวมทุกโรงงาน
+_MC_TOTAL_DELTA: dict = {}   # (week, cat_upper, gauge_norm) → ส่วนต่างเครื่อง
+if _MC_TOTAL_OVERRIDE and not summary.empty:
+    def _split_total(new_total, olds):
+        """กระจาย new_total ให้แต่ละพูลตามสัดส่วนของ olds (largest remainder)
+        olds รวมกัน = 0 → กระจายเท่า ๆ กัน"""
+        n = len(olds)
+        if n == 1:
+            return [new_total]
+        base = sum(olds)
+        if base <= 0:
+            shares = [new_total / n] * n
+        else:
+            shares = [new_total * o / base for o in olds]
+        out = [int(s) for s in shares]
+        rest = new_total - sum(out)
+        # เศษที่เหลือ → ให้พูลที่เศษทศนิยมมากสุดก่อน (เท่ากันให้พูลใหญ่กว่า)
+        order = sorted(range(n), key=lambda i: (shares[i] - out[i], olds[i]), reverse=True)
+        for i in range(rest):
+            out[order[i % n]] += 1
+        return out
+
+    _mt_cat_u = summary["MC_CAT"].astype(str).str.strip().str.upper()
+    _mt_g_n = summary["GUAGE"].apply(_norm_gauge_ava)
+    _mt_fac_u = summary["FACTORY"].astype(str).str.strip().str.upper()
+    _mt_week_i = summary["WEEK"].astype(int)
+    _mt_applied = 0
+    for (_ov_w, _ov_cat, _ov_g, _ov_fac), _ov_total in sorted(_MC_TOTAL_OVERRIDE.items()):
+        _mask = (_mt_week_i == _ov_w) & (_mt_cat_u == _ov_cat) & (_mt_g_n == _ov_g)
+        if _ov_fac:
+            _mask &= (_mt_fac_u == _ov_fac)
+        _idx = list(summary.index[_mask])
+        if not _idx:
+            print(f"⚠️ MC_Total: ไม่พบแถว W{_ov_w} {_ov_cat} เกจ {_ov_g}"
+                  f"{' โรงงาน ' + _ov_fac if _ov_fac else ''} → ข้าม")
+            continue
+        _olds = [int(summary.at[i, "TOTAL_MC"] or 0) for i in _idx]
+        for _i, _new in zip(_idx, _split_total(int(_ov_total), _olds)):
+            summary.at[_i, "TOTAL_MC"] = _new
+            summary.at[_i, "TOTAL_MC_REMAIN"] = _new - int(summary.at[_i, "MC_USE_CEIL"] or 0)
+        _dk = (_ov_w, _ov_cat, _ov_g)
+        _MC_TOTAL_DELTA[_dk] = _MC_TOTAL_DELTA.get(_dk, 0) + int(_ov_total) - sum(_olds)
+        _mt_applied += 1
+        print(f"🔢 MC_Total: W{_ov_w} {_ov_cat} เกจ {_ov_g}"
+              f"{' โรงงาน ' + _ov_fac if _ov_fac else ''} → {sum(_olds)} เป็น {int(_ov_total)} เครื่อง"
+              f"{' (กระจาย ' + '+'.join(str(int(summary.at[i, 'TOTAL_MC'])) for i in _idx) + ')' if len(_idx) > 1 else ''}")
+    if _mt_applied:
+        print(f"🔢 MC_Total: ปรับจำนวนเครื่องทั้งหมด {_mt_applied} รายการ")
+
 # เครื่องที่กันไว้ (POLY/COTTON) ต่อ MC_CAT+GUAGE — ให้หน้าเว็บโชว์แยกว่าเครื่องไม่ได้หาย
 # (เครื่องกลุ่มนี้อยู่ใน sub-pool ใช้แทนงานปกติไม่ได้ จึงไม่รวมใน TOTAL_MC ปกติ)
 _rsv_acc: dict = {}
@@ -1418,6 +1534,15 @@ _ava_base = _ava_base.merge(
 )
 _ava_base["Total mc"] = _ava_base["Total mc"].fillna(0)
 
+# MC_Total override: แปลง key ของ override ให้ตรงกับ _CATKEY ของชีทนี้ (SYN→DOUBLE-30, SINGEL→SINGLE)
+_ava_delta_by_wk: dict = {}
+for (_dw, _dcat, _dg), _dv in _MC_TOTAL_DELTA.items():
+    if not _dv:
+        continue
+    _dck = _AVA_CAT_MAP.get(_dcat, _dcat).replace("SINGEL", "SINGLE")
+    _slot_d = _ava_delta_by_wk.setdefault(int(_dw), {})
+    _slot_d[(_dck, str(_dg).strip())] = _slot_d.get((_dck, str(_dg).strip()), 0) + _dv
+
 _ava_blocks = []
 for _wk in ava_weeks:
     _usew = _use_all[_use_all["WEEK"] == _wk][["_CATKEY", "_GKEY", "MC_USE_Cat"]]
@@ -1426,6 +1551,13 @@ for _wk in ava_weeks:
     _m = _m.merge(_kpw, on=["_CATKEY", "_GKEY"], how="left")
     _m["MC_USE_Cat"] = _m["MC_USE_Cat"].fillna(0)
     _m["KP_Cat"] = _m["KP_Cat"].fillna(0)
+    # จำนวนเครื่องของสัปดาห์นี้ = Total mc (MasterMC) + ส่วนต่างจากชีท MC_Total
+    _dwk = _ava_delta_by_wk.get(int(_wk))
+    if _dwk:
+        _m["Total mc"] = _m["Total mc"] + [
+            _dwk.get((_ck, _gk), 0) for _ck, _gk in zip(_m["_CATKEY"], _m["_GKEY"])
+        ]
+        _m["Total mc"] = _m["Total mc"].clip(lower=0)
     # Dif/%ava คิดราย gauge: Total mc − MC_USE_Cat
     _m["Dif"] = _m["Total mc"] - _m["MC_USE_Cat"]
     _m["%ava"] = (_m["Dif"] / _m["Total mc"]).where(_m["Total mc"] != 0)
@@ -1541,6 +1673,13 @@ for _wk in ava_weeks:
     _m["KP"] = _m["KP"].fillna(0)
     _m["MC_USE"] = _m["MC_USE"].fillna(0)
     _m["MC_USE_Cat"] = _m["MC_USE_Cat"].fillna(0)
+    # จำนวนเครื่องของสัปดาห์นี้ + ส่วนต่างจากชีท MC_Total (ให้ตรงกับชีท AVA_MC)
+    _dwk_i = _ava_delta_by_wk.get(int(_wk))
+    if _dwk_i:
+        _m["Total mc"] = _m["Total mc"] + [
+            _dwk_i.get((_ck, _gk), 0) for _ck, _gk in zip(_m["_CATKEY"], _m["_GKEY"])
+        ]
+        _m["Total mc"] = _m["Total mc"].clip(lower=0)
     # Dif/%ava = ระดับ MC_CAT+GUAGE (เครื่องว่างของกลุ่ม ไม่ใช่ของ item)
     _m["Dif"] = _m["Total mc"] - _m["MC_USE_Cat"]
     _m["%ava"] = (_m["Dif"] / _m["Total mc"]).where(_m["Total mc"] != 0)

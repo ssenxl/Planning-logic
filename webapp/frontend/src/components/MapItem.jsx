@@ -136,6 +136,19 @@ export default function MapItem({ embedded = false }) {
     }
   }
 
+  // หยุดงานที่กำลังรัน — backend จะ kill ทั้ง process tree (run_all.py + step ลูก)
+  async function stopRun() {
+    if (!window.confirm('ยืนยันหยุดการรัน? งานที่กำลังทำอยู่จะถูกยกเลิกทันที')) return
+    setMsg('')
+    try {
+      const r = await api.runStop()
+      setMsg(r.message)
+      setTimeout(loadRunStatus, 300)
+    } catch (e) {
+      setMsg('สั่งหยุดไม่ได้: ' + e.message)
+    }
+  }
+
   const colData = useMemo(() => {
     if (!grid || !openCol) return null
     return columnFilterData(grid, filters, search, openCol.ci)
@@ -187,6 +200,7 @@ export default function MapItem({ embedded = false }) {
 
         <div className="map-runbox">
           <span className={'badge ' + (isRunning ? 'run' : 'idle')}>{runLabel}</span>
+          {isRunning && <button className="stopbtn" onClick={stopRun}>⛔ หยุดรัน</button>}
           <small>ปุ่มนี้จะรันไฟล์ <b>MapItem.py</b> เพื่อสร้าง/อัปเดตผลลัพธ์ map</small>
         </div>
 

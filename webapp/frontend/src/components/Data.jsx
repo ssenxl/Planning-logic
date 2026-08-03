@@ -154,6 +154,19 @@ export default function Data() {
     }
   }
 
+  // หยุดงานที่กำลังรัน — backend จะ kill ทั้ง process tree (run_all.py + step ลูก)
+  async function stopRun() {
+    if (!window.confirm('ยืนยันหยุดการรัน? งานที่กำลังทำอยู่จะถูกยกเลิกทันที')) return
+    setMsg('')
+    try {
+      const r = await api.runStop()
+      setMsg(r.message)
+      setTimeout(loadRunStatus, 300)
+    } catch (e) {
+      setMsg('สั่งหยุดไม่ได้: ' + e.message)
+    }
+  }
+
   async function runGroup(groupId) {
     setMsg('')
     try {
@@ -259,6 +272,7 @@ export default function Data() {
 
             <div className="map-runbox">
               <span className={'badge ' + (isRunning ? 'run' : 'idle')}>{runLabel}</span>
+              {isRunning && <button className="stopbtn" onClick={stopRun}>⛔ หยุดรัน</button>}
               <small>ผู้ใช้สามารถกด <b>ดึงข้อมูลล่าสุด</b> เพื่อให้ระบบรันขั้นดึงข้อมูลจาก DB ได้ทันที</small>
             </div>
 

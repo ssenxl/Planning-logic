@@ -90,6 +90,8 @@ BOOKING_DIR = BASE_DIR / "Booking"
 today = datetime.now()
 OUTPUT_FILE = DATA_PLAN_DIR / f"production_plan_{today.day}-{today.month}-{today.year+543}_{today.hour:02d}{today.minute:02d}.xlsx"
 SETUP_DAYS = 3
+# โรงอ้อมน้อย (OMNOI): ทุก item ใช้ setup เท่ากันหมด ไม่ดู prefix ITEM / POLY / DTY
+OMNOI_SETUP_DAYS = 3
 SETUP_GAP_WEEK = 3
 # Week ที่ไม่ต้องการวางแผน (เช่น สัปดาห์หยุด/ปิดโรงงาน)
 SKIP_WEEKS = {}
@@ -147,6 +149,21 @@ column_mapping = {
 }
 
 orders = orders.rename(columns=column_mapping)
+
+# แถวที่ Order.py กรองออกก่อนวางแผน (ORDER_TYPE/MC_GROUP ต้องห้าม) — ไม่เคยเข้า planning loop
+# ต้องเอามาโชว์ในชีท UNPLANNED ไม่งั้นงานพวกนี้หายเงียบทั้งที่ยังมีของค้าง
+# rename ด้วย column_mapping ชุดเดียวกับ orders เพื่อให้คอลัมน์ตรงกันตอนรวมเป็น DataFrame เดียว
+_EXCLUDED_ORDER_FILE = DATA_PLAN_DIR / "order_excluded.xlsx"
+_excluded_orders = pd.DataFrame()
+try:
+    if _EXCLUDED_ORDER_FILE.exists():
+        _excluded_orders = pd.read_excel(_EXCLUDED_ORDER_FILE)
+        _excluded_orders.columns = _excluded_orders.columns.str.strip()
+        _excluded_orders = _excluded_orders.rename(columns=column_mapping)
+        print(f"📄 order ที่ถูกกรองออกก่อนวางแผน: {len(_excluded_orders)} แถว")
+except Exception as _e_exc:
+    print(f"⚠️ อ่าน {_EXCLUDED_ORDER_FILE.name} ไม่ได้: {_e_exc}")
+    _excluded_orders = pd.DataFrame()
 summary_mc = pd.read_excel(MC_REMAIN_FILE, sheet_name="SUMMARY_MC_REMAIN")
 detail_mc = pd.read_excel(MC_REMAIN_FILE, sheet_name="DETAIL")  # โหลด DETAIL
 fd6_check = detail_mc[detail_mc["ITEM_CODE"].astype(str).str.upper().str.strip() == "FD6GNTLG27/58A0"]
@@ -388,6 +405,56 @@ except Exception as _e_lock:
     print(f"⚠️ ไม่สามารถโหลด Lock_MC sheet: {_e_lock}")
 
 
+# MC_Total: จำนวนเครื่องทั้งหมดของ (สัปดาห์ + MC_CAT + เกจ) ที่ user กำหนดเอง
+# Source: MasterMC.xlsx sheet "MC_Total" — AVA_MC เขียนค่านี้ลง SUMMARY_MC_REMAIN ให้แล้ว
+# ที่นี่ใช้เฉพาะ "เส้นทาง fallback" ของ _get_available_mc (สัปดาห์ที่ไม่มีแถวใน summary
+# → เดิมรวม Total MC จาก MasterMC ซึ่งไม่รู้จัก override) ไม่งั้นสัปดาห์นั้นจะได้ยอดเก่า
+_MC_TOTAL_OVERRIDE: dict = {}   # (week, cat_upper, gauge_norm) → total (รวมทุกโรงงาน)
+try:
+    _mt_df_plan = pd.read_excel(_MASTER_MC_PATH, sheet_name="MC_Total")
+    _mt_df_plan.columns = _mt_df_plan.columns.str.strip()
+
+    def _mt_int_plan(v):
+        # ทนค่าว่าง/NaN/ทศนิยม/สตริง (นิยามซ้ำ ไม่พึ่ง _safe_int เผื่อบล็อก Lock_MC พังก่อน)
+        try:
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return None
+            s = str(v).strip()
+            if not s or s.lower() == "nan":
+                return None
+            return int(float(s))
+        except (ValueError, TypeError):
+            return None
+
+    _mt_by_fac: dict = {}   # (week, cat, gauge) → ผลรวมของแถวที่ระบุโรงงาน
+    for _, _mt_r in _mt_df_plan.iterrows():
+        _mt_w = _mt_int_plan(_mt_r.get("Week"))
+        _mt_tot = _mt_int_plan(_mt_r.get("Total MC"))
+        _mt_c = str(_mt_r.get("MC_CAT", "") or "").strip().upper()
+        _mt_g_raw = str(_mt_r.get("Guage", "") or "").strip()
+        _mt_g = _mt_g_raw.upper().replace("GAUGE", "").replace("G", "").strip()
+        if _mt_w is None or _mt_tot is None or _mt_tot < 0 or not _mt_c or not _mt_g:
+            continue
+        _mt_fac = str(_mt_r.get("Factory", "") or "").strip().upper().replace("NAN", "")
+        # Week To (ไม่บังคับ): ระบุช่วงสัปดาห์ที่ใช้ยอดเดียวกัน — ไม่มี/น้อยกว่า Week = สัปดาห์เดียว
+        _mt_w_to = _mt_int_plan(_mt_r.get("Week To"))
+        _mt_w_end = _mt_w_to if (_mt_w_to is not None and _mt_w_to >= _mt_w) else _mt_w
+        for _mt_wk in range(_mt_w, _mt_w_end + 1):
+            _mt_k = (_mt_wk, _mt_c, _mt_g)
+            if _mt_fac:
+                # ระบุโรงงาน = ยอดของโรงงานนั้น → บวกรวมกันเป็นยอดของ CAT+เกจ
+                _mt_by_fac[_mt_k] = _mt_by_fac.get(_mt_k, 0) + _mt_tot
+            else:
+                # ไม่ระบุ = ยอดรวมทั้ง CAT+เกจ อยู่แล้ว → ใช้ค่านี้เลย (ชนะแถวที่ระบุโรงงาน)
+                _MC_TOTAL_OVERRIDE[_mt_k] = _mt_tot
+    for _mt_k, _mt_v in _mt_by_fac.items():
+        _MC_TOTAL_OVERRIDE.setdefault(_mt_k, _mt_v)
+    if _MC_TOTAL_OVERRIDE:
+        print(f"✅ MC_Total override: {_MC_TOTAL_OVERRIDE}")
+except Exception as _e_mt_plan:
+    print(f"⚠️ ไม่สามารถโหลด MC_Total sheet: {_e_mt_plan}")
+
+
 def _lock_warm_weeks_plan(item, mc_group, gauge) -> dict:
     """{week: จำนวนเครื่องที่ lock ไว้ให้ item นี้} — รวม lock ที่ระบุ MC ตรงกับที่เว้นว่าง
 
@@ -452,6 +519,31 @@ def _bridge_locks(key, current_idx):
             f" → ไม่ setup ใหม่ที่ idx {current_idx}"
         )
     return cap
+
+
+def _same_week_lock_mc(key, prod_idx) -> int:
+    """จำนวนเครื่องที่ Lock_MC กันไว้ให้ item ใน "สัปดาห์ที่ item ผลิตเอง" (idx = prod_idx)
+
+    ต่างจาก _bridge_locks ที่ใช้ล็อกเชื่อมช่วงที่ item หยุดผลิต — ล็อกที่ทับสัปดาห์ผลิต
+    เป็นเครื่องอีกชุดที่กันไว้เพิ่มจากเครื่องที่รันอยู่ (_LOCK_MC_MAP หักออกจาก pool
+    ไปแล้วโดยไม่สนว่าสัปดาห์นั้นผลิตหรือไม่) → เครื่องชุดนี้ยังอุ่น ต้องบวกเข้ากับ
+    carry-over ไม่ใช่ปล่อยหายแล้วให้สัปดาห์ถัดไป setup ใหม่
+
+    กติกาเดียวกับคอลัมน์ _lock_same_week_mc ใน AVA_MC.py (ฝั่ง OLD)
+    """
+    if not _LOCK_ITEM_WARM or prod_idx is None:
+        return 0
+    if not isinstance(key, tuple) or not key:
+        return 0
+    weeks = _lock_warm_weeks_plan(
+        key[0],
+        key[1] if len(key) > 1 else "",
+        key[2] if len(key) > 2 else "",
+    )
+    for _w, _c in weeks.items():
+        if week_index(_w) == prod_idx:
+            return int(_c or 0)
+    return 0
 
 # MC Special: per-(Factory, MC_CAT, MC, Gauge) → POLY/COTTON machine count
 # Source: MasterMC.xlsx sheet "MC Special"
@@ -1516,6 +1608,8 @@ def get_setup_days_for_item(material_content: str = "", yarn_used: str = "", mc_
 
     Logic:
 
+    - Factory OMNOI (อ้อมน้อย) → OMNOI_SETUP_DAYS ทุก item เสมอ (ไม่ดู prefix / POLY / DTY)
+
     - Type SINGLE (เช็คจาก MC_TYPE_MAP[mc_group]) → ใช้ prefix ของ ITEM code จับคู่แบบ
 
       longest-prefix match จากชีท "Item Setup" (ไม่ดูตรรกะ POLY/DTY เดิม)
@@ -1535,6 +1629,13 @@ def get_setup_days_for_item(material_content: str = "", yarn_used: str = "", mc_
     """
 
     _mc_u = str(mc_group).strip().upper() if mc_group else ""
+
+    # โรงอ้อมน้อย → setup คงที่ทุก item (ด่านแรก ชนะทุกกฎอื่น)
+    # MasterMC ไม่มี MC group ที่อยู่ 2 โรงงาน → ระบุ factory จาก mc_group ได้เลย ไม่ต้องใช้ gauge
+
+    if _mc_u and _mc_factory_map.get((_mc_u, ""), "") in ("OMNOI", "OM"):
+
+        return OMNOI_SETUP_DAYS
 
     # เฉพาะ Type SINGLE → ใช้ prefix ของ ITEM (ไม่ดูตรรกะเดิม)
     # ครอบคลุม "SINGLE", "SINGLE (TUBE)" และเผื่อสะกด "SINGEL"
@@ -4110,6 +4211,9 @@ def get_actual_mc_remain(mc_group, week, gauge, item_code=None, allow_negative=F
     if mc_rows.empty:
 
         # Fallback: รวม Total MC จาก master_mc ทุก MC ใน Type_1+Gauge
+        # (MC_Total ของสัปดาห์นี้ ถ้ามี ให้ชนะค่าจาก master — ไม่งั้นสัปดาห์ที่ไม่มีแถวใน
+        #  summary จะได้จำนวนเครื่องเก่า ขัดกับที่ user กำหนดไว้)
+        _mt_ov = _MC_TOTAL_OVERRIDE.get((int(week), type_1, gauge_str))
 
         _mm_filter = (
 
@@ -4121,7 +4225,7 @@ def get_actual_mc_remain(mc_group, week, gauge, item_code=None, allow_negative=F
 
         _mm_rows = master_mc[_mm_filter]
 
-        if _mm_rows.empty:
+        if _mm_rows.empty and _mt_ov is None:
             # gauge นี้ไม่มีใน master (เช่น gauge ใหม่จาก cylinder change)
             # ต้องตรวจ cylinder adjustments ก่อน return 0
             _cyl_adj_only = sum(
@@ -4130,7 +4234,10 @@ def get_actual_mc_remain(mc_group, week, gauge, item_code=None, allow_negative=F
             )
             return max(0, _cyl_adj_only)
 
-        base_remain = int(pd.to_numeric(_mm_rows["Total MC"], errors="coerce").fillna(0).sum())
+        base_remain = (
+            int(_mt_ov) if _mt_ov is not None
+            else int(pd.to_numeric(_mm_rows["Total MC"], errors="coerce").fillna(0).sum())
+        )
 
     else:
 
@@ -6647,6 +6754,8 @@ def detect_and_fill_unused_capacity(plans_list, orders_df, summary_mc):
 
                 additional_plan['COLOR_DESC'] = str(order.get('COLOR_DESC', '')).strip()
 
+                additional_plan['LINE_REMARK'] = str(order.get('LINE_REMARK', '')).strip()
+
                 additional_plans.append(additional_plan)
 
                 unused_qty -= produce_qty
@@ -7302,6 +7411,42 @@ weekly_job_usage_old = {wk: dict(mc_dict) for wk, mc_dict in weekly_job_usage.it
 
 
 # =========================
+# ชีท UNPLANNED — คอลัมน์ชุดเดิม + DATE_IN เท่านั้น (ไม่เอาทุกคอลัมน์ของ order)
+# =========================
+UNPLANNED_COLS = ["SC_SO_NO", "ITEM_CODE", "MC_GROUP", "GAUGE", "ORDERS_QTY",
+                  "PENDING_PLAN", "FG_WEEK", "DATE_IN", "UNPLANNED_QTY", "REASON"]
+
+
+def _unplanned_row(order, reason, qty=None, gauge=None) -> dict:
+    """สร้างแถวชีท UNPLANNED จาก order (pandas Series) — ดึงเฉพาะคอลัมน์ใน UNPLANNED_COLS
+
+    qty   = จำนวนที่ยังไม่ได้วาง (ไม่ส่ง = ใช้ Pending Plan ทั้งก้อน)
+    gauge = เกจที่ต้องการระบุเอง (ไม่ส่ง = ใช้ MC_GUAGE ของ order)
+    """
+    _pend = pd.to_numeric(order.get("Pending Plan", 0), errors="coerce")
+    _pend = 0.0 if pd.isna(_pend) else float(_pend)
+    # 'MC GROUP' (เว้นวรรค) เป็นคอลัมน์ที่ Planning สร้างเพิ่มให้ orders เท่านั้น
+    # แถวที่มาจาก order_excluded.xlsx เป็นข้อมูลดิบ มีแค่ 'MC_GROUP' (ขีดล่าง) → ต้อง fallback
+    _mc = order.get("MC GROUP", "")
+    if pd.isna(_mc) or str(_mc).strip().lower() in ("", "nan", "none"):
+        _mc = order.get("MC_GROUP", "")
+    if pd.isna(_mc):
+        _mc = ""
+    return {
+        "SC_SO_NO": str(order.get("SO_NO", order.get("SC/SO NO", ""))).strip(),
+        "ITEM_CODE": order.get("Item Code", ""),
+        "MC_GROUP": str(_mc).strip().upper(),
+        "GAUGE": order.get("MC_GUAGE", "") if gauge is None else gauge,
+        "ORDERS_QTY": order.get("Orders.Qty", ""),
+        "PENDING_PLAN": _pend,
+        "FG_WEEK": order.get("FG Week", ""),
+        "DATE_IN": order.get("DATE_IN", ""),
+        "UNPLANNED_QTY": _pend if qty is None else qty,
+        "REASON": reason,
+    }
+
+
+# =========================
 # PLANNING LOOP (รันรอบเดียว — S9 เหลือเฉพาะ routing ของ item ใน "S9 Only")
 # =========================
 def _run_planning_loop() -> list:
@@ -7310,7 +7455,7 @@ def _run_planning_loop() -> list:
     global cylinder_change_count, cylinder_adjustments, _cylinder_change_for_item
     global _cylinder_change_start_map, _cylinder_change_mc_count, _cylinder_change_done
     global _carry_cyl_pending, _current_order_rdd_idx, _s9_weekly_usage
-    global orders, sc_so_no, plans, _skip_no_cap, _skip_no_mc_group, _skip_no_factory, _skip_not_in_master
+    global orders, sc_so_no, plans, _skip_no_cap, _skip_no_mc_group, _skip_no_factory, _skip_not_in_master, _skip_qty_short
 
     # Reset state ที่ถูก init ก่อน line 6737 (ต้อง reset ทุก pass)
     _type_special_weekly_usage = {}
@@ -7503,6 +7648,8 @@ def _run_planning_loop() -> list:
     _PLANS_REF = plans
 
     _skip_no_cap = []  # เก็บ item ที่ไม่มี cap เพื่อแสดงรวมท้ายสุด
+
+    _skip_qty_short = []  # เก็บ order ที่เข้า loop วางแผนแล้วแต่วางไม่ครบ (เครื่องไม่พอ/หมดสัปดาห์/ชน safety guard)
 
     _skip_no_mc_group = []  # เก็บ order ที่ไม่มี MC GROUP → ไม่วางแผน
 
@@ -7750,17 +7897,7 @@ def _run_planning_loop() -> list:
 
         if not _ord_mc_grp or _ord_mc_grp in ("", "NAN", "NONE"):
 
-            _skip_no_mc_group.append({
-
-                "SC_SO_NO": sc_so_no, "ITEM_CODE": item,
-
-                "ORDERS_QTY": order_qty, "PENDING_PLAN": pending_plan,
-
-                "FG_WEEK": order.get("FG Week", ""),
-
-                "REASON": "ไม่มี MC GROUP"
-
-            })
+            _skip_no_mc_group.append(_unplanned_row(order, "ไม่มี MC GROUP"))
 
             continue
 
@@ -7770,30 +7907,20 @@ def _run_planning_loop() -> list:
 
         if not _ord_factory or _ord_factory in ("", "UNKNOWN"):
 
-            _skip_no_factory.append({
-
-                "SC_SO_NO": sc_so_no, "ITEM_CODE": item,
-
-                "MC_GROUP": _ord_mc_grp, "ORDERS_QTY": order_qty,
-
-                "PENDING_PLAN": pending_plan, "FG_WEEK": order.get("FG Week", ""),
-
-                "REASON": f"MC GROUP '{_ord_mc_grp}' ไม่มี FACTORY_TYPE"
-
-            })
+            _skip_no_factory.append(
+                _unplanned_row(order, f"MC GROUP '{_ord_mc_grp}' ไม่มี FACTORY_TYPE")
+            )
 
             continue
 
         # ถ้า (MC GROUP, Gauge) ไม่มีใน MasterMC → เก็บไว้แจ้ง ไม่วางแผน
         _ord_gauge_norm = _normalize_gauge(order.get("MC_GUAGE", ""))
         if (_ord_mc_grp, _ord_gauge_norm) not in _VALID_MC_GAUGE_SET:
-            _skip_not_in_master.append({
-                "SC_SO_NO": sc_so_no, "ITEM_CODE": item,
-                "MC_GROUP": _ord_mc_grp, "GAUGE": _ord_gauge_norm,
-                "ORDERS_QTY": order_qty, "PENDING_PLAN": pending_plan,
-                "FG_WEEK": order.get("FG Week", ""),
-                "REASON": f"MC GROUP '{_ord_mc_grp}' Gauge '{_ord_gauge_norm}' ไม่มีใน MasterMC"
-            })
+            _skip_not_in_master.append(_unplanned_row(
+                order,
+                f"MC GROUP '{_ord_mc_grp}' Gauge '{_ord_gauge_norm}' ไม่มีใน MasterMC",
+                gauge=_ord_gauge_norm,
+            ))
             continue
 
         # ถ้า Pending Plan = 0 แสดงว่า order นี้วางแผนครบแล้ว ไม่ต้องวางแผนซ้ำ
@@ -8238,6 +8365,10 @@ def _run_planning_loop() -> list:
 
             else:
 
+                _skip_qty_short.append(_unplanned_row(
+                    order, "ปฏิทินไม่มีข้อมูลถึง TODAY+2 สัปดาห์ (LAB-DIP)", qty=qty_left
+                ))
+
                 continue
 
 
@@ -8263,6 +8394,10 @@ def _run_planning_loop() -> list:
                 order_week = calendar_week.iloc[TODAY_IDX + 2]["WEEK"]
 
             else:
+
+                _skip_qty_short.append(_unplanned_row(
+                    order, "ปฏิทินไม่มีข้อมูลถึง TODAY+2 สัปดาห์ (SC-ORDERS)", qty=qty_left
+                ))
 
                 continue
 
@@ -8322,11 +8457,19 @@ def _run_planning_loop() -> list:
 
         else:
 
+            _skip_qty_short.append(_unplanned_row(
+                order, f"ORDER_TYPE '{order_type}' ไม่รองรับ (routing ไม่ครอบคลุม)", qty=qty_left
+            ))
+
             continue
 
 
 
         if order_week is None:
+
+            _skip_qty_short.append(_unplanned_row(
+                order, "คำนวณสัปดาห์เริ่มผลิตไม่ได้ (order_week=None)", qty=qty_left
+            ))
 
             continue
 
@@ -8353,6 +8496,10 @@ def _run_planning_loop() -> list:
 
 
         if plan_week is None:
+
+            _skip_qty_short.append(_unplanned_row(
+                order, "ไม่มีสัปดาห์ทำงานเหลือให้เริ่มผลิต (ปฏิทิน/SKIP_WEEKS)", qty=qty_left
+            ))
 
             continue
 
@@ -8555,7 +8702,9 @@ def _run_planning_loop() -> list:
         # ❗ ตรวจสอบว่า item นี้มี cap data หรือไม่ — ถ้าไม่มีให้ข้ามทันที
         _item_cap_rows = item_cap_data[item_cap_data["ITEM_CODE"] == str(item).strip().upper()]
         if _item_cap_rows.empty:
-            _skip_no_cap.append(f"{item} (SC/SO:{sc_so_no})")
+            _skip_no_cap.append(
+                _unplanned_row(order, "ไม่พบ CAP data (item_cap2025.xlsx)", qty=qty_left)
+            )
             print(f"⚠️  ไม่พบ CAP data สำหรับ item '{item}' (SC/SO:{sc_so_no}) → ข้ามการวางแผน")
             continue
 
@@ -9045,6 +9194,7 @@ def _run_planning_loop() -> list:
                         })
                         plans[-1]["NAY_COLOR"] = str(order.get("NAY_COLOR", "")).strip()
                         plans[-1]["COLOR_DESC"] = str(order.get("COLOR_DESC", "")).strip()
+                        plans[-1]["LINE_REMARK"] = str(order.get("LINE_REMARK", "")).strip()
                         # แถวแรกประกาศเครื่องไปแล้ว → แถวถัดไปใน week เดียวกันถือว่าใช้เครื่องร่วม
                         if not _fill_shared_owner:
                             _fill_shared_owner = str(order.get("SO_NO", order.get("SC/SO NO", ""))).strip()
@@ -9731,7 +9881,16 @@ def _run_planning_loop() -> list:
                         forced_m = machines_in_use.get(mc_key, 0)
                     prev_machines = int(forced_m or 0)
             current_week_idx = week_index(plan_week)
+            # อ่าน last_production ก่อน _bridge_locks เพราะ _bridge_locks จะเลื่อนค่าไปที่สัปดาห์ lock
+            _same_lock = _same_week_lock_mc(mc_key, last_production.get(mc_key))
             _warm_cap = _bridge_locks(mc_key, current_week_idx)
+            # ล็อกที่ทับสัปดาห์ผลิต = เครื่องอีกชุดที่ยังอุ่น → บวกเพิ่มก่อนค่อยไปเจอเพดาน
+            if _same_lock > 0:
+                print(
+                    f"[LOCK WARM] {item} W{plan_week}: carry-over {prev_machines}"
+                    f" + {_same_lock} เครื่องที่กันไว้สัปดาห์ผลิตก่อนหน้า = {prev_machines + _same_lock}"
+                )
+                prev_machines += _same_lock
             # กันไว้กี่เครื่อง = อุ่นได้แค่นั้น — ที่เกินต้องนับเป็นเครื่องใหม่ (setup)
             # กติกาเดียวกับฝั่ง OLD ใน AVA_MC.py (_solve_carry_group)
             if _warm_cap is not None and prev_machines > _warm_cap:
@@ -11170,6 +11329,7 @@ def _run_planning_loop() -> list:
                         "item": item, "sc": sc_so_no, "mc_group": mc_group,
                         "gauge": _sel_gauge, "setup_week": plan_week,
                         "blocked_week": _blk_wk, "remain": _blk_rem, "need": _blk_need,
+                        "order_qty": order_qty, "pending_plan": pending_plan, "fg_week": fg_week,
                     })
                     plan_week = next_week(plan_week)
                     while plan_week is not None and plan_week in SKIP_WEEKS:
@@ -11253,6 +11413,7 @@ def _run_planning_loop() -> list:
             )
             plans[-1]["NAY_COLOR"] = str(order.get("NAY_COLOR", "")).strip()
             plans[-1]["COLOR_DESC"] = str(order.get("COLOR_DESC", "")).strip()
+            plans[-1]["LINE_REMARK"] = str(order.get("LINE_REMARK", "")).strip()
             plans[-1]["S9_ROUTING"] = _s9_active
             # OUTSOURCE = ก้อนที่ user สั่งจ้างทอเอง (แยกจาก S9 Only ที่ MasterMC บังคับ)
             plans[-1]["OUTSOURCE"] = "Yes" if _outsource_force else ""
@@ -11515,6 +11676,15 @@ def _run_planning_loop() -> list:
                     print(
                         f"⚠️  OVERLOAD: Week {_produced_week} {type_key} ใช้ {jobs_used} jobs (เกิน capacity {capacity} jobs)"
                     )
+        # ออร์เดอร์ที่เข้า loop วางแผนแล้วแต่วางไม่ครบ (เครื่องไม่พอ/หมดสัปดาห์ในปี/ชน safety guard)
+        # หมายเหตุ: กรณี CORE ITEM (batch production) qty_left ที่จับได้คือของ batch ปัจจุบันเท่านั้น
+        # ถ้ายังมี batch ถัดไปที่ยังไม่ถึงคิวค้างอยู่ ตัวเลขนี้จะนับยอดคงเหลือต่ำกว่าความจริง
+        if qty_left > 0.5:
+            _skip_qty_short.append(_unplanned_row(
+                order,
+                "วางแผนไม่ครบ (เครื่องไม่พอ/หมดสัปดาห์ที่วางได้/ชน safety guard)",
+                qty=qty_left,
+            ))
         # 🔧 FIX: อัปเดต cumulative planned qty สำหรับ item นี้
         # ใช้ order_qty (ไม่ใช่ qty_left) เพราะ order ถูก process แล้วไม่ว่าผลิตครบหรือไม่
         _item_cumulative_planned[item] = _item_cumulative_planned.get(item, 0) + order_qty
@@ -11756,8 +11926,8 @@ else:
 # แสดง item ที่ไม่มี CAP
 if _skip_no_cap:
     print(f"\n⚠️  Items ที่ไม่พบ CAP data ({len(_skip_no_cap)} รายการ) → ไม่ได้วางแผน:")
-    for _s in sorted(set(_skip_no_cap)):
-        print(f"   - {_s}")
+    for _s in _skip_no_cap:
+        print(f"   - {_s['ITEM_CODE']} (SC/SO:{_s['SC_SO_NO']})")
     print(f"   กรุณาเพิ่มใน item_cap2025.xlsx")
     print()
 
@@ -11781,11 +11951,34 @@ if _skip_not_in_master:
         print(f"   - {_s['SC_SO_NO']} | {_s['ITEM_CODE']} | MC={_s['MC_GROUP']} G{_s['GAUGE']}")
     print()
 
-# รวม unplanned orders เป็น DataFrame
-_unplanned_rows = _skip_no_mc_group + _skip_no_factory + _skip_not_in_master
-_unplanned_df = pd.DataFrame(_unplanned_rows) if _unplanned_rows else pd.DataFrame(
-    columns=["SC_SO_NO", "ITEM_CODE", "MC_GROUP", "ORDERS_QTY", "PENDING_PLAN", "FG_WEEK", "REASON"]
+# แสดง orders ที่เข้า loop วางแผนแล้วแต่วางไม่ครบ (เครื่องไม่พอ/หมดสัปดาห์/ชน safety guard)
+if _skip_qty_short:
+    print(f"\n⚠️  Orders ที่วางแผนไม่ครบ ({len(_skip_qty_short)} รายการ) → เหลือ qty ที่ยังไม่ได้วาง:")
+    for _s in _skip_qty_short:
+        print(f"   - {_s['SC_SO_NO']} | {_s['ITEM_CODE']} | เหลือ {_s['UNPLANNED_QTY']:.0f} | {_s['REASON']}")
+    print()
+
+# แถวที่ถูกกรองออกตั้งแต่ Order.py (ไม่เคยเข้า planning loop) — เอาเฉพาะที่ยังมีของค้าง
+# กติกาเดียวกับ order ปกติ: Pending Plan <= 0 = วางแผนครบแล้ว ไม่ถือว่าค้าง
+_excluded_rows = []
+if not _excluded_orders.empty and "Pending Plan" in _excluded_orders.columns:
+    _exc_pend = pd.to_numeric(_excluded_orders["Pending Plan"], errors="coerce").fillna(0)
+    for _, _er in _excluded_orders[_exc_pend > 0].iterrows():
+        _excluded_rows.append(
+            _unplanned_row(_er, _er.get("REASON", "ถูกกรองออกก่อนวางแผน"))
+        )
+    if _excluded_rows:
+        print(f"\n⚠️  Orders ที่ถูกกรองออกก่อนวางแผน ({len(_excluded_rows)} รายการ) → เข้าชีท UNPLANNED:")
+        for _s in _excluded_rows:
+            print(f"   - {_s['SC_SO_NO']} | {_s['ITEM_CODE']} | เหลือ {_s['UNPLANNED_QTY']:.0f} | {_s['REASON']}")
+        print()
+
+# รวม unplanned orders เป็น DataFrame — คอลัมน์ตาม UNPLANNED_COLS (ชุดเดิม + DATE_IN)
+_unplanned_rows = (
+    _skip_no_mc_group + _skip_no_factory + _skip_not_in_master
+    + _skip_no_cap + _skip_qty_short + _excluded_rows
 )
+_unplanned_df = pd.DataFrame(_unplanned_rows, columns=UNPLANNED_COLS)
 print("Weekly production planning completed")
 print(f"Output: {OUTPUT_FILE}")
 print(f"Total rows: {len(plan_df)}")
@@ -12579,7 +12772,7 @@ if not plan_df.empty and {"ORDERS_QTY", "REVOLUTION_WEIGHT", "MC_GROUP"} <= set(
 # ไปไว้ท้ายสุด เพื่อไม่ให้แทรกกลางคอลัมน์หลักที่คนอ่านแผนใช้ประจำ
 _tail_cols = [
     c
-    for c in ["WD_BASE", "WD_W32", "MC_SHARED", "MC_BOOKING", "REMARK", "S9_ROUTING", "OUTSOURCE", "YARNPO",
+    for c in ["WD_BASE", "WD_W32", "MC_SHARED", "MC_BOOKING", "REMARK", "LINE_REMARK", "S9_ROUTING", "OUTSOURCE", "YARNPO",
               "FOLD_QTY", "FOLD_REMAINDER", "FOLD_WARN"]
     if c in plan_df.columns
 ]

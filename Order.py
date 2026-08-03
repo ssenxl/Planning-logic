@@ -9,6 +9,9 @@ _APP_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Pat
 ORDER_DIR = _APP_DIR / "Order"
 OUTPUT_DIR = _APP_DIR / "data_plan"
 OUTPUT_FILE = OUTPUT_DIR / "order_ready.xlsx"
+# แถวที่ถูกกรองออก (ไม่เข้า planning) — Planning.py อ่านไปรวมในชีท UNPLANNED
+# ไม่งั้นงานพวกนี้หายเงียบ ไม่โผล่ที่ไหนเลยทั้งที่ยังมีของค้าง
+EXCLUDED_FILE = OUTPUT_DIR / "order_excluded.xlsx"
 
 EXCLUDE_ORDER_TYPES = [
     "CL-ORDERS",
@@ -72,9 +75,10 @@ def load_all_orders(order_dir: Path) -> pd.DataFrame:
     return pd.concat(df_list, ignore_index=True)
 
 
-def filter_order_type(df: pd.DataFrame) -> pd.DataFrame:
+def filter_order_type(df: pd.DataFrame, excluded: list = None) -> pd.DataFrame:
     """
     Filter Orders Type
+    excluded: list สำหรับสะสมแถวที่ถูกตัด (พร้อมเหตุผล) → export ไปโชว์ในชีท UNPLANNED
     """
     # Check for both possible column names
     order_type_col = None
@@ -82,12 +86,17 @@ def filter_order_type(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             order_type_col = col
             break
-    
+
     if order_type_col is None:
         print("⚠️ ไม่พบ column 'Orders Type' หรือ 'ORDER_TYPE' - ข้ามการ filter")
         return df
 
     before = len(df)
+    _cut = df[df[order_type_col].isin(EXCLUDE_ORDER_TYPES)]
+    if excluded is not None and not _cut.empty:
+        excluded.append(_cut.assign(
+            REASON="ไม่วางแผน: ORDER_TYPE '" + _cut[order_type_col].astype(str) + "' ถูกกรองออกก่อนวางแผน"
+        ))
     df = df[~df[order_type_col].isin(EXCLUDE_ORDER_TYPES)]
     after = len(df)
 
@@ -95,9 +104,10 @@ def filter_order_type(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def filter_mc_group(df: pd.DataFrame) -> pd.DataFrame:
+def filter_mc_group(df: pd.DataFrame, excluded: list = None) -> pd.DataFrame:
     """
     Filter MC GROUP
+    excluded: list สำหรับสะสมแถวที่ถูกตัด (พร้อมเหตุผล) → export ไปโชว์ในชีท UNPLANNED
     """
     # Check for both possible column names
     mc_group_col = None
@@ -105,12 +115,17 @@ def filter_mc_group(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             mc_group_col = col
             break
-    
+
     if mc_group_col is None:
         print("⚠️ ไม่พบ column 'MC GROUP' หรือ 'MC_GROUP' - ข้ามการ filter")
         return df
 
     before = len(df)
+    _cut = df[df[mc_group_col].isin(EXCLUDE_MC_GROUPS)]
+    if excluded is not None and not _cut.empty:
+        excluded.append(_cut.assign(
+            REASON="ไม่วางแผน: MC_GROUP '" + _cut[mc_group_col].astype(str) + "' ถูกกรองออกก่อนวางแผน"
+        ))
     df = df[~df[mc_group_col].isin(EXCLUDE_MC_GROUPS)]
     after = len(df)
 
@@ -118,13 +133,25 @@ def filter_mc_group(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _export_excluded(excluded: list) -> None:
+    """เขียนแถวที่ถูกกรองออกเป็นไฟล์แยกให้ Planning.py อ่านไปรวมในชีท UNPLANNED
+
+    ต้องเขียนทุกครั้งแม้ไม่มีแถวที่ถูกตัด — ไม่งั้นไฟล์ค้างจากรอบก่อนจะถูกอ่านซ้ำ
+    แล้วแผนรอบนี้จะมีงานที่ไม่ควรมีโผล่ในชีท UNPLANNED
+    """
+    out = pd.concat(excluded, ignore_index=True) if excluded else pd.DataFrame(columns=["REASON"])
+    out.to_excel(EXCLUDED_FILE, index=False)
+    print(f"🧾 แถวที่ถูกกรองออก {len(out)} แถว → {EXCLUDED_FILE}")
+
+
 def prepare_order_data(export_excel: bool = True) -> pd.DataFrame:
     """
     เตรียม Order Data และ export เป็น Excel
     """
     df = load_all_orders(ORDER_DIR)
-    df = filter_order_type(df)
-    df = filter_mc_group(df)
+    excluded = []  # แถวที่ถูกกรองออก — เก็บไว้โชว์ในชีท UNPLANNED ของแผนผลิต
+    df = filter_order_type(df, excluded)
+    df = filter_mc_group(df, excluded)
 
     df.reset_index(drop=True, inplace=True)
 
@@ -132,6 +159,7 @@ def prepare_order_data(export_excel: bool = True) -> pd.DataFrame:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         df.to_excel(OUTPUT_FILE, index=False)
         print(f"✅ Export Excel สำเร็จ: {OUTPUT_FILE}")
+        _export_excluded(excluded)
 
     return df
 

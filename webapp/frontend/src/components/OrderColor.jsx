@@ -495,7 +495,18 @@ export default function OrderColor() {
       if (!cat) continue
       const g = gnorm(r[cidx.gauge])
       const key = cat + '|' + g
-      if (!map.has(key)) map.set(key, { key, cat, gauge: g, need: need[key] || 0 })
+      if (!map.has(key)) map.set(key, { key, cat, gauge: g, need: need[key] || 0, mcs: new Set() })
+      const mcg = cidx.mcg >= 0 ? String(r[cidx.mcg] ?? '').trim() : ''
+      if (mcg) map.get(key).mcs.add(mcg)
+    }
+    // ป้ายกลุ่มเครื่องจริงในกลุ่มนี้ — โชว์ไม่เกิน 4 ชื่อ ที่เหลือย่อเป็น +N
+    const MAX_MC = 4
+    for (const v of map.values()) {
+      const list = [...v.mcs].sort((a, b) => a.localeCompare(b, 'th', { numeric: true }))
+      v.mcs = list
+      v.mcLabel = list.length
+        ? list.slice(0, MAX_MC).join(', ') + (list.length > MAX_MC ? ` +${list.length - MAX_MC}` : '')
+        : ''
     }
     return [...map.values()].sort((a, b) => b.need - a.need
       || a.cat.localeCompare(b.cat, 'th', { numeric: true })
@@ -774,7 +785,7 @@ export default function OrderColor() {
                 onChange={e => { setCatFilter(e.target.value); setAiAdvice(null); setAiPreview(null) }}>
                 {catList.map(c => (
                   <option key={c.key} value={c.key}>
-                    {c.cat} · เกจ {c.gauge}{c.need > 0 ? ` — ต้องถอด ${c.need}` : ''}
+                    {c.cat} · เกจ {c.gauge}{c.need > 0 ? ` — ต้องถอด ${c.need}` : ''}{c.mcLabel ? ` (${c.mcLabel})` : ''}
                   </option>
                 ))}
               </select>
