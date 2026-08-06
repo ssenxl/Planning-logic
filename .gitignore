@@ -24,6 +24,8 @@ Train.py
 View_Booking.py
 View_SC.py
 View_Stock.py
+View_Datamining.py
+View_MC_Item.py
 
 # release builds & debug
 KnitPlan_Release.zip
