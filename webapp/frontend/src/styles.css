@@ -1603,8 +1603,11 @@ button.ghost.sm:hover {
   background: linear-gradient(180deg, #d24437 0%, #b1291d 100%);
 }
 
+/* แต่ละชุดคำอธิบายกินเต็มบรรทัดของตัวเอง (flex: 0 0 100%) — ไม่งั้นชุดสั้นๆ อย่าง
+   "สีตาม CAT / Guage" จะไปต่อท้ายชุดก่อนหน้าในบรรทัดเดียวกัน อ่านแล้วแยกไม่ออกว่าคนละเรื่อง */
 .gantt-legend {
   display: flex;
+  flex: 0 0 100%;
   gap: 12px;
   flex-wrap: wrap;
 }
@@ -1614,6 +1617,18 @@ button.ghost.sm:hover {
   font-weight: 700;
   color: var(--muted);
   align-self: center;
+}
+
+/* ข้อความในคำอธิบายที่ระบายเป็นสีจริงของสิ่งที่มันอธิบาย (เช่น "Text สีแดง" = สีแดงจริง)
+   ใช้แทนชิปตัวอย่าง — สื่อสารสีได้โดยไม่ต้องมีกล่องตัวอย่างเพิ่ม */
+.glegend-txt.lg-core {
+  color: #dc2626;
+  font-weight: 800;
+}
+
+.glegend-txt.lg-program {
+  color: #5149E6;
+  font-weight: 800;
 }
 
 .glegend {
@@ -1653,6 +1668,15 @@ button.ghost.sm:hover {
   color: #dc2626;
   font-weight: 800;
   text-shadow: 0 0 2px rgba(255, 255, 255, .95);
+}
+
+/* ชื่อ item ที่ตรงชีท Program — น้ำเงินหนา + เงาขาว (ตรงกับ .gbar-item.program)
+   พื้นชิปใช้ฟ้าอ่อน (ไม่ใช่ #4a6fa5 เข้มเหมือนชิปอื่น) ไม่งั้นตัวน้ำเงินจมหาย */
+.glegend-chip.lg-program {
+  background: #dfe3fb;
+  color: #5149E6;
+  font-weight: 800;
+  text-shadow: 0 0 3px rgba(255, 255, 255, .98);
 }
 
 /* งานสี — ส้ม (ตรงกับ .gbar-color) */
@@ -1913,6 +1937,17 @@ button.ghost.sm:hover {
   pointer-events: none;
 }
 
+/* ชิปที่คลิกได้ → เปิดการ์ดรายละเอียดว่าเครื่องถูกใช้ไปกับ item ไหนบ้าง
+   (.cellava ตั้ง pointer-events:none ไว้เพื่อไม่ให้บังการลากบล็อก จึงต้องเปิดกลับเฉพาะชิปนี้) */
+.cellava-click {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.cellava-click:hover {
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
 /* เต็มพอดี (0) = เหลือง — ยังไม่ผิด แต่วางเพิ่มไม่ได้ */
 .cellava.none {
   color: #8a6d1f;
@@ -1955,6 +1990,15 @@ button.ghost.sm:hover {
   text-align: center;
   background: #fafbff;
   border-bottom: 2px solid var(--line);
+}
+
+/* คลิกช่องแถบโหลด = เปิดการ์ดโควตา Set up ของสัปดาห์นั้น */
+.gantt-load-cell.clickable {
+  cursor: pointer;
+}
+
+.gantt-load-cell.clickable:hover {
+  background: #eef2ff;
 }
 
 /* แถบ (ซ้าย) + ตัวเลข (ขวา) วางคู่กัน — ไม่ทับกัน เลยอ่านง่ายกว่าเอาเลขไปทับแถบ */
@@ -2107,6 +2151,15 @@ button.ghost.sm:hover {
   color: #dc2626;
   font-weight: 800;
   text-shadow: 0 0 2px rgba(255, 255, 255, 0.95);
+}
+
+/* Program (ชีท Program ใน MasterMC: ITEM + TEAM ตรงกัน) — น้ำเงิน + เงาขาว
+   เงาขาว (ไม่ใช่ดำ) เพราะน้ำเงินเข้มบนบล็อกสีเข้มจะจมหายไป — ขอบขาวช่วยดันให้อ่านออกทุกพื้น
+   วางหลัง .core เพื่อให้ item ที่เป็นทั้ง core และ Program โชว์น้ำเงิน (Program ชนะ) */
+.gbar-item.program {
+  color: #5149E6;
+  font-weight: 800;
+  text-shadow: 0 0 3px rgba(255, 255, 255, 0.98), 0 1px 2px rgba(255, 255, 255, 0.9);
 }
 
 /* จำนวน (กก.) — ชิดขวาสุดเสมอ ให้ไล่สายตาเทียบข้ามบล็อกได้ */
@@ -2416,6 +2469,12 @@ button.ghost.sm:hover {
   color: var(--ink);
 }
 
+/* item ที่ตรงชีท Program (item + ทีม) — น้ำเงิน ให้ตรงกับบล็อก Gantt
+   การ์ดพื้นขาวอยู่แล้ว ไม่ต้องมีเงาช่วย */
+.jobpanel-item.program {
+  color: #5149E6;
+}
+
 .jobpanel-sub {
   margin-top: 2px;
   font-size: 11px;
@@ -2477,6 +2536,13 @@ button.ghost.sm:hover {
   color: #15803d;
 }
 
+/* ป้ายทีมจากชีท Program — พื้นฟ้าอ่อน ตัวน้ำเงิน ให้เข้าชุดกับชื่อ item ที่เป็นสีน้ำเงิน */
+.jobflag.program {
+  background: #dfe3fb;
+  color: #5149E6;
+  font-weight: 700;
+}
+
 .jobpanel-body {
   padding: 10px 14px 14px;
   overflow-y: auto;
@@ -2528,6 +2594,93 @@ button.ghost.sm:hover {
 
 .jobdl dd.warn {
   color: var(--fail);
+}
+
+/* การ์ดรายละเอียดเครื่องว่างของช่อง (คลิกชิปมุมขวาบน) — กว้างกว่าการ์ดงานเพราะมีตาราง 4 คอลัมน์ */
+.avapanel {
+  /* กว้างขึ้นจาก 400px — ตารางมีคอลัมน์ Setup/Continue เพิ่มมาอีก 2 ช่อง */
+  width: 470px;
+}
+
+.avatbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.avatbl th,
+.avatbl td {
+  padding: 3px 4px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  vertical-align: top;
+}
+
+.avatbl thead th {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.avatbl .num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.avatbl tbody td:first-child {
+  word-break: break-all;
+}
+
+/* เครื่องที่ต้องตั้งใหม่ (setup) — เน้นสีส้ม เพราะเป็นตัวกินโควตา job ของสัปดาห์ */
+.avatbl .num.setup {
+  color: #b54708;
+  font-weight: 700;
+}
+
+/* ช่องที่เป็น 0 (ไม่มี setup / ไม่มี carry) — จางลง ให้ตาไปหยุดที่ตัวเลขจริง */
+.avatbl .num.zero {
+  color: var(--muted);
+  opacity: 0.55;
+}
+
+/* แถวของถังเครื่องที่ล้น (เกิน) — เน้นให้เห็นว่าเป็นงานที่ทำให้ช่องนี้แดง */
+.avatbl tbody tr.bad {
+  background: #fff1f0;
+  color: #b42318;
+}
+
+/* งานที่นั่งบนเครื่องที่วิ่งอยู่แล้ว (กินพูล 0) — จางลง ไม่ใช่ตัวการทำให้เกิน */
+.avatbl tbody tr.dim {
+  color: var(--muted);
+}
+
+/* แถวของเครื่องกลุ่มเดียวกับช่องที่คลิก */
+.avatbl tbody tr.cur td:first-child {
+  font-weight: 700;
+}
+
+.avatbl tfoot td {
+  padding-top: 4px;
+  font-weight: 700;
+  border-bottom: 0;
+}
+
+/* ป้ายประเภทเครื่องที่กันไว้ (POLY / COTTON) ต่อท้ายชื่อ item */
+.avatag {
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+  color: #8a6d00;
+  background: #fff8e1;
+}
+
+.avatag.cotton {
+  color: #2e6930;
+  background: #eaf6ea;
 }
 
 .jobmore {
@@ -5742,3 +5895,127 @@ table.grid b.late { color: #d1373b; }
   word-break: break-word;
 }
 .errbound-btns { display: flex; gap: 8px; }
+
+/* ---------- หน้า Item ทดแทน (Master_Item V2) ---------- */
+.sub-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sub-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--pri-soft);
+}
+
+.sub-stat b { font-size: 17px; color: var(--pri-d); }
+.sub-stat small { color: var(--muted); font-size: 11.5px; }
+
+.sub-import {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 13px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.sub-import input[type="file"] { font-size: 12px; }
+.sub-import small { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+
+.sub-preview {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #14532d;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sub-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sub-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 12px;
+}
+
+.sub-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.sub-cardhead {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: #fafbff;
+}
+
+.sub-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+
+.sub-tag {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--line-soft);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.sub-tag.mc { background: var(--pri-soft); color: var(--pri-d); }
+
+.sub-cardmeta { font-size: 12px; color: var(--muted); }
+.sub-cardmeta b { color: var(--ink); }
+
+.sub-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+
+.sub-table th {
+  padding: 6px 10px;
+  text-align: left;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 11px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.sub-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  word-break: break-all;
+}
+
+.sub-table .num { text-align: right; white-space: nowrap; }
+.sub-table tr.has-stock td { background: #f0fdf4; }
+.sub-table tr.has-stock td.num { color: #15803d; font-weight: 700; }
+
+.sub-spec {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 11.5px;
+  word-break: break-all;
+}

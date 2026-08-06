@@ -115,6 +115,74 @@ MAX_NEW_SETUP_MC = 2
 PREFER_FULL_MACHINE_TO_TARGET = True
 # fallback: ถ้าจบตรง TARGET ไม่ได้ อนุญาต TARGET-1
 ALLOW_TARGET_MINUS_ONE = False
+
+# TARGET_KNIT offset (สัปดาห์ที่หักจาก FG Week)
+# ใช้ร่วมกันทุกจุดที่คำนวณ TARGET_KNIT (วางแผนจริง / sort orders / overlay แผนเก่า)
+#
+# ลำดับกฎ:
+#   1. FOB_TYPE ในตาราง FOB_TARGET_OFFSET_WEEKS → ใช้ค่านั้น (ชนะทุกกฎ)
+#   2. MC_CAT = DOUBLE-30 และเกจ 16/18/19        → -3
+#   3. Type ขึ้นต้น SINGLE (รวม SINGLE (TUBE)) และ yarn เส้นเดียว (ไม่มี '+') → -3
+#   4. อื่น ๆ                                     → -4
+# (LAB-DIP ไม่ผ่านทางนี้ — ใช้ TODAY_IDX + 2 แยกต่างหาก)
+FOB_TARGET_OFFSET_WEEKS = {
+    "PILOT_RUN": 1,
+    "Salesman": 1,
+    "Salesman-PO": 1,
+    "Sample": 1,
+    # FOB_TYPE อื่น (Replacement SO / Make to Order / RESERVOIR-GF ฯลฯ) ไม่ระบุที่นี่
+    # → ตกไปตัดสินด้วยกฎเครื่อง/เส้นด้ายด้านล่าง (-3 หรือ -4)
+}
+DEFAULT_TARGET_OFFSET_WEEKS = 4  # กรณีทั่วไป → N-4
+SHORT_TARGET_OFFSET_WEEKS = 3  # DOUBLE-30 เกจ 16/18/19 และ SINGLE yarn เส้นเดียว → N-3
+DOUBLE30_SHORT_GAUGES = {"16", "18", "19"}
+
+
+def target_offset_weeks(
+    fob_type, mc_group="", gauge="", yarn_used="", item_code=""
+) -> int:
+    """คืนจำนวนสัปดาห์ที่ต้องหักจาก FG Week เพื่อได้ TARGET_KNIT"""
+    _fob = FOB_TARGET_OFFSET_WEEKS.get(str(fob_type).strip())
+    if _fob is not None:
+        return _fob
+
+    _mc_u = str(mc_group).strip().upper() if mc_group else ""
+    if _mc_u and _mc_u not in ("NAN", "NONE"):
+        _g = _normalize_gauge(gauge)
+        _cat = str(_mc_to_type1(_mc_u, gauge)).strip().upper()
+
+        # DOUBLE-30 เกจ 16/18/19
+        if _cat == "DOUBLE-30" and _g in DOUBLE30_SHORT_GAUGES:
+            return SHORT_TARGET_OFFSET_WEEKS
+
+        # SINGLE ทุกเกจ/ทุกโรง (รวม SINGLE (TUBE) และสะกด SINGEL) ที่ใช้ yarn เส้นเดียว
+        _type = str(MC_TYPE_MAP.get(_mc_u, "")).strip().upper().replace("SINGEL", "SINGLE")
+        _is_single = _type.startswith("SINGLE") or _cat.replace("SINGEL", "SINGLE").startswith("SINGLE")
+        if _is_single:
+            _yarn = str(yarn_used).strip()
+            if not _yarn or _yarn.upper() in ("NAN", "NONE"):
+                _yarn = str(
+                    _yarn_used_lookup.get(str(item_code).strip().upper(), "")
+                ).strip()
+            if _yarn and _yarn.upper() not in ("NAN", "NONE") and "+" not in _yarn:
+                return SHORT_TARGET_OFFSET_WEEKS
+
+    return DEFAULT_TARGET_OFFSET_WEEKS
+
+
+def target_offset_weeks_for_row(row) -> int:
+    """เรียก target_offset_weeks() จากแถว order (ดึงฟิลด์ให้ครบในที่เดียว)"""
+    return target_offset_weeks(
+        row.get("FOB_TYPE", ""),
+        mc_group=row.get("MC GROUP", "") or row.get("MC_GROUP", ""),
+        gauge=row.get("MC_GUAGE", "") or row.get("GUAGE", ""),
+        yarn_used=(
+            row.get("YARN-USED", "")
+            or row.get("YARN_USED", "")
+            or row.get("YARN_ITEM", "")
+        ),
+        item_code=row.get("Item Code", "") or row.get("ITEM_CODE", ""),
+    )
 # Load Balancing Configuration
 USE_LOAD_BALANCING = True  # เปิดใช้งาน Load Balancing สำหรับการกระจายงาน
 LOAD_BALANCING_WEIGHT = 0.1  # น้ำหนักสำหรับการพิจารณาเครื่องว่างใน load balancing score
@@ -294,6 +362,33 @@ try:
     print(f"✅ Item prefix→Setup map: {len(_item_prefix_setup_map)} entries")
 except Exception as _e_isetup:
     print(f"⚠️ ไม่สามารถโหลดชีท Item Setup: {_e_isetup}")
+
+# Item → Team map (จากชีท "Program" ใน MasterMC) — user กำหนดเองว่า item ไหนอยู่ทีมไหน
+# ใช้เติมคอลัมน์ TEAM ในไฟล์แผน เพื่อให้หน้าเว็บไฮไลต์ (ITEM+TEAM ต้องตรงคู่กัน) ได้
+# item เดียวมีได้หลายทีม → เก็บรวมคั่นด้วย " , " (หน้าเว็บแยกเทียบทีละทีม)
+_item_program_map: dict = {}
+try:
+    _prog_df = pd.read_excel(_MASTER_MC_PATH, sheet_name="Program")
+    _prog_df.columns = _prog_df.columns.str.strip()
+    for _, _prow in _prog_df.iterrows():
+        _pitem = str(_prow.get("ITEM_CODE", "")).strip().upper()
+        _pteam = str(_prow.get("TEAM_NAME", "")).strip()
+        if not _pitem or _pitem in ("NAN", "NONE"):
+            continue
+        if not _pteam or _pteam.upper() in ("NAN", "NONE"):
+            continue
+        _teams = _item_program_map.setdefault(_pitem, [])
+        if _pteam not in _teams:
+            _teams.append(_pteam)
+    print(f"✅ Item→Program team map: {len(_item_program_map)} items")
+except Exception as _e_prog:
+    print(f"⚠️ ไม่สามารถโหลดชีท Program: {_e_prog}")
+
+
+def _lookup_item_team(item_code) -> str:
+    """คืนทีม (จากชีท Program) ของ item — ไม่มีในชีท = คืนค่าว่าง"""
+    _ic = str(item_code).strip().upper()
+    return " , ".join(_item_program_map.get(_ic, []))
 
 
 def _lookup_item_prefix_setup(item_code: str):
@@ -3655,7 +3750,26 @@ def wk_num(week):
     return w % 100 if w >= 100000 else w
 
 
-def week_index(week):
+_week_anchor_idx = None  # ตำแหน่งที่แผนกำลังเดินอยู่ (None = ใช้ TODAY_IDX) — ดู week_index()
+
+# bare week ที่อ้างถึงระหว่างวางแผนย้อนหลังจาก anchor ได้ไม่เกินกี่สัปดาห์
+# ต่ำกว่านี้ = ตีความเป็น occurrence ของปีถัดไปแทน (กันจับผิดปีย้อนอดีต)
+# 8 สัปดาห์เผื่อไว้สำหรับ cross-SC fill / สัปดาห์ที่เพิ่งผลิต ซึ่งอยู่ก่อน anchor เล็กน้อย
+WEEK_LOOKBACK_LIMIT = 8
+
+
+def set_week_anchor(idx):
+    """ตั้งจุดอ้างอิงของ week_index ให้ตามตำแหน่งที่แผนกำลังเดินอยู่
+
+    ต้องเลื่อนตาม plan_week เสมอ เพื่อให้ bare week ที่อ้างถึงระหว่างวางแผน
+    ถูกตีความเป็นปีที่ถูกต้อง แม้แผนจะยืดข้ามปีไปไกลจาก TODAY
+    ส่ง None เพื่อรีเซ็ตกลับไปยึด TODAY_IDX (ใช้ตอนจบ order)
+    """
+    global _week_anchor_idx
+    _week_anchor_idx = int(idx) if idx is not None else None
+
+
+def week_index(week, anchor=None):
     """แปลงค่าสัปดาห์ -> row index ใน calendar_week (ตำแหน่งบน timeline)
 
     รองรับ 2 รูปแบบ:
@@ -3678,10 +3792,29 @@ def week_index(week):
     idx = list(calendar_week.index[calendar_week["WEEK"] == w])
     if not idx:
         return None
-    base = globals().get("TODAY_IDX")
+    # anchor = จุดอ้างอิงสำหรับเลือก occurrence เมื่อ week number ซ้ำข้ามปี
+    #   1) anchor ที่ caller ส่งมา (ชัดเจนที่สุด)
+    #   2) _week_anchor_idx = ตำแหน่งที่แผน "กำลังเดินอยู่" (เลื่อนตาม plan_week)
+    #   3) TODAY_IDX (ค่าเริ่มต้นตอน bootstrap / นอกบริบทการวางแผน)
+    # ทำไมต้องมี (2): anchor ที่ตรึงไว้ที่ TODAY จะพังเมื่อแผนยาวเกิน ~26 สัปดาห์
+    # เช่น แผนเดินถึง W48 แล้วอ้าง W20 (ตั้งใจหมายถึงปีหน้า) — วัดจาก TODAY จะได้
+    # W20 ปีปัจจุบัน (ย้อนอดีต) แต่วัดจากตำแหน่งแผนจริงจะได้ปีหน้าถูกต้อง
+    base = anchor
+    if base is None:
+        base = globals().get("_week_anchor_idx")
+    if base is None:
+        base = globals().get("TODAY_IDX")
     if base is None:
         return int(idx[0])
-    # เลือกแถวที่ใกล้ TODAY ที่สุด (tie -> แถวก่อน)
+    # กันการ "ย้อนอดีตข้ามปี": ถ้าเลือกแบบใกล้สุดล้วน ๆ สัปดาห์ที่อยู่เกินครึ่งปี
+    # ข้างหน้า anchor จะถูกจับเป็น occurrence ของปีก่อนแทน (เช่น anchor W48 ปีนี้
+    # อ้าง W25 → ได้ W25 ปีนี้ซึ่งผ่านไปแล้ว ทั้งที่ต้องหมายถึง W25 ปีหน้า)
+    # จึงคัดเฉพาะ occurrence ที่ไม่ย้อนหลังเกิน WEEK_LOOKBACK_LIMIT ก่อน
+    # (เผื่อไว้สำหรับ cross-SC fill / สัปดาห์ที่เพิ่งผลิต ซึ่งอยู่ก่อน anchar ไม่กี่สัปดาห์)
+    _fwd = [i for i in idx if int(i) >= base - WEEK_LOOKBACK_LIMIT]
+    if _fwd:
+        idx = _fwd
+    # เลือกแถวที่ใกล้ anchor ที่สุด (tie -> แถวก่อน)
     return int(min(idx, key=lambda i: (abs(int(i) - base), int(i))))
 
 
@@ -4694,6 +4827,69 @@ def fold_check_order(orders_qty, rev_weight, mc_groups=None):
     folds = round(_qty / _rw, 2)
     remainder = round(folds % FOLD_MULTIPLE, 2)
     return (folds, remainder, remainder != 0)
+
+
+def compute_backward_start_idx(
+    item_code, order_qty, rdd_idx, mc_group, daily_cap, item_gauge, n_machines,
+    setup_days=SETUP_DAYS, rev_weight=None, floor_idx=0
+):
+    """Backward scheduling: หา week index ที่ "ช้าที่สุด" ที่ยังผลิตจบทัน rdd_idx
+
+    ไล่ถอยหลังจาก rdd_idx ลงมาถึง floor_idx สะสม capacity สัปดาห์ต่อสัปดาห์
+    จนกว่าจะพอกับ order_qty → คืน index นั้น (= JIT start)
+
+    - target = rdd_idx ตรง ๆ (ไม่มี safety buffer)
+    - setup_days หักเฉพาะสัปดาห์แรกที่เริ่มผลิต
+    - floor_idx = พื้นแข็ง (TODAY_IDX+2) ห้ามถอยเลยไปกว่านี้
+    - คืน None ถ้าไม่ทันแม้เริ่มที่ floor_idx → caller ใช้ ASAP แทน
+    """
+    if rdd_idx is None or not mc_group or not n_machines or not daily_cap:
+        return None
+    try:
+        _qty_need = float(order_qty or 0)
+    except (TypeError, ValueError):
+        return None
+    if _qty_need <= 0:
+        return None
+
+    floor_idx = max(0, int(floor_idx))
+    rdd_idx = int(rdd_idx)
+    if rdd_idx < floor_idx or rdd_idx >= len(calendar_week):
+        return None
+
+    # cache ข้อมูลรายสัปดาห์ (avail / working days) ช่วง floor_idx..rdd_idx ครั้งเดียว
+    _wk_info = {}
+    for _i in range(floor_idx, rdd_idx + 1):
+        _wk = int(calendar_week.iloc[_i]["WEEK"])
+        if _wk in SKIP_WEEKS:
+            _wk_info[_i] = {"week": _wk, "avail": 0, "wd": 0}
+            continue
+        _wk_info[_i] = {
+            "week": _wk,
+            "avail": get_actual_mc_remain(mc_group, _wk, gauge=item_gauge, item_code=item_code),
+            "wd": get_working_days_by_factory(mc_group, 1, week=_wk, item_code=item_code, gauge=item_gauge),
+        }
+
+    # ไล่ถอยหลัง: หา _start ที่ช้าที่สุดที่ capacity สะสม (_start..rdd_idx) >= qty
+    for _start in range(rdd_idx, floor_idx - 1, -1):
+        _total_cap = 0.0
+        for _i in range(_start, rdd_idx + 1):
+            _w = _wk_info[_i]
+            # setup หักเฉพาะสัปดาห์แรกที่เริ่มผลิตจริง
+            _pd = max(0, _w["wd"] - setup_days) if _i == _start else _w["wd"]
+            if _pd <= 0:
+                continue
+            _use_mc = min(int(n_machines), _w["avail"])
+            if _use_mc <= 0:
+                continue
+            _total_cap += fold_round(
+                _use_mc * _pd * daily_cap, rev_weight, mc_group,
+                per_mc_cap=_pd * daily_cap, mc_count=_use_mc,
+            )
+        if _total_cap >= _qty_need:
+            return _start
+
+    return None  # ไม่ทันแม้เริ่มที่ floor_idx → ต้อง ASAP
 
 
 def calculate_progressive_reduction(
@@ -7735,7 +7931,7 @@ def _run_planning_loop() -> list:
 
             _raw_idx = _row.index[0]
 
-            _rdd = max(0, _raw_idx - 3)
+            _rdd = max(0, _raw_idx - target_offset_weeks_for_row(row))
 
             if o_type == "LAB-DIP":
 
@@ -8293,25 +8489,57 @@ def _run_planning_loop() -> list:
 
             ]
 
+            _fg_raw_idx = None
+
             if not _fg_row.empty:
 
-                _fg_raw_idx = _fg_row.index[0]
+                _fg_raw_idx = int(_fg_row.index[0])
 
-                # คำนวณ offset ตาม FOB_TYPE
+            else:
 
-                fob_type = str(order.get("FOB_TYPE", "")).strip()
+                # FALLBACK: FG week ไม่มีในปฏิทิน เพราะปฏิทินบริษัท "ยุบ" สัปดาห์หยุดยาว
+                # รวมเข้าสัปดาห์ถัดไป (เช่น ปี 2026 ไม่มี W16 → รวมใน W17 สงกรานต์,
+                # ไม่มี W31 → รวมใน W32 หยุดบริษัท) แต่ฝ่ายขายยังกรอก FG = 202631 ได้
+                # เดิมเงียบ ๆ ปล่อย rdd_idx = None → order หลุด logic RDD ทั้งชุด
+                # (ไม่คำนวณเครื่อง, ไม่ทำ backward, ใช้ spare cylinder ไม่ได้)
+                # วิธีแก้: แปลง (year, week) กลับเป็นวันที่จริง แล้วหาสัปดาห์ที่ครอบวันนั้น
+                # สัปดาห์ของบริษัทเริ่มวันศุกร์ = ISO Monday ของสัปดาห์นั้น - 3 วัน
+                try:
 
-                if fob_type in ["PILOT_RUN", "Salesman", "Salesman-PO", "Sample"]:
+                    _fg_anchor = pd.Timestamp(date.fromisocalendar(fg_year, fg_week_num, 1)) - pd.Timedelta(days=3)
 
-                    offset_weeks = 1  # N-1
+                    _fg_hit = calendar_week.index[
+                        (calendar_week["WEEK_START"] <= _fg_anchor)
+                        & (calendar_week["WEEK_END"] >= _fg_anchor)
+                    ]
 
-                elif fob_type in ["Replacement SO", "Make to Order","RESERVOIR-GF"]:
+                    if len(_fg_hit) > 0:
 
-                    offset_weeks = 4  # N-4
+                        _fg_raw_idx = int(_fg_hit[0])
 
-                else:
+                        print(
+                            f"[FG WEEK FALLBACK] {item} SC {sc_so_no}: FG {fg_year}W{fg_week_num} "
+                            f"ไม่มีในปฏิทิน (สัปดาห์ถูกยุบรวม) → ใช้สัปดาห์ที่ครอบ "
+                            f"{_fg_anchor.date()} = idx {_fg_raw_idx} "
+                            f"(W{int(calendar_week.iloc[_fg_raw_idx]['WEEK'])})"
+                        )
 
-                    offset_weeks = 4  # Default to N-4 for other types
+                except (ValueError, TypeError):
+
+                    pass  # ISO ไม่มีสัปดาห์นี้จริง (เช่น W53 ของปีที่มี 52 สัปดาห์) → คง None
+
+                if _fg_raw_idx is None:
+
+                    print(
+                        f"⚠️  [FG WEEK MISS] {item} SC {sc_so_no}: FG {fg_week} หาสัปดาห์บนปฏิทินไม่ได้ "
+                        f"→ rdd_idx=None (order นี้จะวางแผนโดยไม่รู้ deadline)"
+                    )
+
+            if _fg_raw_idx is not None:
+
+                # คำนวณ offset (FOB_TYPE / DOUBLE-30 เกจ 16-19 / SINGLE yarn เส้นเดียว)
+
+                offset_weeks = target_offset_weeks_for_row(order)
 
 
 
@@ -8479,6 +8707,10 @@ def _run_planning_loop() -> list:
 
         start_idx = TODAY_IDX + 2
 
+        # รีเซ็ต anchor ของ week_index ทุก order ใหม่ (กันค่าค้างจาก order ก่อนหน้า
+        # ที่แผนอาจเดินไปไกลข้ามปี) — จากนี้ anchor จะเลื่อนตาม plan_week เอง
+        set_week_anchor(start_idx)
+
         plan_week = int(calendar_week.iloc[start_idx]["WEEK"])
 
 
@@ -8513,6 +8745,10 @@ def _run_planning_loop() -> list:
                 plan_week = order_week
 
 
+
+        # warm-carry flag: True เมื่อ plan_week ถูก "ดึงกลับ" มาเริ่มเร็วขึ้นเพื่อใช้เครื่องที่ยังอุ่น
+        # (WARM GAP FILL / FG CONTINUATION) → backward/JIT ต้องไม่ shift ทับ เพราะ warm-carry ชนะ
+        _warm_carry_applied = False
 
         # ❗ ถ้า booking ของ item+mc_group นี้ยังวิ่งถึง week ≥ plan_week → จัดการ 2 กรณี:
 
@@ -8567,6 +8803,7 @@ def _run_planning_loop() -> list:
                                 )
                                 start_idx = _bk_pull_idx
                                 plan_week = _bk_pull_week
+                                _warm_carry_applied = True  # warm-carry ชนะ backward
 
         # 🔧 FIX: Skip weeks where OLD bookings already exist for same item/MC/Gauge
         # to prevent exceeding capacity that old bookings already use
@@ -8641,6 +8878,7 @@ def _run_planning_loop() -> list:
                     # FG ก่อนหน้าจบใน week นี้และมี cap เหลือ → เริ่ม FG ถัดไปที่นี่
                     start_idx = _prev_fg_idx
                     plan_week = _prev_fg_w
+                    _warm_carry_applied = True  # warm-carry ชนะ backward
                     print(
                         f"[FG CONTINUATION] {item}: FG ถัดไป start at W{_prev_fg_w} "
                         f"(remaining cap from previous FG last week)"
@@ -8651,6 +8889,7 @@ def _run_planning_loop() -> list:
                     if _after_prev < len(calendar_week):
                         start_idx = _after_prev
                         plan_week = int(calendar_week.iloc[_after_prev]["WEEK"])
+                        _warm_carry_applied = True  # warm-carry ชนะ backward
                         print(
                             f"[FG CONTINUATION] {item}: FG ถัดไป start at W{plan_week} "
                             f"(next week after previous FG finished at W{_prev_fg_w})"
@@ -8711,6 +8950,10 @@ def _run_planning_loop() -> list:
 
         # คำนวณ machine allocation ล่วงหน้า
         progressive_plan = None  # {week: machines} สำหรับแต่ละ week
+        # สัปดาห์แรกที่ progressive_plan "ผลิตจริง" (mc > 0) = จุดเริ่ม backward/JIT
+        # ห้ามใช้ min(progressive_plan.keys()) เพราะ dict มี key ของสัปดาห์ที่ mc=0 อยู่ด้วย
+        # (จะได้ plan_week เดิมเสมอ) และ min() บน week number พังเมื่อแผนคร่อมปี
+        _prog_start_week = None
         # Initialize core production schedule variable before use
         _core_production_schedule = []
         # 🔧 FIX: รวม Pending Plan ของทุก FG สำหรับ item เดียวกัน (ทุก SC/SO)
@@ -8780,21 +9023,64 @@ def _run_planning_loop() -> list:
                     )
                     if prog_result:
                         progressive_plan = {wk: mc for wk, mc in prog_result}
+                        # prog_result เรียงตาม week index อยู่แล้ว → tuple แรกที่ mc>0 คือ start จริง
+                        _prog_start_week = next((wk for wk, mc in prog_result if mc > 0), None)
 
         _produced_week = None  # init สำหรับ track FG_WEEK sequential
         _earliest_backshift_done = False  # ป้องกันการย้อนกลับ EARLIEST_PLAN_WEEK ซ้ำใน order เดียวกัน
         # [FORCE START EARLIEST] ถูกลบออก → วางแผนตาม TARGET_KNIT (JIT) แทน
-        # JIT START: ถ้า progressive_plan กำหนด optimal start week ที่ช้ากว่า plan_week ปัจจุบัน
-        # → เลื่อน plan_week ไปยัง optimal start เพื่อให้แผนจบตรง TARGET_KNIT
-        # (ป้องกันกรณีที่ plan_week=W19 แต่ progressive_plan เริ่มที่ W28 → ไม่ใช้ progressive_plan → จบเร็วเกิน)
-        if progressive_plan and plan_week is not None:
-            _prog_opt_week = min(progressive_plan.keys())
-            _prog_opt_idx = week_index(_prog_opt_week)
-            _plan_cur_idx = week_index(plan_week)
-            if _prog_opt_idx is not None and _plan_cur_idx is not None and _prog_opt_idx > _plan_cur_idx:
-                print(f"[JIT START] {item}: shift plan_week W{plan_week}→W{_prog_opt_week} (TARGET_KNIT W{fg_week_int})")
-                plan_week = _prog_opt_week
-                start_idx = _prog_opt_idx
+        # ============================================================
+        # BACKWARD SCHEDULING (JIT START) — ใช้กับทุก order
+        # ============================================================
+        # หลักการ: เริ่มผลิต "ช้าที่สุดเท่าที่ยังทอเสร็จทัน RDD พอดี" (ไม่กันเผื่อ)
+        #   start_idx = max(backward_idx, TODAY_IDX+2, yd_floor)
+        # ลำดับความสำคัญของแหล่งที่มา backward_idx:
+        #   1) progressive_plan (ถ้าคำนวณได้) → min(week) คือ optimal start ที่ผ่าน Step 1b มาแล้ว
+        #   2) compute_backward_start_idx() → fallback สำหรับ order ที่ progressive_plan คำนวณไม่ได้
+        # ข้อยกเว้น: ถ้า warm-carry (WARM GAP FILL / FG CONTINUATION) ดึง plan_week มาแล้ว
+        #            → ข้าม backward ทั้งหมด เพราะเครื่องยังอุ่น ไม่ต้อง setup ใหม่ (คุ้มกว่า JIT)
+        if _warm_carry_applied:
+            if progressive_plan:
+                print(f"[BACKWARD SKIP] {item}: warm-carry ใช้งานอยู่ → คง plan_week W{plan_week} (ไม่ shift JIT)")
+        elif plan_week is not None:
+            _bw_idx = None
+            _bw_src = ""
+            if progressive_plan and _prog_start_week is not None:
+                _bw_idx = week_index(_prog_start_week)
+                _bw_src = "progressive"
+            elif required_machines_info and rdd_idx is not None:
+                _bw_mc_grp, _bw_daily_cap, _bw_req_mc, _bw_feasible, _bw_gauge = required_machines_info
+                _bw_idx = compute_backward_start_idx(
+                    item,
+                    _qty_for_machine_calc,
+                    rdd_idx,
+                    _bw_mc_grp,
+                    _bw_daily_cap,
+                    _bw_gauge,
+                    _bw_req_mc,
+                    setup_days=order_setup_days,
+                    rev_weight=get_revolution_weight_from_orders(item, _bw_mc_grp),
+                    floor_idx=TODAY_IDX + 2,
+                )
+                _bw_src = "backward"
+
+            if _bw_idx is not None:
+                # พื้นแข็ง: ห้ามถอยเร็วกว่า TODAY+2 และ (YD) ห้ามก่อนย้อมเสร็จ
+                _bw_floor = TODAY_IDX + 2
+                if order_type == "YD-ORDERS" and order_week is not None:
+                    _bw_yd_idx = week_index(order_week)
+                    if _bw_yd_idx is not None:
+                        _bw_floor = max(_bw_floor, _bw_yd_idx)
+                _bw_idx = max(_bw_idx, _bw_floor)
+
+                _plan_cur_idx = week_index(plan_week)
+                # เลื่อนได้ทางเดียว: ไปข้างหน้าเท่านั้น (ห้ามดึงกลับ — จะทับ push ของ booking/RDD gate)
+                if _plan_cur_idx is not None and _bw_idx > _plan_cur_idx and _bw_idx < len(calendar_week):
+                    _bw_week = int(calendar_week.iloc[_bw_idx]["WEEK"])
+                    print(f"[JIT START/{_bw_src}] {item}: shift plan_week W{plan_week}→W{_bw_week} (TARGET_KNIT W{fg_week_int})")
+                    plan_week = _bw_week
+                    start_idx = _bw_idx
+                    set_week_anchor(_bw_idx)  # backward กระโดดได้หลายสัปดาห์ → ย้าย anchor ตาม
         # Seed remaining_week_cap จาก booking สำหรับ carry-over ในสัปดาห์สุดท้ายของ old booking
         # ให้ new SO สามารถใช้ capacity ที่เหลืออยู่บน machine ของ old item ในสัปดาห์นั้นได้
         # สูตร: (MC_USE_CEIL - MC_USE) × working_days × daily_cap
@@ -9150,6 +9436,9 @@ def _run_planning_loop() -> list:
                             "MC_GUAGE": order["MC_GUAGE"],
                             "FACTORY_TYPE": FACTORY_TYPE_MAP.get(_fill_mc_group, "UNKNOWN"),
                             "PLAN_WEEK": _fill_week,
+                            # เก็บ row index บน timeline ไว้ด้วย — PLAN_WEEK เป็น bare week
+                            # ที่ระบุปีไม่ได้เมื่อแผนคร่อมปี (ใช้เติม PLAN_YEAR ตอน export)
+                            "PLAN_IDX": week_index(_fill_week),
                             "PRODUCE_QTY": produce,
                             "SETUP_DAYS": 0,
                             "REQUIRED_MC": _fill_avail_mc,
@@ -9272,6 +9561,10 @@ def _run_planning_loop() -> list:
             # ⚠️ ตรวจสอบ RDD ก่อนว่าทันหรือไม่
             _current_order_rdd_idx = rdd_idx
             _plan_idx = week_index(plan_week)
+            # เลื่อน anchor ตามตำแหน่งที่แผนเดินไปจริง — ทำให้ bare week ที่อ้างถึง
+            # หลังจากนี้ (ทั้งในลูปและ helper) ถูกตีความเป็นปีที่ถูกต้องเมื่อแผนข้ามปี
+            if _plan_idx is not None:
+                set_week_anchor(_plan_idx)
             past_rdd = bool(
                 rdd_idx is not None and _plan_idx is not None and _plan_idx >= rdd_idx
             )
@@ -9845,12 +10138,10 @@ def _run_planning_loop() -> list:
             item_material_content = str(order.get("MATERIAL_CONTENT", "")).strip() or _material_content_lookup.get(str(item).strip().upper(), "")
             _item_yarn_used = str(order.get("YARN-USED", "") or order.get("YARN_USED", "") or order.get("YARN_ITEM", "") or _yarn_used_lookup.get(str(item).strip().upper(), "")).strip()
             item_setup_days = get_setup_days_for_item(item_material_content, _item_yarn_used, mc_group=mc_group, item_code=item)
-            # ถ้าเป็น urgent หรือใกล้ RDD ให้ใช้ความสามารถสูงสุด
-            # urgent_mode disabled - always use normal capacity
-            if False:  # urgent_mode or (rdd_idx is not None and _plan_idx is not None and _plan_idx >= rdd_idx - 1)
-                # ใช้วันทำงานตามที่โรงงานกำหนด (ไม่เปลี่ยนแปลง)
-                # urgent mode ไม่สามารถเพิ่มวันทำงานเกินที่โรงงานเปิดได้
-                pass
+            # หมายเหตุ: เดิมมีบล็อก urgent mode ตรงนี้เพื่อ "เพิ่มวันทำงาน" ให้ order ที่เลย RDD
+            # แต่ถูกยกเลิกถาวรเพราะขัดความเป็นจริง — โรงงานเปิดกี่วันก็ผลิตได้เท่านั้น
+            # เร่งด้วยการเสกวันทำงานเพิ่มไม่ได้ (ดู urgent_mode ที่เหลือเป็น no-op ทั้งหมด)
+            # การเร่งงานค้างทำผ่าน PAST RDD window (plan_week+3) ใน calculate_required_machines แทน
 
             # ตรวจสอบว่าสัปดาห์นี้เคยใช้ setup ไปแล้วหรือไม่
             week_key = (plan_week, mc_group)
@@ -11361,6 +11652,9 @@ def _run_planning_loop() -> list:
                     "MC_GUAGE": "C0" if _s9_active else order["MC_GUAGE"],
                     "FACTORY_TYPE": "OUTSOURCE" if _s9_active else FACTORY_TYPE_MAP.get(mc_group, "UNKNOWN"),
                     "PLAN_WEEK": plan_week,
+                    # เก็บ row index บน timeline ไว้ด้วย — PLAN_WEEK เป็น bare week
+                    # ที่ระบุปีไม่ได้เมื่อแผนคร่อมปี (ใช้เติม PLAN_YEAR ตอน export)
+                    "PLAN_IDX": week_index(plan_week),
                     "PRODUCE_QTY": produce,
                     "SETUP_DAYS": setup_days_used,
                     "REQUIRED_MC": planned_mc,  # เครื่องที่คำนวณไว้ล่วงหน้า (RDD target) หรือ "Maxmc" ถ้าไม่ทัน RDD
@@ -11755,8 +12049,21 @@ for _, row in calendar_week.iterrows():
 
 
 # เพิ่ม PLAN_YEAR ให้ new plan_df
+# ใช้ PLAN_IDX (row index บน timeline ที่เก็บไว้ตอนวางแผน) เป็นหลัก เพราะรู้ปีแน่นอน
+# _week_year_lookup เป็น fallback เท่านั้น — มันเดาปีจาก "ใกล้ TODAY.year ที่สุด"
+# ซึ่งผิดกับแผนที่คร่อมปี (เช่น แผนเดิน W46→W53 แล้วต่อ W1 = ปีหน้า
+# แต่ lookup จะตอบปีปัจจุบัน → Gantt/รายงานย้อนอดีต 1 ปี)
 if not plan_df.empty and "PLAN_WEEK" in plan_df.columns:
-    plan_df["PLAN_YEAR"] = plan_df["PLAN_WEEK"].map(_week_year_lookup).fillna(TODAY.year).astype(int)
+    _fallback_year = plan_df["PLAN_WEEK"].map(_week_year_lookup).fillna(TODAY.year)
+    if "PLAN_IDX" in plan_df.columns:
+        _idx_year = plan_df["PLAN_IDX"].map(
+            lambda i: int(calendar_week.iloc[int(i)]["YEAR"])
+            if pd.notna(i) and 0 <= int(i) < len(calendar_week)
+            else None
+        )
+        plan_df["PLAN_YEAR"] = _idx_year.fillna(_fallback_year).astype(int)
+    else:
+        plan_df["PLAN_YEAR"] = _fallback_year.astype(int)
 
 
 # เพิ่ม CAT column (= Type_1 ของ MC_GROUP จาก MasterMC)
@@ -12191,7 +12498,7 @@ if not old_booking_df.empty:
                 if _otype == "LAB-DIP":
                     _rdd_idx = min(len(calendar_week) - 1, TODAY_IDX + 2)
                 else:
-                    _rdd_idx = max(0, _raw_idx - 3)
+                    _rdd_idx = max(0, _raw_idx - target_offset_weeks_for_row(_r))
                 return int(calendar_week.iloc[_rdd_idx]["WEEK"])
             except Exception:
                 return None
@@ -12768,12 +13075,20 @@ if not plan_df.empty and {"ORDERS_QTY", "REVOLUTION_WEIGHT", "MC_GROUP"} <= set(
         print(f"   ⚠️  {_fb_item} SC {_fb_sc}: {_fb_folds:g} พับ → เหลือเศษ {_fb_rem:g} พับ")
     print()
 
+# ทีมของ item (จากชีท Program ใน MasterMC) — ไม่มีในชีท = ว่าง
+# หน้าเว็บใช้คู่ ITEM_CODE+TEAM ตัดสินว่าจะทำตัวหนังสือเป็นสีเหลืองไหม (ต้องตรงทั้งคู่)
+for _pdf in (plan_df, setup_tracking_df, _unplanned_df):
+    if _pdf is not None and not _pdf.empty and "ITEM_CODE" in _pdf.columns:
+        _pdf["TEAM"] = _pdf["ITEM_CODE"].map(_lookup_item_team)
+print(f"🏷️  เติมคอลัมน์ TEAM จากชีท Program: "
+      f"{int((plan_df['TEAM'] != '').sum()) if 'TEAM' in plan_df.columns else 0}/{len(plan_df)} แถวในชีท PLAN")
+
 # ย้ายคอลัมน์เสริมที่เพิ่มเข้ามา (วันทำงาน + ประเภทเครื่อง + REMARK) + S9_ROUTING
 # ไปไว้ท้ายสุด เพื่อไม่ให้แทรกกลางคอลัมน์หลักที่คนอ่านแผนใช้ประจำ
 _tail_cols = [
     c
     for c in ["WD_BASE", "WD_W32", "MC_SHARED", "MC_BOOKING", "REMARK", "LINE_REMARK", "S9_ROUTING", "OUTSOURCE", "YARNPO",
-              "FOLD_QTY", "FOLD_REMAINDER", "FOLD_WARN"]
+              "FOLD_QTY", "FOLD_REMAINDER", "FOLD_WARN", "TEAM"]
     if c in plan_df.columns
 ]
 if _tail_cols:

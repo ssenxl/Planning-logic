@@ -7,12 +7,13 @@ const PALETTE = ['#4e79a7', '#f28e2b', '#59a14f', '#e15759', '#76b7b2',
   '#a0cbe8', '#ffbe7d', '#8cd17d', '#ff9d9a', '#86bcb6',
   '#f1ce63', '#d4a6c8', '#fabfd2', '#d7b5a6', '#79706e']
 
-// ไล่เฉดสีตามประเภท CAT (เข้มสุด → อ่อนสุด): DOUBLE = Teal, SINGLE = ส้ม → เหลืองอ่อน
+// ไล่เฉดสีตามประเภท CAT (เข้มสุด → อ่อนสุด): DOUBLE = Teal, SINGLE = สีฟ้า (Light Blue)
+// สองกลุ่มต้องอยู่คนละโทน ไม่งั้นตัวเข้มสุดของทั้งคู่แยกกันไม่ออกใน legend
 const CAT_GRAD = {
   DOUBLE: ['#004d40', '#00695c', '#00796b', '#00897b', '#009688',
     '#26a69a', '#4db6ac', '#80cbc4', '#b2dfdb', '#e0f2f1'],
-  SINGLE: ['#006064', '#00838f', '#0097a7', '#00acc1', '#00bcd4',
-    '#26c6da', '#4dd0e1', '#80deea', '#b2ebf2', '#e0f7fa'],
+  SINGLE: ['#01579b', '#0277bd', '#0288d1', '#039be5', '#03a9f4',
+    '#29b6f6', '#4fc3f7', '#81d4fa', '#b3e5fc', '#e1f5fe'],
 }
 const _hexRgb = h => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255] }
 const _rgbHex = a => '#' + a.map(x => Math.round(x).toString(16).padStart(2, '0')).join('')
@@ -123,16 +124,22 @@ function mcKind(newMc, carryMc, sharedMc, bookingMc, outsource) {
 // sample = ตัวอย่างหน้าตาจริงบนบล็อก, cls = คลาสที่ทำให้ตัวอย่างสีตรงกับของจริง
 const BAR_MARKS = [
   {
-    key: 'core', cls: 'lg-core', sample: 'FD5xxxx', label: 'Core item',
-    tip: 'ชื่อ item เป็นสีแดงหนา = item หลัก (IS_CORE_ITEM) — ผลิตประจำ ควรรักษาเครื่องไว้',
+    // sample ว่าง = ไม่ต้องมีชิปตัวอย่าง — ใช้ pre แทน: ข้อความส่วนที่บอกสี ระบายเป็นสีนั้นจริง
+    key: 'core', cls: 'lg-core', sample: '', pre: 'Text สีแดง', label: ' = Item Core Greige',
+    tip: 'ชื่อ item เป็นสีแดงหนา = Item Core Greige (IS_CORE_ITEM) — ผลิตประจำ ควรรักษาเครื่องไว้',
+  },
+  {
+    key: 'program', cls: 'lg-program', sample: '', pre: 'Text สีน้ำเงิน', label: ' = Item Program',
+    tip: 'ชื่อ item เป็นสีน้ำเงินหนา = Item Program — ITEM_CODE และ TEAM ของแถวนี้ ตรงกับที่กำหนดไว้ในชีท Program (MasterMC)\n'
+      + 'แก้รายการได้ที่หน้า Master Data → MasterMC → Program',
   },
   {
     key: 'color', cls: 'lg-color', sample: '★', label: 'งานสี (ต้องย้อม)',
     tip: 'บล็อกสีส้ม + ★ = งานที่ต้องผ่านย้อมสี (มาจากหน้า Order Color)',
   },
   {
-    key: 'fold', cls: 'lg-fold', sample: '⚠', label: 'order แบ่งพับไม่เป็นคู่',
-    tip: 'บล็อกแดงทั้งก้อน = ยอดที่ลูกค้าเปิดมา (ทั้ง SC) แบ่งพับแล้วไม่เป็นพับคู่ (เฉพาะ IRMT/SJT)\n'
+    key: 'fold', cls: 'lg-fold', sample: '⚠', label: 'จำนวนพับหารไม่ลงคู่',
+    tip: 'บล็อกแดงทั้งก้อน = ยอดที่ลูกค้าเปิดมา (ทั้ง SC) จำนวนพับหารไม่ลงคู่ (เฉพาะ IRMT/SJT)\n'
       + 'ติดทุกสัปดาห์ของ SC นั้น — ต้องไปแก้ที่ยอดเปิด order ไม่ใช่แก้บนแผน',
   },
   {
@@ -319,7 +326,7 @@ const PANEL_GROUPS = [
 ]
 const PANEL_KNOWN = new Set(PANEL_GROUPS.flatMap(g => g.fields.map(f => f[0])))
 
-export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = {}, bookingMc = {}, poolMap = {}, onMoveWeek, colorRows, onRemove, onEditQty, onSplit, lockBefore = null, bookingItems = [], bookingMode = 'off', bookingPick = null, allMcRows = [], loadFilter = null, setLoadFilter = () => {}, barFields = BAR_FIELDS_DEFAULT, selIdx = null, setSelIdx = () => {} }) {
+export default function PlanGantt({ columns, rows, sheet = '', load = {}, setupJobs = [], ava = {}, bookingMc = {}, poolMap = {}, onMoveWeek, colorRows, onRemove, onEditQty, onSplit, lockBefore = null, bookingItems = [], bookingMode = 'off', bookingPick = null, allMcRows = [], loadFilter = null, setLoadFilter = () => {}, barFields = BAR_FIELDS_DEFAULT, selIdx = null, setSelIdx = () => {}, programRows = {} }) {
   const [dragIdx, setDragIdx] = useState(null)
   const [overWeek, setOverWeek] = useState(null)
   // double click บล็อก → แก้ตัวเลขจำนวน (กก.) inline แล้วส่งค่าใหม่ผ่าน onEditQty(idx, qty)
@@ -331,6 +338,12 @@ export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = 
   // barFields (ฟิลด์ที่โชว์บนบล็อก) + loadFilter → สถานะยกไปไว้ที่ KnitPlan (ปุ่มอยู่แถบบน)
   // ย่อ/ขยาย คำอธิบาย (hint + legend) ใต้ตาราง — เริ่มต้นย่อไว้ กดค่อยโชว์
   const [showFoot, setShowFoot] = useState(false)
+  // คลิกชิปเครื่องว่างมุมขวาบนของช่อง → การ์ดรายละเอียดว่าเครื่องถูกใช้ไปกับ item ไหนบ้าง
+  // เก็บ { w, avaKey, vals } ของช่องที่คลิก (vals = หัวแถว: CAT / เกจ / เครื่อง)
+  const [avaSel, setAvaSel] = useState(null)
+  // คลิกช่องแถบโหลด (Set up Job/Week) → การ์ดว่าโควตา setup ของสัปดาห์นั้นถูกใช้ไปกับ item ไหน
+  // เก็บ { w, t } (t = key ประเภทโรงงาน: OM / PHET_DOUBLE / PHET_SINGLE)
+  const [loadSel, setLoadSel] = useState(null)
   // กรองหัวแถวซ้าย: คลิกช่อง Category/Guage → กรอง CAT+เกจ, คลิก Machine → กรองถึงเครื่อง
   // ค่า = { cat, gauge, mcgroup(หรือ null) } ที่ normalize แล้ว, null = แสดงทั้งหมด
   const [catFilter, setCatFilter] = useState(null)
@@ -352,6 +365,22 @@ export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [selIdx])
+
+  // Esc = ปิดการ์ดรายละเอียดเครื่องว่าง
+  useEffect(() => {
+    if (!avaSel) return
+    const onKey = (e) => { if (e.key === 'Escape') setAvaSel(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [avaSel])
+
+  // Esc = ปิดการ์ดโควตา setup (แถบโหลด)
+  useEffect(() => {
+    if (!loadSel) return
+    const onKey = (e) => { if (e.key === 'Escape') setLoadSel(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [loadSel])
 
   // ชื่อคอลัมน์ → index (ใช้อ่านค่าฟิลด์ใดก็ได้ของแถว โดยไม่ต้องประกาศทีละตัวใน ci)
   const colIdx = useMemo(() => {
@@ -681,10 +710,12 @@ export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = 
         foldQty: v('FOLD_QTY'),
         foldRem: v('FOLD_REMAINDER'),
         core: String(v('IS_CORE_ITEM')).trim() !== '',
+        // ทีมจากชีท Program (Master) — มีค่า = item+ทีมตรงกัน → ชื่อ item เป็นสีน้ำเงิน
+        progTeam: programRows[idx] || '',
       })
     }
     return m
-  }, [rows, ci, groups, colorCols, supported, barFields, colIdx])
+  }, [rows, ci, groups, colorCols, supported, barFields, colIdx, programRows])
 
   // ผลรวม NEW_MC (job = setup 1 เครื่อง) ต่อ (สัปดาห์ × ประเภท) จากแถวที่วางจริง — live ตามที่ลาก/แก้
   const planNewByWeekType = useMemo(() => {
@@ -730,10 +761,15 @@ export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = 
   //   • poly/cotton → หักออกจากเครื่องที่กันไว้ (ชิป 🔒) ไม่แตะเครื่องปกติ
   // แยกตาม prefix item เฉพาะกลุ่มที่มีเครื่องกันไว้จริง (ava.reserved) — ให้ตรงกับ
   // Planning.py ที่งาน POLY/COTTON กินเฉพาะ sub-pool ของตัวเอง งานปกติกินเครื่องปกติ
-  const planMcByWeekCat = useMemo(() => {
-    const m = {}
-    if (!supported || ci.cat < 0 || ci.gauge < 0) return m
+  // คืน { mc, detail }:
+  //   mc[w@@catKey]     = { normal, poly, cotton } (ยอดรวม — ใช้คิดเครื่องว่างบนชิป)
+  //   detail[w@@catKey] = [{ item, mcg, gauge, kind, mc, bk, net, qty }] (รายตัว — ใช้ในการ์ด
+  //     "รายละเอียดเครื่องว่าง" ให้เห็นว่า item ไหนกินเครื่องเท่าไร) มาจากลูปเดียวกัน ตัวเลขจึงตรงกันเสมอ
+  const planMcAgg = useMemo(() => {
+    const m = {}, detail = {}
+    if (!supported || ci.cat < 0 || ci.gauge < 0) return { mc: m, detail }
     const hasBkCol = ci.bookingmc >= 0
+    const qtyI = ci.qty >= 0 ? ci.qty : ci.qtyAlt
     const byItem = new Map()
     for (const { row } of rows) {
       const w = norm(row[ci.week]); if (w === '') continue
@@ -744,27 +780,102 @@ export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = 
       const bkKey = `${item.toUpperCase()}|${mcg.toUpperCase()}|${g}`
       const k = w + '@@' + catKey + '@@' + bkKey
       const mc = ci.actualmc >= 0 ? (Number(norm(row[ci.actualmc])) || 0) : 0
+      const qty = qtyI >= 0 ? (Number(norm(row[qtyI])) || 0) : 0
+      // NEW_MC = ตั้งเครื่องใหม่, CARRYOVER_MC = เครื่องอุ่นที่ยกมา (รวมกัน = ACTUAL_MC ทุกแถว)
+      const setup = ci.newmc >= 0 ? (Number(norm(row[ci.newmc])) || 0) : 0
+      const carry = ci.carrymc >= 0 ? (Number(norm(row[ci.carrymc])) || 0) : 0
       // MC_BOOKING เท่ากันทุกแถวของ (item×เครื่อง×เกจ×สัปดาห์) เดียวกัน → เก็บค่าเดียว (max)
       const bkCol = hasBkCol ? (Number(norm(row[ci.bookingmc])) || 0) : null
       const cur = byItem.get(k)
-      if (cur) { cur.mc += mc; if (bkCol != null) cur.bk = Math.max(cur.bk, bkCol) }
-      else byItem.set(k, { w, catKey, bkKey, item, mc, bk: bkCol })
+      if (cur) {
+        cur.mc += mc; cur.qty += qty; cur.setup += setup; cur.carry += carry
+        if (bkCol != null) cur.bk = Math.max(cur.bk, bkCol)
+      }
+      else byItem.set(k, { w, catKey, bkKey, item, mcg, gauge: g, mc, qty, setup, carry, bk: bkCol })
     }
-    for (const { w, catKey, bkKey, item, mc, bk } of byItem.values()) {
+    for (const e of byItem.values()) {
+      const { w, catKey, bkKey, item, mc, bk } = e
       const bkVal = bk != null ? bk : (Number(bookingMc?.[w]?.[bkKey]) || 0)
       const net = Math.max(0, mc - bkVal)
-      if (net === 0) continue
-      const slot = m[w + '@@' + catKey] || (m[w + '@@' + catKey] = { normal: 0, poly: 0, cotton: 0 })
       // เข้าถัง POLY/COTTON เฉพาะเมื่อกลุ่มนี้มีเครื่องกันไว้จริง — ไม่งั้นงาน POLY
       // ในกลุ่มที่ไม่มี reservation จะกินเครื่องปกติ (ตรงกับ Planning.py)
       const rsv = ava?.[w]?.[catKey]?.reserved
       const t = itemPoolType(item)
-      if (t === 'poly' && rsv && rsv.poly > 0) slot.poly += net
-      else if (t === 'cotton' && rsv && rsv.cotton > 0) slot.cotton += net
-      else slot.normal += net
+      const kind = (t === 'poly' && rsv && rsv.poly > 0) ? 'poly'
+        : (t === 'cotton' && rsv && rsv.cotton > 0) ? 'cotton' : 'normal'
+      const dk = w + '@@' + catKey
+      // รายละเอียดเก็บทุกแถวที่มีเครื่อง (รวม net = 0 ที่นั่งบนเครื่อง booking) — การ์ดต้องอธิบายได้
+      // ว่าทำไมงานก้อนนั้นไม่กินเครื่องเพิ่ม ; ยอดรวมยังนับเฉพาะ net > 0 เหมือนเดิม
+      if (mc > 0 || net > 0) (detail[dk] || (detail[dk] = [])).push({ ...e, bk: bkVal, net, kind })
+      if (net === 0) continue
+      const slot = m[dk] || (m[dk] = { normal: 0, poly: 0, cotton: 0 })
+      slot[kind] += net
     }
-    return m
+    for (const k in detail) detail[k].sort((a, b) => b.net - a.net || b.mc - a.mc)
+    return { mc: m, detail }
   }, [rows, ci, supported, bookingMc, ava, poolMap])
+  const planMcByWeekCat = planMcAgg.mc
+
+  // งาน booking (แผนเก่าที่ commit แล้ว) ของช่องที่เปิดการ์ดอยู่ — เครื่องที่ booking จองไปแล้ว
+  // ถูกหักออกจาก TOTAL_MC_REMAIN ตั้งแต่ต้นทาง ช่องจึงเกินได้ทั้งที่แผนรอบนี้ไม่มีงานเลย
+  // → การ์ดต้องบอกได้ว่าเป็น item ไหน (ต่างจาก overlay 📋 ที่โชว์แค่ 5 สัปดาห์ย้อนหลังและปิดได้)
+  // คิดเฉพาะตอนเปิดการ์ด (avaSel) เพราะ bookingItems ยาวหลักพันแถว
+  const avaBooking = useMemo(() => {
+    if (!avaSel) return []
+    const out = []
+    for (const b of bookingItems) {
+      if (norm(b.week) !== avaSel.w) continue
+      if (poolKeyOf(b.cat, b.gauge, b.mc_group) !== avaSel.avaKey) continue
+      const rsv = ava?.[avaSel.w]?.[avaSel.avaKey]?.reserved
+      const t = itemPoolType(b.item)
+      out.push({
+        item: norm(b.item), mcg: norm(b.mc_group), gauge: norm(b.gauge),
+        mc: Number(b.mc) || 0, qty: Number(b.qty) || 0, so: norm(b.so),
+        // setup = เครื่องที่ต้องตั้งใหม่, carry = เครื่องอุ่นที่ยกมาจากสัปดาห์ก่อน (setup + carry = mc)
+        setup: Number(b.setup) || 0, carry: Number(b.carry) || 0,
+        kind: (t === 'poly' && rsv && rsv.poly > 0) ? 'poly'
+          : (t === 'cotton' && rsv && rsv.cotton > 0) ? 'cotton' : 'normal',
+      })
+    }
+    out.sort((a, b) => b.mc - a.mc || b.qty - a.qty)
+    return out
+  }, [avaSel, bookingItems, ava, poolMap])
+
+  // รายการ job ของช่องแถบโหลดที่เปิดการ์ดอยู่ (สัปดาห์ × ประเภทโรงงาน) — 2 ชุด
+  //   plan = งานของแผนรอบนี้ที่ตั้งเครื่องใหม่ (NEW_MC > 0) อ่านสดจากแถวบน Gantt → ขยับตามการลาก
+  //          รวมแถวที่แตกไว้ (item × เครื่อง × เกจ เดียวกัน) เป็นรายการเดียว ไม่งั้นนับ job ซ้ำตา
+  //   old  = job ของแผนเดิม/booking จากชีท SETUP_TRACKING (คงที่ ย้ายบน Gantt ไม่ได้)
+  // คิดเฉพาะตอนเปิดการ์ด (loadSel) — setupJobs ยาวหลายร้อยแถว
+  const loadDetail = useMemo(() => {
+    const empty = { plan: [], old: [] }
+    if (!loadSel) return empty
+    const qtyI = ci.qty >= 0 ? ci.qty : ci.qtyAlt
+    const byKey = new Map()
+    if (supported) {
+      for (const { row } of rows) {
+        if (norm(row[ci.week]) !== loadSel.w) continue
+        const t = classifyType(ci.factory >= 0 ? row[ci.factory] : '', ci.cat >= 0 ? row[ci.cat] : '')
+        if (t !== loadSel.t) continue
+        const setup = ci.newmc >= 0 ? (Number(norm(row[ci.newmc])) || 0) : 0
+        if (setup <= 0) continue                     // ไม่ตั้งเครื่องใหม่ = ไม่กินโควตา job
+        const item = norm(row[ci.item])
+        const mcg = ci.mcgroup >= 0 ? norm(row[ci.mcgroup]) : ''
+        const gauge = ci.gauge >= 0 ? norm(row[ci.gauge]) : ''
+        const k = `${item}|${mcg}|${gauge}`
+        const carry = ci.carrymc >= 0 ? (Number(norm(row[ci.carrymc])) || 0) : 0
+        const mc = ci.actualmc >= 0 ? (Number(norm(row[ci.actualmc])) || 0) : 0
+        const qty = qtyI >= 0 ? (Number(norm(row[qtyI])) || 0) : 0
+        const cur = byKey.get(k)
+        if (cur) { cur.setup += setup; cur.carry += carry; cur.mc += mc; cur.qty += qty }
+        else byKey.set(k, { item, mcg, gauge, setup, carry, mc, qty, so: ci.sc >= 0 ? norm(row[ci.sc]) : '' })
+      }
+    }
+    const plan = [...byKey.values()].sort((a, b) => b.setup - a.setup || b.qty - a.qty)
+    const old = setupJobs
+      .filter(j => j.source === 'OLD' && String(j.week) === loadSel.w && j.type === loadSel.t)
+      .sort((a, b) => b.jobs - a.jobs || b.qty - a.qty)
+    return { plan, old }
+  }, [loadSel, rows, ci, supported, setupJobs])
 
   // วัดความสูงหัวตาราง + แต่ละแถวโหลด → คำนวณ top ให้แถวโหลด sticky ค้างซ้อนใต้หัวตารางพอดี
   // (ความสูงหัวตาราง/ฟอนต์ไม่แน่นอน จึงวัดจริงแทนกำหนดตายตัว)
@@ -899,10 +1010,12 @@ export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = 
                   const free = hasCap ? cap - total : null
                   const tip = `${t.label} • สัปดาห์ ${w}\nแผนเดิม ${old} + ใหม่ ${nw} = ใช้ ${total}`
                     + (hasCap ? ` / ทั้งหมด ${cap}\n${over ? `⚠ เกินเครื่องที่มี ${total - cap}` : `ว่าง ${free}`}` : '')
+                    + '\n👆 คลิกเพื่อดูว่า job ถูกใช้ไปกับ item ไหนบ้าง'
                   return (
-                    <td key={w} className="gantt-load-cell" style={{ top: loadTops[ti] }}>
+                    <td key={w} className="gantt-load-cell clickable" style={{ top: loadTops[ti] }}
+                      onClick={() => setLoadSel(s => (s && s.w === w && s.t === t.key ? null : { w, t: t.key }))}>
                       {empty ? (
-                        <div className="loadwrap" title={`${t.label} • สัปดาห์ ${w}\nไม่มีงาน`}>
+                        <div className="loadwrap" title={`${t.label} • สัปดาห์ ${w}\nไม่มีงาน\n👆 คลิกเพื่อดูรายละเอียด`}>
                           <div className="loadbar nocap">
                             <span className="seg free" style={{ flexGrow: 1 }} />
                           </div>
@@ -973,8 +1086,8 @@ export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = 
                         : 'ไม่มีเครื่องกันไว้ — งาน POLY/COTTON กลุ่มนี้กินเครื่องปกติ'}>
                       {rv ? (
                         <>
-                          {rv.poly ? <span className="rsvtag poly">Poly = {rv.poly}</span> : null}
-                          {rv.cotton ? <span className="rsvtag cotton">Cotton = {rv.cotton}</span> : null}
+                          {rv.poly ? <span className="rsvtag poly">Poly สูงสุด {rv.poly} เครื่อง</span> : null}
+                          {rv.cotton ? <span className="rsvtag cotton">Cotton สูงสุด {rv.cotton} เครื่อง</span> : null}
                         </>
                       ) : <span className="rsvtag dim">–</span>}
                     </th>
@@ -1024,9 +1137,11 @@ export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = 
                           : remainLive === 0 ? 'เต็ม'
                             : `ไม่ว่าง (เกิน ${-remainLive})`
                         return (
-                          <span className={'cellava' + (remainLive <= 0 ? ' none' : '') + (remainLive < 0 ? ' over' : '')}
+                          <span className={'cellava cellava-click' + (remainLive <= 0 ? ' none' : '') + (remainLive < 0 ? ' over' : '')}
+                            onClick={e => { e.stopPropagation(); setAvaSel({ w, avaKey, vals: r.vals }) }}
                             title={`${avaTxt} • เครื่องปกติทั้งหมด ${av.total}\nว่างหลัง booking ${av.remain} − แผนจองเพิ่ม(ปกติ) ${planNormal} = ${remainLive}`
-                              + (hasRsv ? `\nเครื่องกันไว้ (ใช้แทนงานปกติไม่ได้):\n${rsvTxt}` : '')}>
+                              + (hasRsv ? `\nเครื่องกันไว้ (ใช้แทนงานปกติไม่ได้):\n${rsvTxt}` : '')
+                              + '\n👆 คลิกเพื่อดูว่าเครื่องถูกใช้ไปกับ item ไหนบ้าง'}>
                             {avaTxt}
                             {hasRsv && <span className={'cellava-rsv' + (rsvOver ? ' over' : '')}>🔒{rsvP ? ` P${polyLeft < 0 ? ` ไม่ว่าง (เกิน ${-polyLeft})` : polyLeft}` : ''}{rsvC ? ` C${cottonLeft < 0 ? ` ไม่ว่าง (เกิน ${-cottonLeft})` : cottonLeft}` : ''}</span>}
                           </span>
@@ -1047,7 +1162,7 @@ export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = 
                             onClick={() => onBarClick(j)}
                             onDoubleClick={() => onBarDblClick(j, locked)}
                             style={j.foldWarn ? undefined : (isColor ? undefined : { background: colorOf(j.ck), color: textOf(j.ck) })}
-                            title={`${j.item}${sc ? ` • SC ${sc}` : ''}\n${r.vals.join(' • ')} • สัปดาห์ ${w}${j.qty !== '' ? `\nจำนวน ${j.qty}` : ''}${j.actualmc !== '' ? ` • ใช้ ${j.actualmc} เครื่อง` : ''}${Number(j.setup) > 0 ? ` • setup ${j.setup} วัน` : ''}${j.mc ? `\n${MC_KINDS[j.mc].icon} ${MC_KINDS[j.mc].label}` : ''}${j.remark ? `\n${j.remark}` : ''}\nสี: ${j.ck}${isColor ? '\n★ งานสี (ต้องย้อม)' : ''}${j.lateRdd ? '\n⚠ วางเลยสัปดาห์ RDD' : ''}${j.foldWarn ? `\n⚠ order เปิดมา ${j.foldQty} พับ — ไม่เป็นพับคู่ (เหลือเศษ ${j.foldRem} พับ)` : ''}\n👆 คลิกเพื่อดูรายละเอียดครบ${onEditQty && !locked && j.qty !== '' ? ' • double click เพื่อแก้จำนวน' : ''}${locked ? '\n🔒 สัปดาห์ freeze — แก้ไม่ได้' : ''}`}>
+                            title={`${j.item}${sc ? ` • SC ${sc}` : ''}\n${r.vals.join(' • ')} • สัปดาห์ ${w}${j.qty !== '' ? `\nจำนวน ${j.qty}` : ''}${j.actualmc !== '' ? ` • ใช้ ${j.actualmc} เครื่อง` : ''}${Number(j.setup) > 0 ? ` • setup ${j.setup} วัน` : ''}${j.mc ? `\n${MC_KINDS[j.mc].icon} ${MC_KINDS[j.mc].label}` : ''}${j.remark ? `\n${j.remark}` : ''}\nสี: ${j.ck}${isColor ? '\n★ งานสี (ต้องย้อม)' : ''}${j.lateRdd ? '\n⚠ วางเลยสัปดาห์ RDD' : ''}${j.foldWarn ? `\n⚠ order เปิดมา ${j.foldQty} พับ — ไม่เป็นพับคู่ (เหลือเศษ ${j.foldRem} พับ)` : ''}${j.progTeam ? `\n🏷 Program • ทีม ${j.progTeam}` : ''}\n👆 คลิกเพื่อดูรายละเอียดครบ${onEditQty && !locked && j.qty !== '' ? ' • double click เพื่อแก้จำนวน' : ''}${locked ? '\n🔒 สัปดาห์ freeze — แก้ไม่ได้' : ''}`}>
                             {locked && <span className="gbar-star">🔒</span>}
                             {isColor && !locked && <span className="gbar-star">★</span>}
                             {j.mc && <span className="gbar-mc">{MC_KINDS[j.mc].icon}</span>}
@@ -1055,7 +1170,7 @@ export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = 
                               <span className="gbar-fold"
                                 title={`order เปิดมา ${j.foldQty} พับ — ไม่เป็นพับคู่ (เหลือเศษ ${j.foldRem} พับ)`}>⚠</span>
                             )}
-                            <span className={'gbar-item' + (j.core ? ' core' : '')}>{j.item}</span>
+                            <span className={'gbar-item' + (j.core ? ' core' : '') + (j.progTeam ? ' program' : '')}>{j.item}</span>
                             {j.stMc && (
                               <span className="gbar-tag"
                                 title={`setup เครื่องใหม่ ${j.stSetup} เครื่อง (= job ที่หัก)`
@@ -1126,12 +1241,13 @@ export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = 
               <span className="glegend-title">สัญลักษณ์บนบล็อก:</span>
               {BAR_MARKS.map(m => (
                 <span key={m.key} className="glegend" title={m.tip}>
-                  <span className={'glegend-chip ' + m.cls}>{m.sample}</span>{m.label}
+                  {m.sample && <span className={'glegend-chip ' + m.cls}>{m.sample}</span>}
+                  {m.pre && <b className={'glegend-txt ' + m.cls}>{m.pre}</b>}{m.label}
                 </span>
               ))}
             </div>
             <div className="gantt-legend">
-              <span className="glegend-title">เครื่องว่าง (มุมขวาบนของช่อง):</span>
+              <span className="glegend-title">เครื่องว่าง (คลิกที่ชิปเพื่อดูรายละเอียด):</span>
               {AVA_MARKS.map(m => (
                 <span key={m.key} className="glegend" title={m.tip}>
                   <span className={'cellava glegend-ava' + (m.cls ? ' ' + m.cls : '')}>{m.sample}</span>{m.label}
@@ -1164,9 +1280,406 @@ export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = 
         <JobPanel row={selRow} columns={columns} colIdx={colIdx}
           idx={selIdx} weeks={weeks} isLocked={isLocked} onSplit={onSplit} onRemove={onRemove}
           showOther={showOther} onToggleOther={() => setShowOther(s => !s)}
+          progTeam={programRows[selIdx] || ''}
           onClose={() => setSelIdx(null)} />
       )}
+
+      {avaSel && (() => {
+        const av = ava?.[avaSel.w]?.[avaSel.avaKey]
+        if (!av) return null
+        const dk = avaSel.w + '@@' + avaSel.avaKey
+        return (
+          <AvaPanel week={avaSel.w} vals={avaSel.vals} groups={groups}
+            mcGroup={mcGroupI >= 0 ? avaSel.vals[mcGroupI] : ''}
+            av={av} plan={planMcAgg.mc[dk] || { normal: 0, poly: 0, cotton: 0 }}
+            detail={planMcAgg.detail[dk] || []} booking={avaBooking}
+            onClose={() => setAvaSel(null)} />
+        )
+      })()}
+
+      {loadSel && (() => {
+        const t = LOAD_TYPES.find(x => x.key === loadSel.t)
+        if (!t) return null
+        const info = (load[loadSel.w] && load[loadSel.w][loadSel.t]) || {}
+        const cap = (info.cap != null && info.cap !== '') ? info.cap : capByType[loadSel.t]
+        // ใหม่(live) = job จาก booking + NEW_MC ของแถวที่วางจริง — สูตรเดียวกับแถบ ตัวเลขจึงตรงกัน
+        const nw = Math.max(0, (info.bookingNew || 0) + (planNewByWeekType[loadSel.w + '|' + loadSel.t] || 0))
+        return (
+          <LoadPanel week={loadSel.w} type={t} cap={cap} old={info.old || 0} nw={nw}
+            bookingNew={info.bookingNew || 0}
+            plan={loadDetail.plan} oldJobs={loadDetail.old}
+            onClose={() => setLoadSel(null)} />
+        )
+      })()}
     </div>
+  )
+}
+
+/**
+ * การ์ดโควตา Set up ของ 1 ช่องแถบโหลด (ประเภทโรงงาน × สัปดาห์) — เปิดจากคลิกช่องแถบโหลด
+ * ตอบคำถาม "job เต็ม/เกินเพราะ item ไหนบ้าง และย้ายตัวไหนออกได้"
+ *
+ * 1 job = ตั้งเครื่องใหม่ 1 เครื่อง (NEW_MC / SETUP_MC) — งานที่รันต่อจากสัปดาห์ก่อนไม่กินโควตา
+ * งานแผนรอบนี้อ่านสดจากแถวบน Gantt (ลากแล้วตัวเลขขยับทันที) ส่วนแผนเดิมมาจากชีท SETUP_TRACKING
+ */
+function LoadPanel({ week, type, cap, old, nw, bookingNew = 0, plan = [], oldJobs = [], onClose }) {
+  const nf = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString()
+  const total = old + nw
+  const hasCap = cap != null && cap !== ''
+  const free = hasCap ? cap - total : null
+  const over = hasCap && total > cap
+
+  // คลิกนอกการ์ด = ปิด (เหมือนการ์ดเครื่อง) — ใช้ mousedown ให้เปิดช่องอื่นต่อได้ทันที
+  const boxRef = useRef(null)
+  useEffect(() => {
+    const onDown = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) onClose() }
+    window.addEventListener('mousedown', onDown)
+    return () => window.removeEventListener('mousedown', onDown)
+  }, [onClose])
+
+  const planJobs = plan.reduce((s, d) => s + (d.setup || 0), 0)
+  const planQty = plan.reduce((s, d) => s + (d.qty || 0), 0)
+  const oldJ = oldJobs.reduce((s, d) => s + (d.jobs || 0), 0)
+  const oldQty = oldJobs.reduce((s, d) => s + (d.qty || 0), 0)
+
+  return (
+    <aside className="jobpanel avapanel" ref={boxRef}>
+      <div className="jobpanel-head">
+        <div>
+          <b className="jobpanel-item">Set up ในสัปดาห์ W{week}</b>
+          <div className="jobpanel-sub">{type.long || type.label}</div>
+        </div>
+        <button className="jobpanel-close" onClick={onClose} title="ปิด (Esc)">✕</button>
+      </div>
+
+      <div className="jobpanel-flags">
+        {over
+          ? <span className="jobflag warn">⚠ เกินโควตา {nf(total - cap)} job</span>
+          : hasCap
+            ? <span className="jobflag">{free === 0 ? 'เต็มโควตาพอดี' : `ว่างอีก ${nf(free)} job`}</span>
+            : <span className="jobflag">ไม่มีโควตากำหนดไว้สำหรับสัปดาห์นี้</span>}
+      </div>
+
+      <div className="jobpanel-body">
+        <div className="jobsec">
+          <h4>โควตา Set up</h4>
+          <dl className="jobdl">
+            <dt>โควตาทั้งหมด</dt><dd>{hasCap ? `${nf(cap)} job/week` : '—'}</dd>
+            <dt>แผนเดิม (booking)</dt><dd>− {nf(old)}</dd>
+            <dt>แผนรอบนี้ (live)</dt><dd>− {nf(nw)}</dd>
+            <dt>คงเหลือ</dt>
+            <dd className={over ? 'warn' : undefined}>
+              {!hasCap ? `ใช้ไป ${nf(total)}` : over ? `เกิน ${nf(total - cap)}` : free === 0 ? 'เต็มพอดี (0)' : nf(free)}
+            </dd>
+          </dl>
+        </div>
+
+        <div className="jobsec">
+          <h4>🆕 แผนรอบนี้ ({nf(planJobs)} job)</h4>
+          {plan.length === 0 ? (
+            <div className="hint small" style={{ padding: 0 }}>
+              แผนรอบนี้ไม่มีงานที่ตั้งเครื่องใหม่ในสัปดาห์นี้ — โควตาถูกใช้โดยแผนเดิมทั้งหมด
+            </div>
+          ) : (
+            <table className="avatbl">
+              <thead>
+                <tr>
+                  <th>Item</th><th>เครื่อง</th><th className="num">เกจ</th>
+                  <th className="num">จำนวน (กก.)</th>
+                  <th className="num" title="job ที่กินโควตา = เครื่องที่ตั้งใหม่ (NEW_MC)">Setup</th>
+                  <th className="num" title="เครื่องอุ่นที่ยกมาจากสัปดาห์ก่อน (CARRYOVER_MC) — ไม่กินโควตา">Continue</th>
+                </tr>
+              </thead>
+              <tbody>
+                {plan.map((d, i) => (
+                  <tr key={i}
+                    title={`${d.item} • ${d.mcg} เกจ ${d.gauge}${d.so ? `\nSO ${d.so}` : ''}\n`
+                      + `ใช้เครื่อง ${nf(d.mc)} = Setup ${nf(d.setup)} + Continue ${nf(d.carry)}\n`
+                      + '🆕 ย้ายงานนี้ไปสัปดาห์อื่นบน Gantt = คืนโควตา job ให้สัปดาห์นี้'}>
+                    <td>{d.item}</td>
+                    <td>{d.mcg}</td>
+                    <td className="num">{d.gauge}</td>
+                    <td className="num">{nf(d.qty)}</td>
+                    <td className="num setup">🔧 {nf(d.setup)}</td>
+                    <td className={'num' + (d.carry > 0 ? '' : ' zero')}>{d.carry > 0 ? nf(d.carry) : '–'}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={3}>รวม</td><td className="num">{nf(planQty)}</td>
+                  <td className="num">{nf(planJobs)}</td><td className="num" />
+                </tr>
+              </tfoot>
+            </table>
+          )}
+          {bookingNew > 0 && (
+            <div className="hint small" style={{ padding: 0 }}>
+              + อีก {nf(bookingNew)} job มาจาก booking (ไม่มีแถวบน Gantt ให้ย้าย)
+            </div>
+          )}
+        </div>
+
+        <div className="jobsec">
+          <h4>📋 แผนเดิม / booking ({nf(oldJ)} job)</h4>
+          {oldJobs.length === 0 ? (
+            <div className="hint small" style={{ padding: 0 }}>ไม่มี job ของแผนเดิมในสัปดาห์นี้</div>
+          ) : (
+            <table className="avatbl">
+              <thead>
+                <tr>
+                  <th>Item</th><th>เครื่อง</th><th className="num">เกจ</th>
+                  <th className="num">จำนวน (กก.)</th>
+                  <th className="num" title="job ที่กินโควตา = เครื่องที่ตั้งใหม่ (SETUP_MC)">Setup</th>
+                  <th className="num" title="เครื่องอุ่นที่ยกมาจากสัปดาห์ก่อน (CARRYOVER_MC) — ไม่กินโควตา">Continue</th>
+                </tr>
+              </thead>
+              <tbody>
+                {oldJobs.map((d, i) => (
+                  <tr key={i}
+                    title={`${d.item} • ${d.mcg} เกจ ${d.gauge}${d.so ? `\nSO ${d.so}` : ''}\n`
+                      + `ใช้เครื่อง ${nf(d.mc)} = Setup ${nf(d.setup)} + Continue ${nf(d.carry)}`
+                      + (d.days ? `\nวัน setup ${nf(d.days)} วัน` : '')
+                      + '\n📋 แผนเก่าที่ commit แล้ว — ย้าย/แก้บน Gantt ไม่ได้'}>
+                    <td>{d.item}</td>
+                    <td>{d.mcg}</td>
+                    <td className="num">{d.gauge}</td>
+                    <td className="num">{nf(d.qty)}</td>
+                    <td className="num setup">🔧 {nf(d.setup || d.jobs)}</td>
+                    <td className={'num' + (d.carry > 0 ? '' : ' zero')}>{d.carry > 0 ? nf(d.carry) : '–'}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={3}>รวม</td><td className="num">{nf(oldQty)}</td>
+                  <td className="num">{nf(oldJ)}</td><td className="num" />
+                </tr>
+              </tfoot>
+            </table>
+          )}
+        </div>
+
+        <div className="jobsec">
+          <div className="hint small" style={{ padding: 0 }}>
+            {over
+              ? <>1 job = ตั้งเครื่องใหม่ 1 เครื่อง — ต้องย้ายงาน 🆕 ออกไปสัปดาห์อื่นรวม <b>{nf(total - cap)} job</b>
+                ช่องนี้ถึงจะพอดี (งาน 📋 แผนเดิมย้ายไม่ได้ ถ้าเกินจากแผนเดิมล้วนต้องแก้ที่ booking)</>
+              : <>1 job = ตั้งเครื่องใหม่ 1 เครื่อง (Setup) — งานที่รันต่อจากสัปดาห์ก่อน (Continue) ไม่กินโควตา</>}
+          </div>
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+/**
+ * การ์ดรายละเอียดเครื่องว่างของ 1 ช่อง (พูล CAT|เกจ × สัปดาห์) — เปิดจากคลิกชิปมุมขวาบน
+ * ตอบคำถาม "เกินมากี่เครื่อง และเครื่องถูกใช้ไปกับ item ไหนบ้าง วางไว้กี่กิโล"
+ *
+ * เครื่องแชร์กันทั้งพูล (CAT|เกจ) → รายการที่โชว์คือ "ทุก item ในพูลเดียวกัน" ไม่ใช่เฉพาะแถวที่คลิก
+ * เพราะการเกินเกิดจากยอดรวมทั้งพูล ไม่ใช่จากเครื่องกลุ่มเดียว (แถวของเครื่องที่คลิกทำตัวหนาไว้)
+ */
+function AvaPanel({ week, vals, groups, mcGroup = '', av, plan, detail, booking = [], onClose }) {
+  const nf = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString()
+  const total = Number(av.total) || 0
+  const remain = Number(av.remain) || 0
+  // เครื่องที่ booking จองไปแล้ว = MC_USE_CEIL (ถ้าไม่มีค่อยอนุมานจาก ทั้งหมด − ว่างหลัง booking)
+  const bkUsed = av.used != null ? (Number(av.used) || 0) : Math.max(0, total - remain)
+  const remainLive = remain - plan.normal
+  const rsv = av.reserved || null
+  const rsvP = rsv ? (rsv.poly || 0) : 0
+  const rsvC = rsv ? (rsv.cotton || 0) : 0
+  const rsvPused = rsv ? (rsv.poly_used || 0) : 0
+  const rsvCused = rsv ? (rsv.cotton_used || 0) : 0
+  const polyLeft = rsvP - rsvPused - plan.poly
+  const cottonLeft = rsvC - rsvCused - plan.cotton
+  // ถังที่ล้น → ใช้ทำแถบแดงในตาราง (งานปกติล้น ไม่ได้แปลว่างาน POLY ผิด)
+  const over = {
+    normal: remainLive < 0,
+    poly: rsvP > 0 && polyLeft < 0,
+    cotton: rsvC > 0 && cottonLeft < 0,
+  }
+  const KIND = { normal: 'ปกติ', poly: '🔒 POLY', cotton: '🔒 COTTON' }
+
+  // คลิกที่ไหนก็ได้นอกการ์ด = ปิด (ไม่ต้องเล็งกากบาท) — ใช้ mousedown เพื่อให้ปิดทันทีที่กด
+  // และคลิกชิปช่องอื่นต่อได้เลย (mousedown ปิดใบเก่า → click เปิดใบใหม่)
+  const boxRef = useRef(null)
+  useEffect(() => {
+    const onDown = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) onClose() }
+    window.addEventListener('mousedown', onDown)
+    return () => window.removeEventListener('mousedown', onDown)
+  }, [onClose])
+  const sumQty = detail.reduce((s, d) => s + (d.qty || 0), 0)
+  const sumNet = detail.reduce((s, d) => s + (d.net || 0), 0)
+  const sumSetup = detail.reduce((s, d) => s + (d.setup || 0), 0)
+  const sumCarry = detail.reduce((s, d) => s + (d.carry || 0), 0)
+  const bkQty = booking.reduce((s, d) => s + (d.qty || 0), 0)
+  const bkMc = booking.reduce((s, d) => s + (d.mc || 0), 0)
+  const bkSetup = booking.reduce((s, d) => s + (d.setup || 0), 0)
+  const bkCarry = booking.reduce((s, d) => s + (d.carry || 0), 0)
+  const nOver = (over.normal ? -remainLive : 0) + (over.poly ? -polyLeft : 0) + (over.cotton ? -cottonLeft : 0)
+  // แผนรอบนี้มีส่วนทำให้ถังที่ล้นเกินหรือไม่ — ถ้าไม่มีเลย ย้ายงานบน Gantt ก็ไม่ช่วย (ต้องแก้ที่ booking)
+  const planInOver = (over.normal ? plan.normal : 0) + (over.poly ? plan.poly : 0) + (over.cotton ? plan.cotton : 0)
+
+  return (
+    <aside className="jobpanel avapanel" ref={boxRef}>
+      <div className="jobpanel-head">
+        <div>
+          <b className="jobpanel-item">เครื่องในสัปดาห์ W{week}</b>
+          <div className="jobpanel-sub">
+            {groups.map((g, i) => vals[i]).filter(v => v !== '' && v != null).join(' • ')}
+          </div>
+        </div>
+        <button className="jobpanel-close" onClick={onClose} title="ปิด (Esc)">✕</button>
+      </div>
+
+      <div className="jobpanel-flags">
+        {over.normal
+          ? <span className="jobflag warn">⚠ เครื่องปกติเกิน {nf(-remainLive)} เครื่อง</span>
+          : <span className="jobflag">{remainLive === 0 ? 'เครื่องปกติเต็มพอดี' : `เครื่องปกติว่าง ${nf(remainLive)}`}</span>}
+        {over.poly && <span className="jobflag warn">⚠ POLY เกิน {nf(-polyLeft)} เครื่อง</span>}
+        {over.cotton && <span className="jobflag warn">⚠ COTTON เกิน {nf(-cottonLeft)} เครื่อง</span>}
+      </div>
+
+      <div className="jobpanel-body">
+        <div className="jobsec">
+          <h4>เครื่องปกติ</h4>
+          <dl className="jobdl">
+            <dt>เครื่องทั้งหมด</dt><dd>{nf(total)}</dd>
+            <dt>booking จองไป</dt><dd>− {nf(bkUsed)}</dd>
+            <dt>ว่างหลัง booking</dt><dd>{nf(remain)}</dd>
+            <dt>แผนจองเพิ่ม</dt><dd>− {nf(plan.normal)}</dd>
+            <dt>คงเหลือ</dt>
+            <dd className={remainLive < 0 ? 'warn' : undefined}>
+              {remainLive < 0 ? `ไม่ว่าง (เกิน ${nf(-remainLive)})` : remainLive === 0 ? 'เต็มพอดี (0)' : nf(remainLive)}
+            </dd>
+          </dl>
+        </div>
+
+        {(rsvP > 0 || rsvC > 0) && (
+          <div className="jobsec">
+            <h4>🔒 เครื่องกันไว้ (ใช้แทนงานปกติไม่ได้)</h4>
+            <dl className="jobdl">
+              {rsvP > 0 && (<>
+                <dt>POLY</dt>
+                <dd className={polyLeft < 0 ? 'warn' : undefined}>
+                  กันไว้ {nf(rsvP)} − booking {nf(rsvPused)} − แผน {nf(plan.poly)} = {polyLeft < 0 ? `เกิน ${nf(-polyLeft)}` : `เหลือ ${nf(polyLeft)}`}
+                </dd>
+              </>)}
+              {rsvC > 0 && (<>
+                <dt>COTTON</dt>
+                <dd className={cottonLeft < 0 ? 'warn' : undefined}>
+                  กันไว้ {nf(rsvC)} − booking {nf(rsvCused)} − แผน {nf(plan.cotton)} = {cottonLeft < 0 ? `เกิน ${nf(-cottonLeft)}` : `เหลือ ${nf(cottonLeft)}`}
+                </dd>
+              </>)}
+            </dl>
+          </div>
+        )}
+
+        <div className="jobsec">
+          <h4>งานของแผนรอบนี้ ({detail.length} รายการ)</h4>
+          {detail.length === 0 ? (
+            <div className="hint small" style={{ padding: 0 }}>
+              แผนรอบนี้ไม่มีงานในกลุ่มนี้ — เครื่องถูกใช้โดย booking ทั้งหมด (ดูรายการข้างล่าง)
+            </div>
+          ) : (
+            <table className="avatbl">
+              <thead>
+                <tr>
+                  <th>Item</th><th>เครื่อง</th>
+                  <th className="num">จำนวน (กก.)</th><th className="num">ใช้เครื่อง</th>
+                  <th className="num" title="เครื่องที่ต้องตั้งใหม่ (NEW_MC)">Setup</th>
+                  <th className="num" title="เครื่องอุ่นที่ยกมาจากสัปดาห์ก่อน (CARRYOVER_MC)">Continue</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.map((d, i) => (
+                  <tr key={i}
+                    className={(over[d.kind] ? 'bad' : '') + (d.net === 0 ? ' dim' : '') + (mcGroup && d.mcg === mcGroup ? ' cur' : '')}
+                    title={`${d.item} • ${d.mcg} เกจ ${d.gauge} • ${KIND[d.kind]}\n`
+                      + `ใช้เครื่องจริง (ACTUAL_MC) ${nf(d.mc)} − เครื่อง booking ${nf(d.bk)} = กินพูล ${nf(d.net)}\n`
+                      + `ในเครื่องที่ใช้ ${nf(d.mc)}: Setup ${nf(d.setup)} + Continue ${nf(d.carry)}`
+                      + (d.net === 0 ? '\n📦 นั่งบนเครื่องที่วิ่งอยู่แล้ว — ไม่กินเครื่องเพิ่ม' : '')}>
+                    <td>
+                      {d.item}
+                      {d.kind !== 'normal' && <span className={'avatag ' + d.kind}>{KIND[d.kind]}</span>}
+                    </td>
+                    <td>{d.mcg}</td>
+                    <td className="num">{nf(d.qty)}</td>
+                    <td className="num">{d.net === 0 ? '📦 0' : nf(d.net)}</td>
+                    <td className={'num' + (d.setup > 0 ? ' setup' : ' zero')}>{d.setup > 0 ? `🔧 ${nf(d.setup)}` : '–'}</td>
+                    <td className={'num' + (d.carry > 0 ? '' : ' zero')}>{d.carry > 0 ? nf(d.carry) : '–'}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={2}>รวม</td><td className="num">{nf(sumQty)}</td><td className="num">{nf(sumNet)}</td>
+                  <td className="num">{nf(sumSetup)}</td><td className="num">{nf(sumCarry)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          )}
+        </div>
+
+        <div className="jobsec">
+          <h4>📋 งาน booking ที่จองเครื่องไว้แล้ว ({booking.length} รายการ)</h4>
+          {booking.length === 0 ? (
+            <div className="hint small" style={{ padding: 0 }}>ไม่มีงาน booking ในกลุ่มนี้</div>
+          ) : (
+            <table className="avatbl">
+              <thead>
+                <tr>
+                  <th>Item</th><th>เครื่อง</th>
+                  <th className="num">จำนวน (กก.)</th><th className="num">ใช้เครื่อง</th>
+                  <th className="num" title="เครื่องที่ต้องตั้งใหม่ (_mc_increase)">Setup</th>
+                  <th className="num" title="เครื่องอุ่นที่ยกมาจากสัปดาห์ก่อน (_prev_mc_use_ceil)">Continue</th>
+                </tr>
+              </thead>
+              <tbody>
+                {booking.map((d, i) => (
+                  <tr key={i}
+                    className={(over[d.kind] ? 'bad' : '') + (mcGroup && d.mcg === mcGroup ? ' cur' : '')}
+                    title={`${d.item} • ${d.mcg} เกจ ${d.gauge} • ${KIND[d.kind]}${d.so ? `\nSO ${d.so}` : ''}\n`
+                      + `booking จองไว้ ${nf(d.mc)} เครื่อง (MC_USE_CEIL) • ${nf(d.qty)} กก.\n`
+                      + `Setup ${nf(d.setup)} + Continue (ต่อจากสัปดาห์ก่อน) ${nf(d.carry)} = ${nf(d.mc)}\n`
+                      + '📋 แผนเก่าที่ commit แล้ว — ย้าย/แก้บน Gantt ไม่ได้'}>
+                    <td>
+                      {d.item}
+                      {d.kind !== 'normal' && <span className={'avatag ' + d.kind}>{KIND[d.kind]}</span>}
+                    </td>
+                    <td>{d.mcg}</td>
+                    <td className="num">{nf(d.qty)}</td>
+                    <td className="num">{nf(d.mc)}</td>
+                    <td className={'num' + (d.setup > 0 ? ' setup' : ' zero')}>{d.setup > 0 ? `🔧 ${nf(d.setup)}` : '–'}</td>
+                    <td className={'num' + (d.carry > 0 ? '' : ' zero')}>{d.carry > 0 ? nf(d.carry) : '–'}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={2}>รวม</td><td className="num">{nf(bkQty)}</td><td className="num">{nf(bkMc)}</td>
+                  <td className="num">{nf(bkSetup)}</td><td className="num">{nf(bkCarry)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          )}
+        </div>
+
+        <div className="jobsec">
+          <div className="hint small" style={{ padding: 0 }}>
+            {nOver > 0 && planInOver === 0
+              ? <>เกิน <b>{nf(nOver)} เครื่อง</b> มาจาก <b>booking ทั้งหมด</b> — ย้ายงานบน Gantt ไม่ช่วย
+                ต้องไปแก้ที่ booking (จ้างทอ/เลื่อนงานเดิม) หรือแก้จำนวนเครื่องที่ MC_Total ของกลุ่มนี้</>
+              : nOver > 0
+                ? <>ต้องย้ายงานของแผนออกไปสัปดาห์อื่น (หรือลดจำนวน) รวมประมาณ <b>{nf(nOver)} เครื่อง</b> ช่องนี้ถึงจะพอดี —
+                  งาน 📋 booking ย้ายไม่ได้ และ 📦 = นั่งบนเครื่องที่วิ่งอยู่แล้ว ย้ายออกก็ไม่คืนเครื่องให้พูล</>
+                : <>ตัวเลข "ใช้เครื่อง" ของแผน = ACTUAL_MC − เครื่อง booking ของ item นั้น (📦 = นั่งบนเครื่องที่วิ่งอยู่แล้ว ไม่กินเครื่องเพิ่ม)</>}
+          </div>
+        </div>
+      </div>
+    </aside>
   )
 }
 
@@ -1174,7 +1687,7 @@ export default function PlanGantt({ columns, rows, sheet = '', load = {}, ava = 
  * Panel รายละเอียดงาน 1 แถว — โชว์ทุกคอลัมน์ของชีท PLAN (จัดกลุ่มตาม PANEL_GROUPS
  * + ที่เหลือรวมใน "คอลัมน์อื่นๆ") เพื่อให้ตัดสินใจได้บนหน้าเว็บโดยไม่ต้องเปิด Excel
  */
-function JobPanel({ row, columns, colIdx, idx, weeks = [], isLocked = () => false, onSplit, onRemove, showOther, onToggleOther, onClose }) {
+function JobPanel({ row, columns, colIdx, idx, weeks = [], isLocked = () => false, onSplit, onRemove, showOther, onToggleOther, onClose, progTeam = '' }) {
   const v = (name) => {
     const i = colIdx[name]
     return i == null ? '' : norm(row[i])
@@ -1226,7 +1739,7 @@ function JobPanel({ row, columns, colIdx, idx, weeks = [], isLocked = () => fals
     <aside className="jobpanel">
       <div className="jobpanel-head">
         <div>
-          <b className="jobpanel-item">{v('ITEM_CODE')}</b>
+          <b className={'jobpanel-item' + (progTeam ? ' program' : '')}>{v('ITEM_CODE')}</b>
           <div className="jobpanel-sub">
             สัปดาห์ผลิต <b>W{week}</b> • {v('MC_GROUP')} เกจ {v('MC_GUAGE')} • {v('CAT')}
           </div>
@@ -1244,6 +1757,11 @@ function JobPanel({ row, columns, colIdx, idx, weeks = [], isLocked = () => fals
           </span>
         )}
         {v('IS_CORE_ITEM') && <span className="jobflag core">★ {v('IS_CORE_ITEM')}</span>}
+        {progTeam && (
+          <span className="jobflag program" title="item + ทีมนี้ ตรงกับชีท Program ใน MasterMC">
+            🏷 Program • ทีม {progTeam}
+          </span>
+        )}
       </div>
 
       {(canSplit || canDelete) && (

@@ -130,6 +130,8 @@ export default function KnitPlan({ active = true }) {
     return () => clearTimeout(t)
   }, [selJob])
   const [load, setLoad] = useState({})
+  // รายการ job ที่ตั้งเครื่องใหม่ (ชีท SETUP_TRACKING) — ใช้ในการ์ดที่เปิดจากแถบโหลดบน Gantt
+  const [setupJobs, setSetupJobs] = useState([])
   const [ava, setAva] = useState({})
   // map เครื่อง→พูล (เช่น SKP vs SKPTA/SKPLE) สำหรับหา ava/reserved ต่อพูล
   const [poolMap, setPoolMap] = useState({})
@@ -137,6 +139,8 @@ export default function KnitPlan({ active = true }) {
   const [bookingMc, setBookingMc] = useState({})
   // payload วันทำงานตามกลุ่มเครื่อง (ชีท Work Day + ปฏิทินสด) — ใช้คำนวณวันทำงานราย (mc,gauge,week) ตอนลากงาน
   const [workdayData, setWorkdayData] = useState(null)
+  // ชีท Program ใน MasterMC → { ITEM_CODE: [TEAM, ...] } ที่ต้องโชว์เป็นตัวหนังสือสีน้ำเงิน
+  const [program, setProgram] = useState({})
   const prevRunning = useRef(false)
 
   async function loadMeta() {
@@ -149,6 +153,8 @@ export default function KnitPlan({ active = true }) {
   }
   async function loadLoad() {
     try { setLoad(await retry(() => api.planLoad())) } catch { setLoad({}) }
+    // รายการ job รายตัวของแถบโหลด (การ์ดที่เปิดจากการคลิกช่องแถบโหลด) — มาจากไฟล์แผนเดียวกัน
+    try { setSetupJobs(await retry(() => api.planSetupJobs())) } catch { setSetupJobs([]) }
   }
   async function loadAva() {
     // ava ควรมีข้อมูลเมื่อมีไฟล์แผน → ถ้าได้ว่าง ลองซ้ำก่อน (กันเครื่อง/คอลัมน์ 🔒 หายชั่วคราว)
@@ -158,6 +164,7 @@ export default function KnitPlan({ active = true }) {
     try { setBookingMc(await retry(() => api.planBookingMc())) } catch { setBookingMc({}) }
     try { setBookingItems(await retry(() => api.planBookingItems())) } catch { setBookingItems([]) }
     try { setWorkdayData(await retry(() => api.workday())) } catch { setWorkdayData(null) }
+    try { setProgram(await retry(() => api.planProgram())) } catch { setProgram({}) }
   }
   async function loadSheet(sheet) {
     setLoading(true); setMsg('')
@@ -489,6 +496,37 @@ export default function KnitPlan({ active = true }) {
 
   const visible = useMemo(() => grid ? filterRows(grid, search, filters) : [], [grid, search, filters])
 
+  // ── ชีท Program (Master) → ทำตัวหนังสือเป็นสีน้ำเงิน ────────────────────────
+  // เงื่อนไข: ITEM_CODE ของแถว ต้องตรงกับชีท Program "และ" ทีมในคอลัมน์ TEAM ต้องตรงด้วย
+  // ⚠ ไฟล์แผนเก่า/ชีทที่ยังไม่มีคอลัมน์ TEAM (สร้างก่อนฟีเจอร์นี้) → เทียบด้วย ITEM อย่างเดียวไปก่อน
+  //    ไม่งั้นจะไม่มีอะไรเหลืองเลยจนกว่าจะรันแผนใหม่
+  const progIdx = useMemo(() => ({
+    item: grid ? grid.columns.indexOf('ITEM_CODE') : -1,
+    team: grid ? grid.columns.indexOf('TEAM') : -1,
+  }), [grid?.columns])
+
+  // คืนชื่อทีมที่ match (ใช้เป็นทั้งเงื่อนไขสีและข้อความ tooltip) — ไม่ match = ''
+  function programTeam(row) {
+    const { item: ii, team: ti } = progIdx
+    if (ii < 0 || !row) return ''
+    const teams = program[norm(row[ii]).trim().toUpperCase()]
+    if (!teams || !teams.length) return ''
+    if (ti < 0) return teams.join(' , ')
+    // ทั้งสองฝั่งเก็บหลายทีมคั่นด้วย , ได้ → ตรงกันสักทีมก็ถือว่า match
+    const mine = norm(row[ti]).split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+    if (!mine.length) return ''
+    const hit = teams.filter(t => mine.includes(String(t).trim().toUpperCase()))
+    return hit.length ? hit.join(' , ') : ''
+  }
+
+  // { idx แถว → "ทีม" } ของแถวที่เข้าเงื่อนไข — ใช้ทั้งตารางและ Gantt (คิดที่เดียว)
+  const programRows = useMemo(() => {
+    const m = {}
+    if (!grid) return m
+    grid.rows.forEach((row, idx) => { const t = programTeam(row); if (t) m[idx] = t })
+    return m
+  }, [grid, program, progIdx])
+
   // ITEM_CODE ที่กำลังทำแผนวันนี้ (จากแผนปัจจุบัน) ที่ "มีประวัติใน booking" — ใช้ทำ dropdown โหมด plan
   const bookingHistCodes = useMemo(() => {
     if (!grid) return []
@@ -613,6 +651,7 @@ export default function KnitPlan({ active = true }) {
         {rowsList.map(({ row, idx }) => (
           <tr key={idx}
             ref={highlight === idx ? modalRowRef : null}
+            title={programRows[idx] ? `Program: ทีม ${programRows[idx]}` : undefined}
             className={highlight === idx ? 'rowsel' : undefined}>
             <td className="rownum">{idx + 1}</td>
             {row.map((cell, ci) => {
@@ -808,7 +847,7 @@ export default function KnitPlan({ active = true }) {
               <button onClick={() => setShowGantt(s => !s)}>{showGantt ? 'ซ่อน' : 'แสดง'}</button>
             </div>
           </div>
-          {showGantt && <PlanGantt columns={grid.columns} rows={visible} sheet={grid.sheet} load={load} ava={ava} bookingMc={bookingMc} poolMap={poolMap} onMoveWeek={moveJob} onEditQty={editQty} onSplit={splitJob} onRemove={delRow} bookingItems={bookingItems} bookingMode={bookingMode} bookingPick={bookingPick} allMcRows={workdayData?.mc_rows || EMPTY_ROWS} loadFilter={loadFilter} setLoadFilter={setLoadFilter} barFields={barFields} selIdx={selJob} setSelIdx={setSelJob} />}
+          {showGantt && <PlanGantt columns={grid.columns} rows={visible} sheet={grid.sheet} load={load} setupJobs={setupJobs} ava={ava} bookingMc={bookingMc} poolMap={poolMap} onMoveWeek={moveJob} onEditQty={editQty} onSplit={splitJob} onRemove={delRow} bookingItems={bookingItems} bookingMode={bookingMode} bookingPick={bookingPick} allMcRows={workdayData?.mc_rows || EMPTY_ROWS} loadFilter={loadFilter} setLoadFilter={setLoadFilter} barFields={barFields} selIdx={selJob} setSelIdx={setSelJob} programRows={programRows} />}
         </div>
       )}
 

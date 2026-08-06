@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api.js'
 import MapItem from './MapItem.jsx'
+import Substitute from './Substitute.jsx'
 import {
   ColumnFilter, columnFilterData, filterRows, norm,
   ROWNUM_W, isIdName, numericCols, fmtNum, autoColWidths, makeColResizer,
@@ -246,10 +247,17 @@ export default function Data() {
           onClick={() => setView('map-item')}>
           Map Item
         </button>
+        <button
+          className={'data-viewtab' + (view === 'substitute' ? ' active' : '')}
+          onClick={() => setView('substitute')}>
+          Item ทดแทน
+        </button>
       </div>
 
       {view === 'map-item' ? (
         <MapItem embedded />
+      ) : view === 'substitute' ? (
+        <Substitute />
       ) : (
         <div className="data-page">
           <aside className="data-sidebar">

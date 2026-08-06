@@ -32,6 +32,28 @@ async function req(method, url, body) {
   return r.json()
 }
 
+// อัปโหลดไฟล์ (multipart) — ใช้ FormData จึงไม่ตั้ง Content-Type เอง ให้เบราว์เซอร์ใส่ boundary
+async function upload(url, file) {
+  const fd = new FormData()
+  fd.append('file', file)
+  const token = auth.get()
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: fd,
+  })
+  if (r.status === 401) {
+    auth.clear()
+    if (onUnauthorized) onUnauthorized()
+  }
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`
+    try { const j = await r.json(); msg = j.detail || msg } catch { }
+    throw new Error(msg)
+  }
+  return r.json()
+}
+
 export const api = {
   // auth
   login: (username, password) => req('POST', '/api/login', { username, password }),
@@ -71,15 +93,26 @@ export const api = {
       (sheet ? `&sheet=${encodeURIComponent(sheet)}` : '')),
   mapItemDownloadUrl: (file, v) =>
     `/api/map-item/download?file=${encodeURIComponent(file)}` + (v ? `&t=${Math.round(v)}` : ''),
+  // item ทดแทน (Master_Item ชีท "Master_Item V2" — รหัสใน ITEM_LIST เดียวกันใช้แทนกันได้)
+  substituteSummary: () => req('GET', '/api/substitute'),
+  substituteSearch: (q, onlyMulti = true, limit = 200) =>
+    req('GET', `/api/substitute/search?q=${encodeURIComponent(q || '')}` +
+      `&only_multi=${onlyMulti ? 'true' : 'false'}&limit=${limit}`),
+  substitutePreview: (file) => upload('/api/substitute/preview', file),
+  substituteImport: (file) => upload('/api/substitute/import', file),
   // plan (แผนผลิตล่าสุด — แก้ไข + export กลับ Excel)
   planLatest: () => req('GET', '/api/plan'),
   planSheet: (sheet) => req('GET', '/api/plan/sheet' + (sheet ? `?sheet=${encodeURIComponent(sheet)}` : '')),
   planSave: (sheet, columns, rows) => req('PUT', '/api/plan/sheet', { sheet, columns, rows }),
   planLoad: () => req('GET', '/api/plan/load'),
   planAva: () => req('GET', '/api/plan/ava'),
+  // รายการ job ที่ตั้งเครื่องใหม่ (ชีท SETUP_TRACKING) — การ์ดที่เปิดจากแถบโหลดบน Gantt
+  planSetupJobs: () => req('GET', '/api/plan/setup-jobs'),
   planPoolMap: () => req('GET', '/api/plan/pool-map'),
   planBookingMc: () => req('GET', '/api/plan/booking-mc'),
   planBookingItems: () => req('GET', '/api/plan/booking-items'),
+  // ชีท Program ใน MasterMC → { ITEM_CODE: [TEAM, ...] } (item+ทีมที่ต้องโชว์เป็นตัวหนังสือสีเหลือง)
+  planProgram: () => req('GET', '/api/plan/program'),
   // v = mtime ของไฟล์ — บังคับให้ URL เปลี่ยนหลังบันทึก เบราว์เซอร์จะได้ไม่หยิบไฟล์เก่าจากแคช
   planDownloadUrl: (v) => '/api/plan/download' + (v ? `?t=${Math.round(v)}` : ''),
   // order color (Datamining → Booking ระดับ ITEM Color — แก้ไข + export)

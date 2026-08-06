@@ -9,7 +9,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,6 +23,7 @@ import workday
 import scheduler
 import auth
 import map_item_view
+import substitute_view
 import plan_view
 import order_color_view
 import order_color_advisor
@@ -366,6 +367,45 @@ def api_map_item_download(file: str):
     return FileResponse(str(p), filename=p.name, media_type=XLSX_MIME, headers=NO_CACHE)
 
 
+# ---------------- Item ทดแทน (Master_Item ชีท "Master_Item V2") ----------------
+@app.get("/api/substitute")
+def api_substitute_summary():
+    return substitute_view.summary()
+
+
+@app.get("/api/substitute/search")
+def api_substitute_search(q: str = "", only_multi: bool = True, limit: int = 200):
+    try:
+        return substitute_view.search(q, only_multi, limit)
+    except (KeyError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/substitute/preview")
+async def api_substitute_preview(file: UploadFile = File(...)):
+    try:
+        return substitute_view.preview_import(await file.read())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/substitute/import")
+async def api_substitute_import(file: UploadFile = File(...)):
+    """อัปโหลด .xlsx → ทับเฉพาะชีท 'Master_Item V2' (สำรอง .bak ก่อน)"""
+    try:
+        return substitute_view.import_v2(await file.read(), file.filename or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ---------------- Plan (แผนผลิตล่าสุด — แก้ไข + export) ----------------
 @app.get("/api/plan")
 def api_plan():
@@ -408,6 +448,13 @@ def api_plan_ava():
     return plan_view.ava_by_week()
 
 
+@app.get("/api/plan/setup-jobs")
+def api_plan_setup_jobs():
+    """รายการ job ที่ตั้งเครื่องใหม่ ต่อ (สัปดาห์ × ประเภทโรงงาน) จากชีท SETUP_TRACKING
+    Gantt ใช้เปิดการ์ดเมื่อคลิกแถบโหลด — บอกว่าโควตา Set up ถูกใช้ไปกับ item ไหนบ้าง"""
+    return plan_view.setup_jobs_by_week()
+
+
 @app.get("/api/plan/pool-map")
 def api_plan_pool_map():
     # { "CAT|GUAGE|MC_GROUP": pool_key } เฉพาะกลุ่มที่แยกพูล (เช่น SKP vs SKPTA/SKPLE)
@@ -425,6 +472,13 @@ def api_plan_booking_mc():
 def api_plan_booking_items():
     """item ทั้งหมดจาก booking (แผนเก่า) — Gantt overlay เป็นบล็อกอ่านอย่างเดียว"""
     return plan_view.booking_items_by_week()
+
+
+@app.get("/api/plan/program")
+def api_plan_program():
+    """ชีท Program ใน MasterMC → { ITEM_CODE: [TEAM, ...] }
+    หน้าแผนใช้ทำตัวหนังสือสีเหลืองเมื่อ item + ทีมของแถวตรงกับที่ user กำหนดไว้"""
+    return plan_view.program_map()
 
 
 @app.get("/api/plan/download")

@@ -300,6 +300,32 @@ def load_calendar(file_path: Path | str, sheet_name: str = "Work day") -> pd.Dat
         iso = _shifted.dt.isocalendar()
         df["YEAR"] = iso["year"].astype(int)
         df["WEEK"] = iso["week"].astype(int)
+    # ── NORMALIZE ปีของ "สัปดาห์เศษปลายปี" ────────────────────────────────
+    # ปกติสัปดาห์ที่คร่อมปีจะถูก label เป็น "ปีถัดไป W1" ซึ่งถูกต้อง
+    # (เช่น 2027-12-31..2028-01-06 = 2028 W1)
+    # แต่บางปีมีเศษวันปลายปีที่ไม่พอเป็นสัปดาห์เต็ม แล้วถูก label เป็น
+    # "ปีถัดไป W53" ทั้งที่วันทั้งหมดอยู่ในปีก่อน
+    # (เช่น 2026-12-28..2026-12-31 ถูก label 2027 W53 — ต้องเป็น 2026 W53)
+    # ผลเสียถ้าไม่แก้: YW_INT = 202753 → order ที่กรอก FG 202653 หาไม่เจอ
+    # และ FG 202753 (ตั้งใจหมายถึงปลายปี 2027) จะชี้ย้อนไป ธ.ค. 2026 ผิด 1 ปีเต็ม
+    # เงื่อนไข: WEEK >= 52 (เศษปลายปี ไม่ใช่ W1 ของปีใหม่) และ YEAR ล้ำหน้าปีจริงของวันที่
+    _wk_year = df.groupby(["YEAR", "WEEK"])["DATE"].transform("min").dt.year
+    _mislabeled = (df["WEEK"] >= 52) & (df["YEAR"] > _wk_year)
+    if _mislabeled.any():
+        _fix = df.loc[_mislabeled, ["YEAR", "WEEK"]].drop_duplicates()
+        for _, _r in _fix.iterrows():
+            _m = _mislabeled & (df["YEAR"] == _r["YEAR"]) & (df["WEEK"] == _r["WEEK"])
+            _true_year = int(df.loc[_m, "DATE"].min().year)
+            print(
+                f"[CALENDAR FIX] สัปดาห์เศษปลายปี {int(_r['YEAR'])} W{int(_r['WEEK'])} "
+                f"({df.loc[_m, 'DATE'].min().date()}..{df.loc[_m, 'DATE'].max().date()}) "
+                # ใช้ ASCII arrow เท่านั้น — Calendar.py ถูก import โดย AVA_MC.py
+                # ซึ่งไม่ได้ reconfigure stdout เป็น utf-8 (console เป็น cp874)
+                # อักขระอย่าง U+2192 จะทำให้ UnicodeEncodeError ทั้ง pipeline
+                f"-> แก้ YEAR เป็น {_true_year}"
+            )
+        df.loc[_mislabeled, "YEAR"] = df.loc[_mislabeled, "DATE"].dt.year
+
     df["MONTH"] = df["DATE"].dt.month
     # Year-Week key (e.g., 2026-02) for grouping
     df["YW"] = df["YEAR"].astype(str) + "-" + df["WEEK"].astype(str).str.zfill(2)

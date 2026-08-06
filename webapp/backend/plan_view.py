@@ -243,6 +243,56 @@ def load_by_week() -> dict:
     return out
 
 
+def setup_jobs_by_week() -> list:
+    """รายการ job ที่ตั้งเครื่องใหม่ ต่อสัปดาห์ (ชีท SETUP_TRACKING ของไฟล์แผนล่าสุด)
+    → [ {week, type, source, item, so, mcg, gauge, jobs, setup, carry, mc, days, qty} ]
+
+    ใช้เปิดการ์ดรายละเอียดเมื่อคลิกแถบโหลด (Set up Job/Week) บน Gantt — แถบบอกแค่ยอดรวม
+    ว่าใช้ไปกี่ job จากโควตา การ์ดต้องบอกได้ว่า job เหล่านั้นเป็น item ไหนบ้าง
+    source = OLD (แผนเดิม/booking — ย้ายไม่ได้) / NEW (แผนรอบนี้)
+    ยอดรวมของ source=OLD ตรงกับ old ใน load_by_week() เพราะอ่านชีทเดียวกัน"""
+    p = latest_path()
+    if p is None:
+        return []
+    try:
+        import pandas as pd
+        st = pd.read_excel(p, sheet_name="SETUP_TRACKING")
+    except Exception:
+        return []
+    need = {"PLAN_WEEK", "TYPE", "PLAN_SOURCE", "ITEM_CODE", "JOBS_DEDUCTED"}
+    if not need <= set(st.columns):
+        return []
+
+    def _c(name):
+        return name if name in st.columns else None
+    c_mcg, c_g = _c("MC_GROUP"), _c("MC_GUAGE")
+    c_so, c_qty, c_days = _c("SC_SO_NO"), _c("KP_WEIGHT"), _c("SETUP_DAYS")
+    c_setup, c_carry, c_mc = _c("SETUP_MC"), _c("CARRYOVER_MC"), _c("MC_THIS_WEEK")
+
+    out = []
+    for _, r in st.iterrows():
+        wk = _wk_str(r["PLAN_WEEK"])
+        typ = str(r["TYPE"]).strip().upper()
+        if wk is None or typ not in _LOAD_TYPES:
+            continue
+        out.append({
+            "week": wk,
+            "type": typ,
+            "source": str(r["PLAN_SOURCE"]).strip().upper(),
+            "item": str(r["ITEM_CODE"]).strip(),
+            "so": str(r[c_so]).strip() if c_so else "",
+            "mcg": str(r[c_mcg]).strip() if c_mcg else "",
+            "gauge": _gkey(r[c_g]) if c_g else "",
+            "jobs": int(_num(r["JOBS_DEDUCTED"]) or 0),
+            "setup": int(_num(r[c_setup]) or 0) if c_setup else 0,
+            "carry": int(_num(r[c_carry]) or 0) if c_carry else 0,
+            "mc": int(_num(r[c_mc]) or 0) if c_mc else 0,
+            "days": _num(r[c_days]) or 0 if c_days else 0,
+            "qty": round(float(_num(r[c_qty]) or 0), 2) if c_qty else 0.0,
+        })
+    return out
+
+
 def _booking_ok(p: Path) -> bool:
     """ไฟล์ booking_final ใช้ได้ = เปิดเป็น xlsx ได้ + มีชีท SUMMARY_MC_REMAIN
     บาง run ของ AVA_MC ล้มเหลว เขียนไฟล์เปล่า ~2KB (ไม่ใช่ zip ด้วยซ้ำ) → ต้องข้าม
@@ -318,7 +368,10 @@ def booking_mc_by_item_week() -> dict:
 
 def booking_items_by_week() -> list:
     """item ทั้งหมดจาก booking (ชีท DETAIL ของ booking_final ล่าสุด) — "แผนเก่า" ที่ commit แล้ว
-    → [ {week, cat, gauge, mc_group, item, mc, qty, so, material} ]
+    → [ {week, cat, gauge, mc_group, item, mc, setup, carry, qty, so, material} ]
+
+    setup (_mc_increase) = เครื่องที่ต้องตั้งใหม่, carry (_prev_mc_use_ceil) = เครื่องอุ่นที่ยกมา
+    ทั้งคู่มาจากลูกโซ่ carry/setup ของ AVA_MC และรวมกัน = mc (MC_USE_CEIL) เสมอ
 
     หน้าเว็บ overlay รายการนี้เป็นบล็อกอ่านอย่างเดียวบน Gantt (map เข้าแถว CAT|เกจ|เครื่อง
     และช่องสัปดาห์เดียวกับแผน) เพื่อให้ planner เห็นว่าเครื่องไหน/สัปดาห์ไหนมีงาน booking อยู่แล้ว
@@ -337,6 +390,9 @@ def booking_items_by_week() -> list:
     has_qty = "KP_WEIGHT" in df.columns
     has_so = "SO_NO" in df.columns
     has_mat = "MATERIAL_CONTENT" in df.columns
+    # ไฟล์ booking เก่าอาจไม่มีคอลัมน์ลูกโซ่ carry/setup → ส่ง 0 ไป หน้าเว็บซ่อนคอลัมน์เอง
+    has_setup = "_mc_increase" in df.columns
+    has_carry = "_prev_mc_use_ceil" in df.columns
 
     agg: dict = {}
     for _, r in df.iterrows():
@@ -351,11 +407,15 @@ def booking_items_by_week() -> list:
         slot = agg.get(key)
         if slot is None:
             slot = {"week": wk, "cat": cat, "gauge": gauge, "mc_group": mcg,
-                    "item": item, "mc": 0, "qty": 0.0,
+                    "item": item, "mc": 0, "setup": 0, "carry": 0, "qty": 0.0,
                     "so": str(r["SO_NO"]).strip() if has_so else "",
                     "material": str(r["MATERIAL_CONTENT"]).strip() if has_mat else ""}
             agg[key] = slot
         slot["mc"] += int(_num(r["MC_USE_CEIL"]) or 0)
+        if has_setup:
+            slot["setup"] += int(_num(r["_mc_increase"]) or 0)
+        if has_carry:
+            slot["carry"] += int(_num(r["_prev_mc_use_ceil"]) or 0)
         if has_qty:
             slot["qty"] += float(_num(r["KP_WEIGHT"]) or 0)
 
@@ -590,6 +650,41 @@ def _coerce(v):
         except ValueError:
             return s
     return s
+
+
+def program_map() -> dict:
+    """ชีท "Program" ใน MasterMC (user กำหนดเอง) → { ITEM_CODE(upper): [TEAM, ...] }
+    หน้าแผนใช้คู่กับคอลัมน์ TEAM ของแถว: ตรงทั้ง item และทีม → ทำตัวหนังสือเป็นสีเหลือง
+    อ่านสดทุกครั้ง (ไม่ cache) เพื่อให้แก้ Master แล้วเห็นผลโดยไม่ต้องรันแผนใหม่"""
+    p = config.master_files().get("MasterMC")
+    if p is None or not p.exists():
+        return {}
+    try:
+        wb = load_workbook(p, read_only=True, data_only=True)
+    except Exception:
+        return {}
+    if "Program" not in wb.sheetnames:
+        wb.close()
+        return {}
+    rows = list(wb["Program"].iter_rows(values_only=True))
+    wb.close()
+    if not rows:
+        return {}
+    header = [str(c).strip().upper() if c is not None else "" for c in rows[0]]
+    ii = header.index("ITEM_CODE") if "ITEM_CODE" in header else -1
+    ti = header.index("TEAM_NAME") if "TEAM_NAME" in header else -1
+    if ii < 0 or ti < 0:
+        return {}
+    out: dict = {}
+    for r in rows[1:]:
+        item = str(r[ii]).strip().upper() if ii < len(r) and r[ii] is not None else ""
+        team = str(r[ti]).strip() if ti < len(r) and r[ti] is not None else ""
+        if not item or not team:
+            continue
+        teams = out.setdefault(item, [])
+        if team not in teams:
+            teams.append(team)
+    return out
 
 
 def write_grid(sheet: str, columns: list, rows: list) -> dict:
