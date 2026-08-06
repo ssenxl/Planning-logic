@@ -28,6 +28,7 @@ View_Datamining.py
 View_MC_Item.py
 
 # release builds & debug
+gen_unplan_survey.py
 KnitPlan_Release.zip
 KnitPlan_Release*.zip
 KnitPlan_Release/
