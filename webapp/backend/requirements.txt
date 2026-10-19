@@ -4,3 +4,5 @@ uvicorn[standard]
 apscheduler
 pydantic
 python-multipart
+# ส่งเมลแจ้งแผนเปลี่ยนผ่าน Power Automate (เดิมติดมากับ msal โดยบังเอิญ)
+requests

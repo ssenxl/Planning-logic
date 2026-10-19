@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { api, auth } from '../api.js'
+import { api, auth, withBase } from '../api.js'
 
 export default function Login({ onLogin }) {
   const [username, setUsername] = useState('')
@@ -26,7 +26,7 @@ export default function Login({ onLogin }) {
     <div className="login-page">
       <form className="login-card" onSubmit={submit}>
         <div className="login-logo">
-          <img src="/logo.png" alt="Nan Yang Textile Group" />
+          <img src={withBase('/logo.png')} alt="Nan Yang Textile Group" />
         </div>
         <h1>Knit Plan</h1>
         <p className="login-sub">ระบบวางแผนการผลิต — กรุณาเข้าสู่ระบบ</p>

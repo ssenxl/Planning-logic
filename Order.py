@@ -1,11 +1,13 @@
-import sys
 import pandas as pd
 from pathlib import Path
+
+from blocklist import filter_blocked
+import McGroups  # แหล่งเดียวของ "กลุ่มที่ไม่ใช่เครื่องทอของเรา" (จ้างทออ่านจาก MasterMC)
 
 # =========================
 # CONFIG
 # =========================
-_APP_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+_APP_DIR = Path(__file__).parent
 ORDER_DIR = _APP_DIR / "Order"
 OUTPUT_DIR = _APP_DIR / "data_plan"
 OUTPUT_FILE = OUTPUT_DIR / "order_ready.xlsx"
@@ -18,10 +20,8 @@ EXCLUDE_ORDER_TYPES = [
     "FQC"
 ]
 
-EXCLUDE_MC_GROUPS = [
-    "F-CL",
-    "COMKN"
-]
+# จ้างทออ่านจาก MasterMC (ไม่ hard-code ชื่อ) + F-CL ที่ไม่มีในมาสเตอร์ไหนเลย — ดู McGroups.py
+EXCLUDE_MC_GROUPS = sorted(McGroups.outsource_groups() | {"F-CL"})
 
 # =========================
 # FUNCTIONS
@@ -150,6 +150,11 @@ def prepare_order_data(export_excel: bool = True) -> pd.DataFrame:
     """
     df = load_all_orders(ORDER_DIR)
     excluded = []  # แถวที่ถูกกรองออก — เก็บไว้โชว์ในชีท UNPLANNED ของแผนผลิต
+    # ใบ/item ที่ผู้ใช้สั่งบล็อก (Blocklist/blocked_orders.xlsx) — ไม่ส่งเข้า excluded
+    # เพราะต้องการให้ "หายไปเลย" ไม่โผล่ทั้งชีท PLAN และ UNPLANNED
+    # ต้องกรองก่อน filter อื่น ไม่งั้นแถวที่บล็อกซึ่งบังเอิญเข้าเงื่อนไข MC_GROUP/ORDER_TYPE
+    # ที่ถูกตัด จะถูกเก็บลง excluded แล้วไปโผล่ในชีท UNPLANNED
+    df = filter_blocked(df)
     df = filter_order_type(df, excluded)
     df = filter_mc_group(df, excluded)
 

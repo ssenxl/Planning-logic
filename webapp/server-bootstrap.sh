@@ -8,7 +8,8 @@ SRC=$ROOT/src
 TGZ=/home/scm/knitplan_src.tgz
 
 echo "==> เตรียมโฟลเดอร์ที่ $ROOT"
-mkdir -p "$ROOT"/{src,masters,output,logs,config,env,stock,booking,order,datamining}
+# สร้างเองก่อน compose เสมอ — โฟลเดอร์ที่ docker สร้างให้ตอน mount เป็นของ root แล้ว scm อัปโหลดเข้าไม่ได้
+mkdir -p "$ROOT"/{src,masters,output,logs,config,env,stock,booking,order,datamining,mc_item,yarn}
 
 echo "==> แตกซอร์สลง $SRC"
 # คืนสิทธิ์เขียน (ของเดิมบางโฟลเดอร์เป็น read-only) แล้วล้างทิ้งทั้งหมดก่อนแตกใหม่
@@ -20,19 +21,24 @@ mkdir -p "$SRC"
 tar --delay-directory-restore -xzf "$TGZ" -C "$SRC"
 chmod -R u+w "$SRC"
 
-# ---- .env (Oracle creds) : knitplan ใช้บัญชี hctr เฉพาะของตัวเอง ----
+# ---- .env (Oracle creds) : knitplan ใช้บัญชีของตัวเอง ----
 # หมายเหตุ: ห้ามดึงจาก webchat .env — webchat ต่อ Oracle คนละบัญชี/คนละ DB
-#          เอามาใช้กับ NYTG จะโดน ORA-01017 (view booking/stock ไม่ได้)
-#          รหัสนี้ตรงกับ default ใน View_*.py ที่พิสูจน์แล้วว่า view ได้บน local
+#          เอามาใช้กับ DB ของเราจะโดน ORA-01017 (view booking/stock ไม่ได้)
+# ไฟล์นี้เป็นที่เก็บรหัสจริง "บนเครื่อง server เท่านั้น" — ไม่มีรหัสอยู่ในโค้ด/ใน git
+# ยังไม่มีไฟล์ = สร้างโครงว่างให้ แล้วต้องมีคนไปเติมรหัสเอง (ไม่เดารหัสให้)
 ENV_FILE=$ROOT/env/.env
 if [ ! -f "$ENV_FILE" ]; then
-  echo "==> สร้าง $ENV_FILE (Oracle creds = hctr)"
+  echo "==> สร้างโครง $ENV_FILE (ยังไม่มีรหัส)"
   {
-    echo "# Knit Plan env (auto-generated)"
-    echo "SF5_USER=hctr"
-    echo "SF5_PASSWORD=HCTR#23"
+    echo "# Knit Plan env — เติมบัญชีต่อ Oracle ที่นี่ (ไฟล์นี้อยู่บน server เท่านั้น)"
+    echo "SF5_USER="
+    echo "SF5_PASSWORD="
   } > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
+  echo "⚠️  ต้องเติม SF5_USER / SF5_PASSWORD ใน $ENV_FILE แล้วสั่ง"
+  echo "    docker compose -p knitplan up -d  อีกครั้ง — ไม่งั้นดึงข้อมูลจาก Oracle ไม่ได้"
+elif ! grep -qE '^SF5_PASSWORD=.+' "$ENV_FILE"; then
+  echo "⚠️  $ENV_FILE ยังไม่มีรหัส (SF5_PASSWORD ว่าง) — ดึงข้อมูลจาก Oracle จะไม่ผ่าน"
 else
   echo "==> ใช้ $ENV_FILE เดิม (ไม่ทับ)"
 fi
@@ -59,4 +65,4 @@ docker builder prune -f >/dev/null 2>&1 || true
 
 echo "==> สถานะ container"
 docker ps --filter "name=knitplan-app" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-echo "==> เสร็จ: http://docker-webchat:8080"
+echo "==> เสร็จ: http://docker-webchat/knitplan/  (สำรอง: http://docker-webchat:8080)"

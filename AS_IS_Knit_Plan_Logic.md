@@ -2,14 +2,14 @@
 ### บริษัท นันยางเท็กซ์ไทล์ (Nan Yang Textile)
 ### เอกสารสรุป Business Logic & Process Flow สำหรับ ERP Implementation (Oracle)
 
-> เอกสารนี้สรุปกระบวนการทำงานปัจจุบัน (AS-IS) ของระบบวางแผนการผลิตผ้าถัก (Knit Production Planning)
+> เอกสารนี้สรุปกระบวนการทำงานปัจจุบัน (AS-IS) ของระบบวางแผนการผลิตผ้าทอ (Knit Production Planning)
 > เพื่อให้ Vendor นำไปออกแบบ Solution / Interface บน Oracle ERP ตัวใหม่
 
 ---
 
 ## 1. ภาพรวมระบบ (System Overview)
 
-ระบบ AI Knit Plan ทำหน้าที่ **วางแผนการผลิตผ้าถัก (Greige Knitting)** โดยรับความต้องการ (Demand/Order) มาจัดสรรลงเครื่องถัก (Knitting Machine) ในแต่ละสัปดาห์ ภายใต้ข้อจำกัดของกำลังการผลิต (Machine Capacity) เวลา Setup เครื่อง และกำหนดส่งงาน (RDD/FG Week)
+ระบบ AI Knit Plan ทำหน้าที่ **วางแผนการผลิตผ้าทอ (Greige Knitting)** โดยรับความต้องการ (Demand/Order) มาจัดสรรลงเครื่องทอ (Knitting Machine) ในแต่ละสัปดาห์ ภายใต้ข้อจำกัดของกำลังการผลิต (Machine Capacity) เวลา Setup เครื่อง และกำหนดส่งงาน (RDD/FG Week)
 
 **ผลลัพธ์หลัก:** ตารางแผนการผลิตรายสัปดาห์ — ระบุว่า *Item ใด ผลิตที่เครื่องกลุ่มไหน Gauge เท่าไร ใช้กี่เครื่อง สัปดาห์ใด ผลิตได้กี่กิโล และทันกำหนดส่งหรือไม่*
 
@@ -23,13 +23,13 @@ INPUT (Oracle DB + Master Excel)  →  ENGINE (Python)  →  OUTPUT (Production 
 
 ## 2. แหล่งข้อมูล (Data Sources)
 
-### 2.1 จาก Oracle Database เดิม (`172.16.7.55:1521`, Service: `NYTG`)
+### 2.1 จาก Oracle Database เดิม (host/service ดูใน `.env`)
 
 | View / Source | ใช้ทำอะไร | Script |
 |---|---|---|
-| `BI_DATA_GREIGE_STOCK_KP` | Stock ผ้าดิบคงคลัง (On-hand) รายคลัง/รายตัว | View_Stock.py |
-| `nyf.DFIV_KP_BOOKING@NYKPB.WORLD` | Booking — แผน/ยอดงานที่จองเครื่องไว้แล้ว + Capacity ของเครื่อง | View_Booking.py |
-| `BI_DATA_SC_PENDING_HL` | Sales Contract (SC) ที่ยังค้างผลิต (Pending) = Demand หลัก | View_SC.py |
+| view สต๊อกผ้าดิบ | Stock ผ้าดิบคงคลัง (On-hand) รายคลัง/รายตัว | View_Stock.py |
+| view booking | Booking — แผน/ยอดงานที่จองเครื่องไว้แล้ว + Capacity ของเครื่อง | View_Booking.py |
+| view SC ค้างผลิต | Sales Contract (SC) ที่ยังค้างผลิต (Pending) = Demand หลัก | View_SC.py |
 
 ### 2.2 จากไฟล์ Master (Excel — ปัจจุบันเก็บใน SharePoint/OneDrive)
 

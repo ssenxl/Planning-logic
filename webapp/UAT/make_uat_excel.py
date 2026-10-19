@@ -30,7 +30,6 @@ BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 WRAP_TOP = Alignment(wrap_text=True, vertical="top")
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-
 def style_header(ws, row: int, ncol: int):
     for c in range(1, ncol + 1):
         cell = ws.cell(row=row, column=c)
@@ -40,11 +39,9 @@ def style_header(ws, row: int, ncol: int):
         cell.border = BORDER
     ws.row_dimensions[row].height = 34
 
-
 def set_widths(ws, widths: dict):
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
-
 
 # =====================================================================
 # 1) รายการ API ทั้งหมดของ server
@@ -71,7 +68,8 @@ APIS = [
     ("ตั้งเวลาอัตโนมัติ (Schedule)", "GET", "/api/schedule", "ทุก user ที่ login",
      "เวลาที่ตั้งไว้ + next_run ของ job (APScheduler, timezone Asia/Bangkok)", "-"),
     ("ตั้งเวลาอัตโนมัติ (Schedule)", "PUT", "/api/schedule", "admin เท่านั้น",
-     "บันทึกเวลาลง settings.json แล้วตั้ง job ใหม่", "body: {schedule: {full: {enabled, hour, minute}}}"),
+     "บันทึกรอบลง settings.json แล้วตั้ง job ใหม่ + จดประวัติการแก้ไข",
+     "body: {runs: [{id, enabled, hour, minute, mode: full|db|plan, days: [0=จ.…6=อา.]}]}"),
 
     ("Master Data", "GET", "/api/masters", "ทุก user ที่ login",
      "รายการไฟล์ Master (MasterMC / Calendar / Target_Stock / Master_Item) + ชีท + สถานะไฟล์", "-"),
@@ -127,37 +125,13 @@ APIS = [
     ("แผนผลิต (Plan)", "GET", "/api/plan/pool-map", "ทุก user ที่ login",
      "แผนที่กลุ่มที่แยกพูลเครื่อง (เช่น SKP vs SKPTA/SKPLE) → {CAT|GUAGE|MC_GROUP: pool}", "-"),
     ("แผนผลิต (Plan)", "GET", "/api/plan/booking-mc", "ทุก user ที่ login",
-     "เครื่องที่ booking ถักไอเทมนั้นอยู่แล้ว ต่อ (สัปดาห์ × ITEM|MC_GROUP|GUAGE)", "-"),
+     "เครื่องที่ booking ทอไอเทมนั้นอยู่แล้ว ต่อ (สัปดาห์ × ITEM|MC_GROUP|GUAGE)", "-"),
     ("แผนผลิต (Plan)", "GET", "/api/plan/booking-items", "ทุก user ที่ login",
      "item ทั้งหมดจาก booking (แผนเก่า) — overlay อ่านอย่างเดียวบน Gantt", "-"),
     ("แผนผลิต (Plan)", "GET", "/api/plan/download", "เปิด (ลิงก์ดาวน์โหลดตรง)",
      "ดาวน์โหลดไฟล์แผนล่าสุด (no-store; ใส่ ?t=mtime กันแคช)", "query: t (cache-buster)"),
-
-    ("Order Color", "GET", "/api/order-color", "ทุก user ที่ login",
-     "ข้อมูลไฟล์ datamining_booking_mapped.xlsx + รายชื่อชีท", "-"),
-    ("Order Color", "GET", "/api/order-color/sheet", "ทุก user ที่ login",
-     "อ่านชีทของไฟล์ Order Color", "query: sheet"),
-    ("Order Color", "PUT", "/api/order-color/sheet", "ทุก user ที่ login",
-     "บันทึกชีทกลับไฟล์ Order Color (สำรอง .bak)", "body: {sheet, columns, rows}"),
-    ("Order Color", "GET", "/api/order-color/download", "เปิด (ลิงก์ดาวน์โหลดตรง)",
-     "ดาวน์โหลดไฟล์ Order Color", "query: t (cache-buster)"),
-    ("Order Color", "POST", "/api/order-color/advise", "ทุก user ที่ login",
-     "วิเคราะห์ item ที่ต้องย้อมสี → คำแนะนำต่อ item + summary", "-"),
-    ("Order Color", "GET", "/api/order-color/cat-history", "ทุก user ที่ login",
-     "booking รายสัปดาห์จัดกลุ่มตาม CAT (เฉพาะ CAT ที่มี item สี) — default view ของหน้า", "-"),
-    ("Order Color", "GET", "/api/order-color/plan", "ทุก user ที่ login",
-     "grid แผน what-if = แผนจริง + แทรกแถว item สีที่ยังไม่มีในแผน (+ color_idx)", "-"),
-    ("Order Color", "GET", "/api/order-color/booking-gantt", "ทุก user ที่ login",
-     "grid จาก booking DETAIL ทุก item ต่อสัปดาห์ + mark งานสี (ตัด item ที่ stock พอออก)", "-"),
-    ("Order Color", "GET", "/api/order-color/booking-load", "ทุก user ที่ login",
-     "โควตา setup job ต่อสัปดาห์ (live จาก NEW_MC + plan-new) + cap จาก REMAINING_JOBS", "-"),
-    ("Order Color", "GET", "/api/order-color/booking-ava", "ทุก user ที่ login",
-     "เครื่องว่างต่อสัปดาห์แบบสอดคล้อง booking (planBase = used)", "-"),
-    ("Order Color", "POST", "/api/order-color/advise-moves", "ทุก user ที่ login",
-     "AI จัดอันดับ + อธิบายผลกระทบการดึงงานสีเข้าแทนงานไม่มีสี (มี fallback ถ้า AI ไม่พร้อม)",
-     "body: {cat, gauge, items[], setup_load{}}"),
-    ("Order Color", "POST", "/api/order-color/plan/export", "ทุก user ที่ login",
-     "แปลง grid what-if → ไฟล์ Excel order_color_plan.xlsx (ชีท PLAN_ORDER_COLOR)", "body: {columns, rows}"),
+    ("แผนผลิต (Plan)", "GET", "/api/dyed-items", "ทุก user ที่ login",
+     "รหัสผ้าที่ให้สีแล้ว (OPEN_COLOR_LOSS > 0) — Gantt ใช้แยกสีบล็อก ; ยังไม่ดึง view = codes ว่าง", "-"),
 
     ("จ้างทอ (Outsource)", "POST", "/api/outsource/advise", "ทุก user ที่ login",
      "AI แนะนำ item ที่ควรส่งจ้างทอ (shortlist + เหตุผล)", "-"),
@@ -236,7 +210,7 @@ TESTS = [
     ("เข้าสู่ระบบ (Auth)", "user ธรรมดาห้ามตั้งเวลาอัตโนมัติ", "PUT", "/api/schedule", "user", S, R_READ,
      "login ด้วย user ธรรมดา",
      "1. เรียก PUT /api/schedule ด้วย token ของ user ธรรมดา",
-     "{schedule:{full:{enabled:true,hour:6,minute:0}}}",
+     "{runs:[{enabled:true,hour:6,minute:0,mode:\"full\",days:[0,1,2,3,4,5,6]}]}",
      "HTTP 403 · ข้อความ \"ต้องเป็นผู้ดูแลระบบ (admin) เท่านั้น\" · settings.json ไม่ถูกแก้"),
     ("เข้าสู่ระบบ (Auth)", "health check ไม่ต้อง login", "GET", "/api/health", "-", P, R_READ,
      "server ทำงานอยู่",
@@ -267,7 +241,7 @@ TESTS = [
      "mode = full",
      "ok=true · สถานะเปลี่ยนเป็นกำลังรัน · log ไหลต่อเนื่อง · จบด้วย returncode=0 · progress=100 · มีไฟล์ production_plan_DD-MM-YYYY.xlsx ใหม่"),
     ("สั่งรัน Pipeline", "ดึงข้อมูล DB อย่างเดียว", "POST", "/api/run", "ทุก user", P, R_HEAVY,
-     "เชื่อม Oracle 172.16.7.55 ได้",
+     "เชื่อม Oracle ได้",
      "1. กด \"ดึงข้อมูล DB\"\n2. รอจนจบ",
      "mode = db",
      "รันเฉพาะขั้นดึงข้อมูล (ข้าม Calendar/Stock/AVA_MC/Order/Planning) · ไฟล์ใน Booking/, Stock/, Order/ อัปเดต mtime ใหม่"),
@@ -352,11 +326,11 @@ TESTS = [
      "server ทำงานอยู่",
      "1. เปิดหน้าตั้งเวลา",
      "-",
-     "แสดง enabled/hour/minute ของ job full · next_run เป็นเวลาไทย (Asia/Bangkok) ที่ถูกต้อง"),
+     "แสดงทุกรอบ (เวลา/งาน/วัน/เปิด-ปิด) · next_run เป็นเวลาไทย (Asia/Bangkok) ที่ถูกต้อง"),
     ("ตั้งเวลาอัตโนมัติ", "แก้เวลารันอัตโนมัติ", "PUT", "/api/schedule", "admin", P, R_WRITE,
      "login ด้วย admin",
      "1. เปลี่ยนเวลาเป็นเวลาที่ต้องการ\n2. กดบันทึก\n3. เรียก GET /api/schedule ซ้ำ",
-     "{full:{enabled:true, hour:6, minute:30}}",
+     "รอบ 06:00 → 06:30 และเพิ่มรอบ 13:00 รันแผนการผลิต จ.–ศ.",
      "บันทึกลง settings.json · next_run เปลี่ยนตามเวลาใหม่ทันที"),
     ("ตั้งเวลาอัตโนมัติ", "ปิดการรันอัตโนมัติ", "PUT", "/api/schedule", "admin", P, R_WRITE,
      "login ด้วย admin",
@@ -649,7 +623,7 @@ TESTS = [
      "มีไฟล์ booking_final_ready ล่าสุด",
      "1. เปิด Gantt\n2. ดูงานที่มาจาก booking",
      "-",
-     "เครื่องที่ booking ถักอยู่แล้วถูกแยกจากเครื่องที่แผนจองจากพูล · ไม่ถูกนับซ้ำ"),
+     "เครื่องที่ booking ทออยู่แล้วถูกแยกจากเครื่องที่แผนจองจากพูล · ไม่ถูกนับซ้ำ"),
     ("แผนผลิต (Plan)", "overlay งานเดิมจาก booking", "GET", "/api/plan/booking-items", "ทุก user", P, R_READ,
      "-",
      "1. เปิด Gantt\n2. เปิด/ปิดการแสดง overlay booking",
@@ -685,83 +659,16 @@ TESTS = [
      "1. เปิดหน้าแผนผลิต\n2. กดดาวน์โหลด",
      "-",
      "หน้าเว็บแจ้งว่ายังไม่มีแผน · ดาวน์โหลด → HTTP 404 \"ยังไม่มีไฟล์แผนผลิต\" · ไม่ crash"),
-
-    # ---------------- Order Color ----------------
-    ("Order Color", "เปิดหน้า Order Color", "GET", "/api/order-color", "ทุก user", P, R_READ,
-     "มีไฟล์ datamining_booking_mapped.xlsx",
-     "1. เปิดเมนู Order Color",
+    ("แผนผลิต (Plan)", "บล็อกผ้าที่ให้สีแล้วขึ้นสีบน Gantt", "GET", "/api/dyed-items", "ทุก user", P, R_READ,
+     "ดึง View_SCFol_Item แล้ว (มี view_scfol_item.xlsx)",
+     "1. เปิดหน้าแผนผลิต\n2. ดูบล็อกของผ้าที่รู้ว่ามีการเปิดสีแล้ว",
      "-",
-     "แสดงชื่อไฟล์ + เวลาแก้ไข + รายชื่อชีท"),
-    ("Order Color", "มุมมองหลัก: booking ตาม CAT", "GET", "/api/order-color/cat-history", "ทุก user", P, R_READ,
+     "บล็อกผ้าที่ให้สีแล้วขึ้นสีต่างจากผ้าที่ยังไม่ให้สี · เกณฑ์เดียวกับที่ Planning ใช้ (OPEN_COLOR_LOSS > 0)"),
+    ("แผนผลิต (Plan)", "ยังไม่ได้ดึง View_SCFol_Item", "GET", "/api/dyed-items", "ทุก user", N, R_READ,
+     "ย้ายไฟล์ view_scfol_item.xlsx ออกชั่วคราว",
+     "1. เปิดหน้าแผนผลิต",
      "-",
-     "1. เปิดหน้า Order Color (มุมมองเริ่มต้น)",
-     "-",
-     "แสดงเฉพาะ CAT ที่มีงานสี (LOAD_DYE) · ในแต่ละ CAT มีทุก item · ค่าที่โชว์ = BK_KP_WEIGHT · เริ่มจากสัปดาห์ปัจจุบันไปข้างหน้า"),
-    ("Order Color", "อ่าน/แก้ตารางไฟล์ Order Color", "GET", "/api/order-color/sheet", "ทุก user", P, R_READ,
-     "-",
-     "1. เปิดตารางข้อมูลดิบ",
-     "-",
-     "แสดงคอลัมน์/แถวครบตรงกับไฟล์"),
-    ("Order Color", "บันทึกการแก้ไข Order Color", "PUT", "/api/order-color/sheet", "ทุก user", P, R_WRITE,
-     "สำรองไฟล์ไว้ก่อน",
-     "1. แก้ค่าในตาราง\n2. บันทึก\n3. เปิดไฟล์ตรวจ",
-     "แก้ 1 เซลล์",
-     "ok=true + ชื่อ .bak · ค่าใหม่อยู่ในไฟล์ · ชีทอื่นคงเดิม"),
-    ("Order Color", "ดาวน์โหลดไฟล์ Order Color", "GET", "/api/order-color/download", "เปิด", P, R_READ,
-     "-",
-     "1. กดดาวน์โหลด",
-     "-",
-     "ได้ไฟล์ datamining_booking_mapped.xlsx ล่าสุด (สะท้อนการแก้ไขล่าสุด)"),
-    ("Order Color", "วิเคราะห์งานสี", "POST", "/api/order-color/advise", "ทุก user", P, R_READ,
-     "-",
-     "1. กดปุ่มวิเคราะห์",
-     "-",
-     "คืนรายการ item ที่มีสี พร้อมสรุป (summary) · ระบุ lead time ย้อม (LEAD_WEEKS) · ไฟล์ว่าง → มี note บอกเหตุผล ไม่ error"),
-    ("Order Color", "Gantt จาก booking", "GET", "/api/order-color/booking-gantt", "ทุก user", P, R_READ,
-     "มีไฟล์ booking_final_ready + Order Color",
-     "1. เปิดมุมมอง Gantt ของ Order Color",
-     "-",
-     "แสดงทุก item ต่อสัปดาห์จาก booking DETAIL · งานสีถูกไฮไลต์ · item ที่ stock พออยู่แล้วไม่ถูกนำมาแสดง"),
-    ("Order Color", "โควตา setup job ต่อสัปดาห์", "GET", "/api/order-color/booking-load", "ทุก user", P, R_READ,
-     "-",
-     "1. เปิด Gantt Order Color\n2. ดูแถบจำนวน job ของแต่ละสัปดาห์",
-     "-",
-     "จำนวน job = งานจาก booking (live) + งานใหม่ที่แผนวาง · เพดานมาจาก REMAINING_JOBS ของแผนล่าสุด (ไม่มีไฟล์แผน → OM 13 / PHET_DOUBLE 33 / PHET_SINGLE 44)"),
-    ("Order Color", "เครื่องว่างสอดคล้อง booking", "GET", "/api/order-color/booking-ava", "ทุก user", P, R_READ,
-     "-",
-     "1. เปิด Gantt Order Color\n2. เทียบตัวเลขเครื่องว่างตอนเพิ่งโหลดหน้า",
-     "-",
-     "ตอนยังไม่ขยับงาน เครื่องว่าง = remain (planBase = used) · ขยับงานแล้วตัวเลขเปลี่ยนตามจริง"),
-    ("Order Color", "แผน what-if แทรกงานสี", "GET", "/api/order-color/plan", "ทุก user", P, R_READ,
-     "-",
-     "1. เปิดมุมมองเทียบแผน",
-     "-",
-     "grid = แผนจริง + แถว item สีที่ยังไม่มีในแผน · แถวงานสีถูกไฮไลต์ (color_idx) · ไฟล์แผนจริงไม่ถูกแก้"),
-    ("Order Color", "AI แนะนำการดึงงานสีเข้ามา", "POST", "/api/order-color/advise-moves", "ทุก user", P, R_READ,
-     "เลือกกลุ่ม CAT × เกจ ที่มีงานสีไม่พอเครื่อง",
-     "1. เลือกกลุ่ม\n2. กดให้ AI แนะนำ\n3. อ่านลำดับและเหตุผล",
-     "cat/gauge + รายการงานสี",
-     "ได้ลำดับความสำคัญ + เหตุผล/ผลกระทบเป็นภาษาไทย · ทุกงานสีที่ไม่พอเครื่องถูกจัดอันดับครบ"),
-    ("Order Color", "AI ไม่พร้อมใช้งาน (ไม่มี API key)", "POST", "/api/order-color/advise-moves", "ทุก user", N, R_READ,
-     "ไม่ตั้ง OPENAI_API_KEY",
-     "1. กดให้ AI แนะนำ",
-     "-",
-     "ระบบยังตอบผลได้ด้วยตรรกะสำรอง (ai=false) + note บอกเหตุผล · ไม่ค้าง ไม่ error 500"),
-    ("Order Color", "กลุ่มที่งานสีพอเครื่องอยู่แล้ว", "POST", "/api/order-color/advise-moves", "ทุก user", N, R_READ,
-     "เลือกกลุ่มที่งานสีพอเครื่องทุกตัว",
-     "1. กดให้ AI แนะนำ",
-     "-",
-     "summary = \"งานสีในกลุ่มนี้พอเครื่องทุกตัว — วางได้เลย ไม่ต้องขยับ\" · ranking ว่าง"),
-    ("Order Color", "ส่งออกแผน what-if เป็น Excel", "POST", "/api/order-color/plan/export", "ทุก user", P, R_READ,
-     "จัดแผน what-if ไว้แล้ว",
-     "1. กดส่งออก Excel\n2. เปิดไฟล์ที่ดาวน์โหลด",
-     "-",
-     "ได้ไฟล์ order_color_plan.xlsx ชีท PLAN_ORDER_COLOR · หัวคอลัมน์และข้อมูลตรงกับที่เห็นบนหน้าจอทุกแถว"),
-    ("Order Color", "ยังไม่มีไฟล์ Order Color", "GET", "/api/order-color/sheet", "ทุก user", N, R_READ,
-     "ย้ายไฟล์ datamining_booking_mapped.xlsx ออกชั่วคราว",
-     "1. เปิดหน้า Order Color",
-     "-",
-     "HTTP 404 · ข้อความ \"ยังไม่มีไฟล์ Order Color — กรุณากดปุ่มดึงข้อมูลก่อน\" · หน้าเว็บแสดงข้อความแนะนำ ไม่ค้าง"),
+     "หน้าแผนเปิดได้ปกติ · ทุกบล็อกถือว่ายังไม่ให้สี (codes ว่าง) · ไม่ 404 ไม่ crash"),
 
     # ---------------- Outsource ----------------
     ("จ้างทอ (Outsource)", "AI แนะนำ item ที่ควรจ้างทอ", "POST", "/api/outsource/advise", "ทุก user", P, R_READ,
@@ -860,7 +767,7 @@ TESTS = [
      "คนที่สองเห็นสถานะและ log ของงานที่รันอยู่ · สั่งรันซ้อนไม่ได้ (มีข้อความแจ้ง) · ข้อมูลไม่ปนกัน"),
     ("ระบบ (System)", "เวลาตอบสนองหน้าหลักๆ", "-", "-", "ทุก user", F, R_READ,
      "ข้อมูลจริงขนาดใช้งานจริง",
-     "1. จับเวลาโหลดหน้าแผนผลิต / Order Color / DATA",
+     "1. จับเวลาโหลดหน้าแผนผลิต / DATA",
      "-",
      "แต่ละหน้าแสดงผลภายในเวลาที่ผู้ใช้ยอมรับได้ (แนะนำ ≤ 10 วินาที) · ระหว่างรอมีสถานะกำลังโหลด"),
     ("ระบบ (System)", "restart server แล้วใช้งานต่อได้", "-", "-", "admin", F, R_HEAVY,
@@ -874,7 +781,6 @@ TESTS = [
      "-",
      "ทุกกรณีแสดงข้อความภาษาไทยที่ผู้ใช้เข้าใจได้ ไม่โชว์ stack trace/ข้อความระบบดิบ"),
 ]
-
 
 # =====================================================================
 # 3) สถานการณ์ใช้งานจริง (Scenario / End-to-End) — ผู้ใช้ทำงานบนหน้าจอจริง
@@ -1052,8 +958,8 @@ SCENARIOS = [
      "• COTTON บริสุทธิ์ = 3 วัน\n• POLY / CD / TC / ผสมหลายเส้น = 5 วัน",
      "จำนวนวัน setup ตรงตามกฎที่โรงงานใช้จริง"),
     ("ตรวจสอบข้อมูล", "ตรวจงานที่รันต่อเนื่องไม่ setup ซ้ำ", "แผนผลิต → ชีท PLAN", "ผู้วางแผน",
-     "มี item ที่ถักต่อเนื่องหลายสัปดาห์บนเครื่องเดิม",
-     "1. หา item เดียวกัน เครื่องเดียวกัน ที่ถักติดกัน (ห่างไม่เกิน 3 สัปดาห์)\n2. ดู CARRYOVER_MC และ SETUP_DAYS ของสัปดาห์ถัดมา",
+     "มี item ที่ทอต่อเนื่องหลายสัปดาห์บนเครื่องเดิม",
+     "1. หา item เดียวกัน เครื่องเดียวกัน ที่ทอติดกัน (ห่างไม่เกิน 3 สัปดาห์)\n2. ดู CARRYOVER_MC และ SETUP_DAYS ของสัปดาห์ถัดมา",
      "• สัปดาห์ต่อเนื่องมี CARRYOVER_MC > 0 และไม่คิด setup ซ้ำ\n• ถ้าเว้นเกิน 3 สัปดาห์ ต้องคิด setup ใหม่",
      "ระบบไม่คิดเวลา setup เกินจริง ทำให้กำลังผลิตไม่ต่ำกว่าความเป็นจริง"),
     ("ตรวจสอบข้อมูล", "ตรวจนิยามสัปดาห์ (ศุกร์–พฤหัส)", "Master Data → ปฏิทิน", "ผู้วางแผน",
@@ -1066,11 +972,6 @@ SCENARIOS = [
      "1. เลือก SC 1 ใบที่มีหลายแถว\n2. รวม PRODUCE_QTY ทุกแถวของ SC นั้น\n3. เทียบกับ ORDERS_QTY",
      "• ผลรวมเท่ากับยอดสั่ง (คลาดเคลื่อนไม่เกินค่าที่ระบบยอมรับ)\n• ถ้าไม่เท่า ระบบต้องเตือนตอนกดบันทึก",
      "ทุกออร์เดอร์ถูกวางแผนครบตามยอดที่ลูกค้าสั่ง"),
-    ("ตรวจสอบข้อมูล", "ตรวจงานสีถักทันย้อม", "Order Color", "ผู้วางแผน",
-     "มีข้อมูล Order Color ล่าสุด",
-     "1. เปิดผลวิเคราะห์แผนสี\n2. สุ่ม item ที่สถานะ \"ทันย้อม\" 1 ตัว\n3. เทียบสัปดาห์ที่ถักในแผน กับสัปดาห์ย้อม − lead time",
-     "• สัปดาห์ที่ถักเสร็จ ≤ สัปดาห์ย้อม − lead weeks ที่ระบบระบุ\n• item ที่สถานะ \"ช้าเกิน\" ต้องผิดเงื่อนไขนี้จริง",
-     "การจัดกลุ่มสถานะงานสีถูกต้อง ใช้ตัดสินใจได้"),
     ("ตรวจสอบข้อมูล", "ตรวจการ map item (Datamining ↔ Booking)", "Map Item", "ผู้วางแผน",
      "รัน Map Item แล้ว",
      "1. เปิด \"Datamining → ORA Item\"\n2. สุ่ม 5 แถว เทียบกับ Master_Item\n3. เปิด \"Datamining → Booking\" ตรวจว่าเชื่อมสัปดาห์ถูก",
@@ -1079,7 +980,7 @@ SCENARIOS = [
     ("ตรวจสอบข้อมูล", "ตรวจการจ้างทอถูกหักออกจากแผน", "แผนผลิต / จ้างทอ", "ผู้วางแผน",
      "บันทึกการแบ่งจ้างทอไว้แล้ว",
      "1. จดจำนวนที่ส่งจ้างทอ + สัปดาห์\n2. สั่งรันแผนใหม่\n3. เปิดแผนดู item นั้นในสัปดาห์ที่กำหนด",
-     "• ยอดที่ถักในโรงงานลดลงเท่ากับจำนวนที่จ้างทอ\n• การแบ่งจ้างทอยังคงอยู่หลังรัน (ไม่หายเอง)",
+     "• ยอดที่ทอในโรงงานลดลงเท่ากับจำนวนที่จ้างทอ\n• การแบ่งจ้างทอยังคงอยู่หลังรัน (ไม่หายเอง)",
      "การตัดสินใจจ้างทอของผู้ใช้มีผลจริงกับแผนรอบถัดไป"),
     ("ตรวจสอบข้อมูล", "ตรวจค่าคำนวณของ Target Stock", "Master Data → Target_Stock", "ผู้วางแผน",
      "-",
@@ -1101,48 +1002,6 @@ SCENARIOS = [
      "1. รันแผน (mode=plan) เก็บไฟล์ผลลัพธ์ไว้\n2. รันแผนซ้ำอีกครั้งทันที\n3. เทียบไฟล์สองรอบ",
      "• ผลลัพธ์เหมือนกัน (item เดียวกันอยู่สัปดาห์เดียวกัน)\n• ถ้าต่าง ต้องอธิบายสาเหตุได้ชัดเจน",
      "แผนคาดเดาได้ ไม่เปลี่ยนเองเมื่อข้อมูลไม่เปลี่ยน"),
-
-    # ---------- D. งานสี (Order Color) ----------
-    ("งานสี (Order Color)", "ดูภาพรวมงานสีตาม CAT", "Order Color", "ผู้วางแผน",
-     "มีไฟล์ Order Color ล่าสุด",
-     "1. เปิดเมนู Order Color\n2. ดูกลุ่ม CAT × เกจ ที่แสดง",
-     "• แสดงเฉพาะ CAT ที่มีงานสี (LOAD_DYE)\n• เริ่มนับจากสัปดาห์ปัจจุบันไปข้างหน้า\n• งานสีมีเครื่องหมาย ★ พร้อมสัปดาห์ย้อมและกำหนดถัก",
-     "ผู้ใช้เห็นทันทีว่ากลุ่มไหนมีงานสีที่ต้องจัดการ"),
-    ("งานสี (Order Color)", "ดูงานสีที่ต้องดึงเข้ามาให้เร็วขึ้น", "Order Color → Gantt", "ผู้วางแผน",
-     "เลือก CAT × เกจ ที่มีงานสี",
-     "1. เลือกกลุ่ม\n2. อ่านหัวข้อสรุปจำนวนงานสี",
-     "• หัวข้อระบุ \"งานสีใน <CAT> — N ตัว (ดึงเข้ามาเร็วขึ้นได้ X, จัดแล้ว Y)\"\n• จำนวนตรงกับรายการที่แสดงด้านล่าง",
-     "ผู้ใช้รู้ปริมาณงานที่ต้องจัดในกลุ่มนั้นก่อนลงมือ"),
-    ("งานสี (Order Color)", "ย้ายงานสีเข้ามาให้เร็วขึ้น (เครื่องว่าง)", "Order Color → Gantt", "ผู้วางแผน",
-     "มีสัปดาห์ที่เครื่องว่าง",
-     "1. เลือกงานสีที่ทออยู่สัปดาห์ไกล\n2. ย้ายเข้าสัปดาห์ที่มีเครื่องว่าง\n3. ดูตัวเลขเครื่องว่าง/จำนวน job",
-     "• เครื่องว่างของสัปดาห์ปลายทางลดลง ต้นทางเพิ่มขึ้น\n• จำนวน job ไม่เกินโควตา setup ของสัปดาห์นั้น\n• สถานะงานสีเปลี่ยนเป็น \"จัดแล้ว\"",
-     "ย้ายงานสีเข้ามาได้เมื่อมีเครื่องว่าง โดยระบบคุมโควตา job ให้"),
-    ("งานสี (Order Color)", "ถอดงานไม่มีสีเพื่อให้งานสีเข้าได้", "Order Color → Gantt", "ผู้วางแผน",
-     "เลือกกลุ่มที่เครื่อง/job ไม่พอ",
-     "1. เลือกงานสีที่ยังไม่พอเครื่อง\n2. ดูรายการงานไม่มีสีที่ระบบแนะนำให้ถอด (⭐)\n3. ถอดตัวที่แนะนำ",
-     "• ระบบแนะนำเฉพาะงานไม่มีสีที่ถอดแล้วยังหาที่วางใหม่ได้\n• เมื่อถอดแล้ว งานสีวางได้จริง\n• งานที่ถอดถูกวางแผนใหม่ให้อัตโนมัติ",
-     "ระบบช่วยหาทางให้งานสีได้ทอทันย้อม โดยไม่ทิ้งงานที่ถอดออกไป"),
-    ("งานสี (Order Color)", "ขอคำแนะนำจาก AI", "Order Color", "ผู้วางแผน",
-     "เลือกกลุ่มที่มีงานสีไม่พอเครื่อง",
-     "1. กดปุ่มให้ AI วิเคราะห์\n2. รอผล\n3. อ่านลำดับและเหตุผล\n4. กด \"ยกเลิก\" แล้วลองใหม่และกดใช้",
-     "• ระหว่างรอมีข้อความ \"กำลังให้ AI วิเคราะห์...\"\n• ได้ลำดับควรทำก่อน-หลัง พร้อมเหตุผลภาษาไทยที่เข้าใจได้\n• กดยกเลิก = แผนไม่เปลี่ยน\n• กดใช้ = แผนปรับตามที่แนะนำ",
-     "AI ช่วยจัดลำดับได้ และผู้ใช้ยังตัดสินใจเองได้ทุกขั้น"),
-    ("งานสี (Order Color)", "ดูตารางเทียบแผนเดิม → แผนใหม่", "Order Color", "ผู้วางแผน",
-     "ปรับงานสีไว้แล้ว",
-     "1. เปิดตารางเทียบแผน\n2. ดูแถว \"เดิม\" และ \"ใหม่\" ของ item ที่ปรับ",
-     "• แสดงเฉพาะ item ที่มีการปรับ\n• แถว \"เดิม\" = ตำแหน่งที่ย้ายออก · \"ใหม่\" = ตำแหน่งใหม่\n• ยอดรวมของแต่ละ item เท่าเดิมก่อน-หลังปรับ",
-     "ผู้ใช้ตรวจได้ว่าปรับอะไรไปบ้าง ก่อนส่งต่อ"),
-    ("งานสี (Order Color)", "ส่งออกแผนงานสีเป็น Excel", "Order Color", "ผู้วางแผน",
-     "จัดแผนไว้แล้ว",
-     "1. กดส่งออก Excel\n2. เปิดไฟล์ order_color_plan.xlsx\n3. เทียบกับหน้าจอ",
-     "• ไฟล์มีชีท PLAN_ORDER_COLOR\n• หัวคอลัมน์และข้อมูลตรงกับหน้าจอทุกแถว",
-     "ผู้ใช้เอาแผน what-if ไปใช้ต่อ/ส่งให้ทีมอื่นได้"),
-    ("งานสี (Order Color)", "แผน what-if ต้องไม่แตะแผนจริง", "Order Color / แผนผลิต", "ผู้วางแผน",
-     "-",
-     "1. ปรับงานสีบนหน้า Order Color หลายจุด\n2. ไปเปิดหน้าแผนผลิต\n3. ดาวน์โหลดไฟล์แผนจริงมาตรวจ",
-     "• แผนจริงและไฟล์แผนไม่เปลี่ยนตามการปรับใน Order Color\n• เวลาแก้ไขไฟล์แผนไม่เปลี่ยน",
-     "การทดลองจัดแผนงานสีไม่ทำให้แผนจริงเสียหาย"),
 
     # ---------- E. Master Data ----------
     ("Master Data", "แก้ Lock_MC (เครื่องที่ล็อกไว้)", "Master Data → Lock_MC", "ผู้วางแผน",
@@ -1205,7 +1064,7 @@ SCENARIOS = [
     ("งานประจำวัน", "ตัดสินใจจ้างทอด้วย AI", "แผนผลิต → จ้างทอ (AI)", "ผู้วางแผน",
      "มีแผนล่าสุด",
      "1. กดปุ่ม \"🧵 จ้างทอ (AI)\"\n2. อ่านรายการที่แนะนำพร้อมเหตุผล\n3. เลือก item ใส่จำนวนและสัปดาห์ แล้วบันทึก\n4. รันแผนใหม่ ตรวจผล",
-     "• คำแนะนำมีเหตุผลและตัวเลขประกอบ\n• ใส่จำนวนเกินของค้าง → ระบบเตือนพร้อมบอกยอดค้างจริง\n• หลังรันแผน ยอดถักในโรงงานลดลงตามที่จ้างทอ",
+     "• คำแนะนำมีเหตุผลและตัวเลขประกอบ\n• ใส่จำนวนเกินของค้าง → ระบบเตือนพร้อมบอกยอดค้างจริง\n• หลังรันแผน ยอดทอในโรงงานลดลงตามที่จ้างทอ",
      "ผู้ใช้ตัดสินใจจ้างทอโดยมีข้อมูลรองรับ และผลสะท้อนในแผนจริง"),
     ("งานประจำวัน", "อนุมัติการเปลี่ยน Cylinder", "แผนผลิต → Change Cylinder", "ผู้วางแผน",
      "มีแผนล่าสุด",
@@ -1218,7 +1077,6 @@ SCENARIOS = [
      "• ไฟล์เรียงจากใหม่ไปเก่า แสดงขนาดและเวลาถูกต้อง\n• ดาวน์โหลดย้อนหลังได้และเปิดได้\n• ลบแล้วหายจากรายการทันที ไฟล์อื่นไม่กระทบ",
      "ผู้ดูแลจัดการพื้นที่เก็บไฟล์ได้เอง และย้อนดูแผนเก่าได้"),
 ]
-
 
 def _summary_block(ws, start_row: int, title: str, sheet_ref: str, modules: list,
                    mod_col: str, status_col: str) -> int:
@@ -1269,7 +1127,6 @@ def _summary_block(ws, start_row: int, title: str, sheet_ref: str, modules: list
     pr.font = FONT_BOLD
     pr.alignment = CENTER
     return r + 2
-
 
 def build():
     wb = Workbook()
@@ -1339,7 +1196,7 @@ def build():
 
     sc_prefix = {
         "ปรับแผนผลิต": "PLAN", "ปรับสัปดาห์ / วันทำงาน": "WEEK", "ตรวจสอบข้อมูล": "CHK",
-        "งานสี (Order Color)": "COLOR", "Master Data": "MDATA", "งานประจำวัน": "DAY",
+        "Master Data": "MDATA", "งานประจำวัน": "DAY",
     }
     sc_count = {}
     row = 2
@@ -1383,7 +1240,7 @@ def build():
         "เข้าสู่ระบบ (Auth)": "AUTH", "สั่งรัน Pipeline": "RUN", "ตั้งเวลาอัตโนมัติ": "SCH",
         "Master Data": "MST", "วันทำงาน (Work Day)": "WD", "ไฟล์ผลลัพธ์ (History)": "OUT",
         "ฐานข้อมูล (DATA)": "DB", "Map Item": "MAP", "แผนผลิต (Plan)": "PLN",
-        "Order Color": "OC", "จ้างทอ (Outsource)": "OS", "Change Cylinder": "CYL",
+        "จ้างทอ (Outsource)": "OS", "Change Cylinder": "CYL",
         "ระบบ (System)": "SYS",
     }
     counters = {}
@@ -1524,7 +1381,6 @@ def build():
 
     wb.save(OUT)
     return len(SCENARIOS), len(TESTS), len(APIS), OUT
-
 
 if __name__ == "__main__":
     n_sc, n_tc, n_api, path = build()

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api.js'
+import * as live from '../live.js'
 
 function fmtQty(v) {
   const n = Number(v) || 0
@@ -19,6 +20,9 @@ export default function OutsourceAdvisor() {
   const [busy, setBusy] = useState('')
 
   useEffect(() => { loadSplit() }, [])
+
+  // อีกคนแก้การแบ่งจ้างทอ → โหลดทะเบียนใหม่ (ยอดจ้างทอเป็นของกองกลาง ไม่ใช่ของใครคนเดียว)
+  useEffect(() => live.subscribe(live.RES.outsource, () => { loadSplit() }), [])
 
   async function loadSplit() {
     try {
@@ -106,7 +110,7 @@ export default function OutsourceAdvisor() {
 
       <div className="hint">
         พิจารณา item ที่ <b>จ้างทอได้ (S9)</b> แล้วจัดอันดับจาก 3 ปัจจัย: ความเร่งด่วน (วางแผนช้ากว่ากำหนดส่ง),
-        การปลดคอขวดเครื่อง (เครื่องในเกจนั้นไม่พอ), และปริมาณค้างผลิต — ตัวเลขคำนวณจากแผนล่าสุด, AI ช่วยจัดอันดับ+อธิบาย
+        การปลดคอขวดเครื่อง (เครื่องใน Guage นั้นไม่พอ), และปริมาณค้างผลิต — ตัวเลขคำนวณจากแผนล่าสุด, AI ช่วยจัดอันดับ+อธิบาย
       </div>
       <div className="hint">
         กรอก <b>จ้างทอ (กก.)</b> + <b>สัปดาห์ที่จ้างทอ</b> แล้วกดบันทึก → ส่วนที่จ้างทอจะ<b>ไม่ใช้เครื่องในบ้าน</b> (วิ่งบนเครื่องจ้างทอ S9)
@@ -142,7 +146,7 @@ export default function OutsourceAdvisor() {
                   <th>อันดับ</th>
                   <th>Item</th>
                   <th>ลูกค้า</th>
-                  <th>CAT / เกจ</th>
+                  <th>CAT / Guage</th>
                   <th>ค้าง (กก.)</th>
                   <th>สาย (สัปดาห์)</th>
                   <th>เครื่องขาด</th>

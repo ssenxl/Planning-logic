@@ -48,7 +48,7 @@ function monthGrid(year, month) {
   return cells
 }
 
-function MiniMonth({ year, month, days, today, onToggle }) {
+function MiniMonth({ year, month, days, today, onToggle, ro }) {
   const cells = monthGrid(year, month)
   return (
     <div className="calmonth">
@@ -73,8 +73,8 @@ function MiniMonth({ year, month, days, today, onToggle }) {
             : !info ? `${key} — ไม่มีวันนี้ในไฟล์ Calendar (เพิ่มแถวได้ในมุมมองตาราง)`
               : `${key}${info.week ? ` · W${info.week}` : ''} — ${info.status === 0 ? (sun ? 'วันอาทิตย์ (หยุดประจำ)' : 'วันหยุด') : 'วันทำงาน'}${info.changed ? ' (ยังไม่บันทึก)' : ''}`
           return (
-            <button key={i} type="button" className={cls.join(' ')} title={title}
-              disabled={!cur || !info}
+            <button key={i} type="button" className={cls.join(' ') + (ro ? ' ro' : '')} title={title}
+              disabled={!cur || !info || ro}
               onClick={() => info && onToggle(info.ri, info.status === 0 ? 1 : 0)}>
               {date.getDate()}
             </button>
@@ -85,7 +85,10 @@ function MiniMonth({ year, month, days, today, onToggle }) {
   )
 }
 
-export default function CalendarEditor({ grid, dateCi, statusCi, weekCi, isChanged, onToggle }) {
+// year / onYear = ปีที่กำลังดู เก็บที่ Masters (โหลดชีทซ้ำแล้วไม่เด้งกลับปีปัจจุบัน) ; null = ปีปัจจุบัน
+// onExtendYear(y) = เพิ่มปฏิทินถึงปี y (ไม่จำกัดปี — ปุ่มที่ปีสุดท้าย) ; null = ไม่มีสิทธิ์/ดูอย่างเดียว
+export default function CalendarEditor({ grid, dateCi, statusCi, weekCi, isChanged, onToggle, ro,
+  year: yearProp = null, onYear = null, onExtendYear = null }) {
   // วันทั้งหมดในไฟล์: "YYYY-MM-DD" -> { ri, status, week, changed }
   const days = useMemo(() => {
     const m = new Map()
@@ -109,8 +112,29 @@ export default function CalendarEditor({ grid, dateCi, statusCi, weekCi, isChang
   }, [days])
 
   const thisYear = new Date().getFullYear()
-  const [year, setYear] = useState(() => (years.includes(thisYear) ? thisYear : years[0] ?? thisYear))
+  const [yearLocal, setYearLocal] = useState(null)
+  const want = yearProp ?? yearLocal
+  // เปิดหน้าเข้ามา = ปีปัจจุบันเสมอ ; ปีที่เลือกไว้หายจากไฟล์ → กลับปีปัจจุบัน
+  const year = want != null && years.includes(want) ? want
+    : (years.includes(thisYear) ? thisYear : years[0] ?? thisYear)
+  const setYear = (y) => { setYearLocal(y); onYear?.(y) }
   const yi = years.indexOf(year)
+  const lastYear = years.length ? years[years.length - 1] : null
+
+  // เพิ่มปีถัดจากปีสุดท้ายในปฏิทิน (ทีละปี ไม่จำกัด) — ปฏิทินต่ออัตโนมัติให้ +3 ปีอยู่แล้ว
+  // ปุ่มนี้ไว้ดู/วางวันหยุด/ยุบสัปดาห์ของปีที่ไกลกว่านั้น
+  const [extending, setExtending] = useState(false)
+  const [extErr, setExtErr] = useState('')
+  const extend = async () => {
+    const y = lastYear + 1
+    if (!window.confirm(`เพิ่มปฏิทินปี ${y} / ${y + 543}?\n\n`
+      + 'ระบบสร้างให้แบบวันจันทร์–เสาร์ทำงาน หยุดวันอาทิตย์ แล้วค่อยกำหนดวันหยุด/ยุบสัปดาห์เอง\n'
+      + 'แผนผลิตจะวางยาวถึงสุดปฏิทิน (เพิ่มไกลมาก = รันนานขึ้น)')) return
+    setExtending(true); setExtErr('')
+    try { await onExtendYear(y) }
+    catch (e) { setExtErr('เพิ่มปีไม่สำเร็จ: ' + e.message) }
+    finally { setExtending(false) }
+  }
 
   // สรุปของปีที่กำลังดู — "วันหยุด" ไม่นับวันอาทิตย์ (หยุดประจำอยู่แล้ว)
   const stat = useMemo(() => {
@@ -132,13 +156,21 @@ export default function CalendarEditor({ grid, dateCi, statusCi, weekCi, isChang
     <div className="calview">
       <div className="calbar">
         <button className={'wdtoggle' + (showWorkday ? ' on' : '')} onClick={() => setShowWorkday(v => !v)}>
-          ⚙ วันทำงานตามกลุ่มเครื่อง
+          ⚙ ยุบสัปดาห์
         </button>
         <div className="calyear">
           <button disabled={yi <= 0} onClick={() => setYear(years[yi - 1])} title="ปีก่อนหน้า">‹</button>
           <span>{year} / {year + 543}</span>
-          <button disabled={yi < 0 || yi >= years.length - 1} onClick={() => setYear(years[yi + 1])} title="ปีถัดไป">›</button>
+          {onExtendYear && lastYear != null && year === lastYear ? (
+            <button className="calext" disabled={extending} onClick={extend}
+              title={`ปฏิทินมีถึงปี ${lastYear} — กดเพื่อเพิ่มปี ${lastYear + 1}`}>
+              {extending ? 'กำลังเพิ่ม...' : `› เพิ่มปี ${lastYear + 1}`}
+            </button>
+          ) : (
+            <button disabled={yi < 0 || yi >= years.length - 1} onClick={() => setYear(years[yi + 1])} title="ปีถัดไป">›</button>
+          )}
         </div>
+        {extErr && <span className="calexterr">{extErr}</span>}
         <span className="calstat">
           วันหยุด <b className="off">{stat.off}</b> วัน · วันทำงาน <b className="work">{stat.work}</b> วัน
           {stat.pending > 0 && <> · <b className="pend">แก้ไว้ {stat.pending} วัน ยังไม่บันทึก</b></>}
@@ -151,16 +183,18 @@ export default function CalendarEditor({ grid, dateCi, statusCi, weekCi, isChang
         </span>
       </div>
 
-      {showWorkday && <WorkDayPanel />}
+      {showWorkday && <WorkDayPanel ro={ro} year={year} />}
 
       <div className="calmonths">
         {Array.from({ length: 12 }, (_, m) => (
-          <MiniMonth key={m} year={year} month={m} days={days} today={today} onToggle={onToggle} />
+          <MiniMonth key={m} year={year} month={m} days={days} today={today} onToggle={onToggle} ro={ro} />
         ))}
       </div>
 
       <div className="gridhelp">
-        คลิกวัน = สลับ วันทำงาน ↔ วันหยุด (คอลัมน์ status 1 ↔ 0) · แก้แล้วกด <b>บันทึก</b> (Ctrl+S) · Ctrl+Z = ย้อนกลับ · วันที่ไม่มีในไฟล์กดไม่ได้ — เพิ่มแถวได้ในมุมมองตาราง
+        {ro
+          ? <>สีของวัน = วันทำงาน / วันหยุดตามไฟล์ปฏิทิน · <b>หน้านี้ดูอย่างเดียว</b> — แก้ได้ที่ ⚙️ Setting › ข้อมูลหลัก</>
+          : <>คลิกวัน = สลับ วันทำงาน ↔ วันหยุด (คอลัมน์ status 1 ↔ 0) · แก้แล้วกด <b>บันทึก</b> (Ctrl+S) · Ctrl+Z = ย้อนกลับ · วันที่ไม่มีในไฟล์กดไม่ได้ — เพิ่มแถวได้ในมุมมองตาราง</>}
       </div>
     </div>
   )

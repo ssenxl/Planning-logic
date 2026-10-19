@@ -4,12 +4,13 @@ masters.py — อ่าน/เขียนไฟล์ Master (.xlsx) ราย
 - เขียน: สำรองไฟล์เดิมเป็น .bak ก่อน, แก้เฉพาะชีทเป้าหมาย (ชีทอื่นคงเดิม)
 """
 import re
-import shutil
 from datetime import date, datetime
 from pathlib import Path
 
 from openpyxl import load_workbook
 
+import edit_diff
+import livesync
 from config import master_files
 
 _INT_RE = re.compile(r"^-?(0|[1-9][0-9]*)$")
@@ -18,6 +19,14 @@ _FLOAT_RE = re.compile(r"^-?(0|[1-9][0-9]*|0?)\.[0-9]+$")
 _ISO_DT_RE = re.compile(
     r"^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?)?$"
 )
+# ชีทที่ตัดคอลัมน์หัวว่างทิ้ง (ในไฟล์เป็นแค่ตัวเลขทด/โน้ต ไม่มีโค้ดอ่าน) — เซฟครั้งถัดไปหายจากไฟล์
+# ห้ามใส่ MasterMC: AVA_MC/Planning อ่านคอลัมน์หัวว่าง "Unnamed: 8" อยู่
+_DROP_BLANK_COLS = {"Target_Stock"}
+# คอลัมน์มีชื่อที่เลิกใช้แล้ว ตัดทิ้งแบบเดียวกัน (เทียบด้วย _norm_hdr)
+# Target_Stock: ห้ามตัด "Type 1" — ใช้คิด STOCK MAX (RTS + CG) ใน _recompute_target_stock/Stock.py/core_registry
+_DROP_NAMED_COLS = {"Target_Stock": {"TYPE", "TYPE 2"}}
+# หัวที่ระบบตั้งให้เองตอนหัวว่าง (Col13) — เคยถูกเซฟกลับลงไฟล์ได้ จึงนับว่าว่างด้วย
+_PLACEHOLDER_HDR_RE = re.compile(r"^Col\d+$")
 
 
 def list_masters() -> list:
@@ -55,12 +64,36 @@ def read_sheet(name: str, sheet: str) -> dict:
     if sheet not in wb.sheetnames:
         wb.close()
         raise KeyError(f"ไม่พบชีท '{sheet}' ใน {name}")
-    ws = wb[sheet]
-    rows = []
-    for r in ws.iter_rows(values_only=True):
-        rows.append(["" if v is None else v for v in r])
+    rows = [["" if v is None else v for v in r] for r in wb[sheet].iter_rows(values_only=True)]
     wb.close()
+    return _grid_of(rows, drop_blank=name in _DROP_BLANK_COLS, drop=_DROP_NAMED_COLS.get(name))
 
+
+def parse_upload(content: bytes, sheet: str, name: str = "") -> dict:
+    """ไฟล์ .xlsx ที่อัปโหลดมานำเข้าทับชีท → {sheet, columns, rows} (ยังไม่บันทึก)
+    ใช้ชีทชื่อเดียวกับชีทปลายทางถ้ามี ไม่งั้นชีทแรก — จับคู่คอลัมน์ทำที่หน้าเว็บ"""
+    import io
+    try:
+        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception:
+        raise ValueError("เปิดไฟล์ไม่ได้ — รองรับเฉพาะ .xlsx")
+    want = _norm_hdr(sheet)
+    ws = next((w for w in wb.worksheets if _norm_hdr(w.title) == want), wb.worksheets[0])
+    rows = [["" if v is None else v for v in r] for r in ws.iter_rows(values_only=True)]
+    wb.close()
+    # แถวว่างท้ายชีทที่ Excel จำขอบเขตไว้ ไม่ใช่ข้อมูล
+    while rows and not any(str(v).strip() for v in rows[-1]):
+        rows.pop()
+    if not rows:
+        raise ValueError("ไฟล์ว่าง")
+    return {"sheet": ws.title, **_grid_of(rows, drop_blank=name in _DROP_BLANK_COLS,
+                                          drop=_DROP_NAMED_COLS.get(name))}
+
+
+def _grid_of(rows: list, drop_blank: bool = False, drop=None) -> dict:
+    """แถวดิบจาก openpyxl (แถวแรก = header) → {columns, rows} ที่ทุกแถวยาวเท่า header
+    drop_blank=True: ตัดคอลัมน์ที่หัวว่าง/หัว ColNN ทิ้งทั้งคอลัมน์
+    drop: ชื่อหัว (แบบ _norm_hdr) ที่ตัดทิ้งทั้งคอลัมน์"""
     if not rows:
         return {"columns": [], "rows": []}
 
@@ -70,6 +103,15 @@ def read_sheet(name: str, sheet: str) -> dict:
     width = len(header)
     norm = [list(row) + [""] * (width - len(row)) for row in data]
     norm = [row[:width] for row in norm]
+    if drop_blank or drop:
+        def _keep(c) -> bool:
+            s = str(c).strip()
+            if drop_blank and (not s or _PLACEHOLDER_HDR_RE.match(s)):
+                return False
+            return not (drop and _norm_hdr(s) in drop)
+        keep = [i for i, c in enumerate(rows[0]) if _keep(c)]
+        header = [header[i] for i in keep]
+        norm = [[row[i] for i in keep] for row in norm]
     return {"columns": header, "rows": norm}
 
 
@@ -195,33 +237,56 @@ def _recompute_target_stock(columns: list, rows: list) -> list:
     return out
 
 
-def write_sheet(name: str, sheet: str, columns: list, rows: list) -> dict:
-    """เขียนชีทกลับ (แก้เฉพาะชีทนี้ ชีทอื่นคงเดิม) + สำรอง .bak"""
+def write_sheet(name: str, sheet: str, columns: list, rows: list,
+                user: str = "", base_rev=None) -> dict:
+    """เขียนชีทกลับ (แก้เฉพาะชีทนี้ ชีทอื่นคงเดิม) + สำรอง .bak
+
+    base_rev = เลขรุ่นที่หน้าเว็บโหลดไป ; ไม่ตรงกับของจริง = มีคนแก้แซง → โยน Conflict
+    (ไม่เขียนทับเงียบ ๆ) ; การเขียนทั้งก้อนอยู่ใต้ล็อกไฟล์เดียวกันกับคนอื่นที่แก้ไฟล์นี้
+    """
     path = _resolve(name)
+    res = livesync.masters_res(name, sheet)
 
     # Target_Stock: คำนวณคอลัมน์สูตรใหม่ก่อนเขียน (เก็บค่าจริง ใช้บน server ได้)
     if name == "Target_Stock":
         rows = _recompute_target_stock(columns, rows)
 
-    # สำรองไฟล์เดิม
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    bak = path.with_suffix(path.suffix + f".{ts}.bak")
-    shutil.copy2(path, bak)
+    with livesync.file_lock(path):
+        livesync.check_rev(res, base_rev)
+        # ค่าก่อนแก้ — อ่านแบบเดียวกับที่หน้าเว็บเห็น (ค่าคำนวณแล้ว ไม่ใช่สูตร) ไว้จดประวัติว่าเปลี่ยนอะไร
+        try:
+            before = read_sheet(name, sheet)
+        except Exception:
+            before = None
+        # สำรองไฟล์เดิม — ชั่วโมงละครั้งพอ (เซฟอัตโนมัติทุกการขยับทำให้ .bak ทุกครั้งไม่ไหว)
+        bak = livesync.backup_throttled(path)
 
-    wb = load_workbook(path, data_only=False)
-    if sheet not in wb.sheetnames:
+        wb = load_workbook(path, data_only=False)
+        if sheet not in wb.sheetnames:
+            wb.close()
+            raise KeyError(f"ไม่พบชีท '{sheet}' ใน {name}")
+        ws = wb[sheet]
+
+        # ล้างค่าทุกเซลล์เดิมในชีท แล้วเขียนใหม่ (header + rows)
+        if ws.max_row > 0:
+            ws.delete_rows(1, ws.max_row)
+
+        ws.append([str(c) for c in columns])
+        for row in rows:
+            ws.append([_coerce(v) for v in row])
+
+        with livesync.atomic_save(path) as tmp:
+            wb.save(tmp)
         wb.close()
-        raise KeyError(f"ไม่พบชีท '{sheet}' ใน {name}")
-    ws = wb[sheet]
+        changes = None
+        if before is not None:
+            try:
+                changes = edit_diff.sheet_changes(before["columns"], before["rows"],
+                                                  [str(c) for c in columns],
+                                                  [[_coerce(v) for v in r] for r in rows])
+            except Exception as e:
+                print(f"[MASTERS] เทียบก่อน/หลังแก้ {name}/{sheet} ไม่ได้: {e}")
+        ent = livesync.bump(res, user=user, detail=f"{name}/{sheet} {len(rows)} แถว",
+                            changes=changes)
 
-    # ล้างค่าทุกเซลล์เดิมในชีท แล้วเขียนใหม่ (header + rows)
-    if ws.max_row > 0:
-        ws.delete_rows(1, ws.max_row)
-
-    ws.append([str(c) for c in columns])
-    for row in rows:
-        ws.append([_coerce(v) for v in row])
-
-    wb.save(path)
-    wb.close()
-    return {"ok": True, "backup": bak.name, "rows": len(rows)}
+    return {"ok": True, "backup": bak, "rows": len(rows), "rev": ent["rev"]}

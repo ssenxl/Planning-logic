@@ -2,10 +2,13 @@ import os
 import re
 import pandas as pd
 import numpy as np
-import sys
 import configparser as _cp
 from pathlib import Path
-from Calendar import load_calendar, calendar_week_map
+from Calendar import load_calendar, calendar_week_map, WeekTimeline, yw_week, yw_year, yw_label
+import ColorOpen  # so_text: ล้าง ".0"/"nan" ของเลขใบสั่งที่ pandas อ่านเป็นตัวเลข
+import McTotal   # จำนวนเครื่องรายสัปดาห์ (ชีท MC_Total) — ตรรกะเขียนทับ + ตัวตรวจ
+import McGroups  # แหล่งเดียวของ "กลุ่มที่ไม่ใช่เครื่องทอของเรา" (จ้างทออ่านจาก MasterMC)
+import plan_config  # ค่าปรับแต่งที่แก้ได้จากหน้า "ตั้งค่าระบบ" (แทน env KP_* เดิม ; env ยังทับได้)
 
 # Load calendar from SharePoint URL (auto-sync)
 CALENDAR_FILE = "https://nanyangtextilegroup.sharepoint.com/:x:/s/SCM_Cloud/IQCXP4jH73zhQozDNvw1XF8OAY5m4p-UFv35Tcpza6v8mJo?e=43ffCc"
@@ -16,25 +19,32 @@ _calendar_df = _calendar_df[_calendar_df["DATE"].notna()].copy()
 _calendar_df["is_working_day"] = _calendar_df["status"].map({1: 1, 0: 0}).fillna(0)
 # สรุปวันเปิด "ต่อสัปดาห์" แยกรายปี (ปฏิทินมีหลายปี → WEEK เดียวกันซ้ำหลายแถว)
 _calendar_week = calendar_week_map(_calendar_df)
+# คีย์สัปดาห์ภายในไฟล์นี้ = YW (ปี*100+สัปดาห์) ทั้งหมด — แยกปีได้ แผนจึงยาวเกิน 1 ปีได้
+# ไฟล์ที่เขียนออกยังแยกเป็น WEEK + YEAR เหมือนเดิม (ดู _with_year)
+_TL = WeekTimeline(_calendar_week)
+_WD_BY_YW = {
+    int(_r["year"]) * 100 + int(_r["week"]): int(_r["working_days"])
+    for _, _r in _calendar_week.iterrows()
+}
 
 
 def get_working_days_in_week(week):
-    """จำนวนวันที่ปฏิทินเปิดของ "หนึ่งสัปดาห์" (ไม่รวมข้ามปี) — ตรงกับ Planning
-    ปฏิทินมีหลายปี (2026–2031) จึงห้าม sum ทุกแถว WEEK==week (จะได้ ~30 วัน)
-    ใช้แถวแรก (ปีแรก = ปีที่กำลังวางแผน) ของ calendar_week_map"""
-    wd = _calendar_week[_calendar_week["week"] == week]
-    if wd.empty:
-        return 6  # fallback
-    return int(wd.iloc[0]["working_days"])
+    """จำนวนวันที่ปฏิทินเปิดของ "หนึ่งสัปดาห์" ของปีนั้นจริง — ตรงกับ Planning
+    รับ YW (หรือเลขเปล่า → ตีความเป็นครั้งที่ใกล้วันนี้สุด) ; ไม่มีในปฏิทิน = 6"""
+    k = _TL.key(week)
+    return _WD_BY_YW.get(k, 6) if k is not None else 6
 
 # =========================
 # CONFIG
 # =========================
-SETUP_DAYS = 5  # default setup days
+# วันตั้งเครื่อง — ต้องเป็นชุดเดียวกับ Planning เสมอ (แก้ที่หน้า "ตั้งค่าระบบ" ที่เดียว)
+# ไม่งั้นเครื่องที่ AVA หักไว้ (MC_USE) กับที่แผนใช้จริงจะไม่ตรงกัน
+SETUP_DAYS = plan_config.get("KP_SETUP_DAYS")               # ผ้าทั่วไป
+SETUP_DAYS_HEAVY = plan_config.get("KP_SETUP_DAYS_HEAVY")   # POLY ล้วน / ด้าย DTY
 # โรงอ้อมน้อย (OMNOI): ทุก item ใช้ setup เท่ากันหมด ไม่ดู prefix ITEM / COTTON / POLY / DTY
 # ต้องตรงกับ OMNOI_SETUP_DAYS ใน Planning.py ไม่งั้น MC_USE (AVA) กับแผน (Planning) หัก setup คนละจำนวน
-OMNOI_SETUP_DAYS = 3
-BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+OMNOI_SETUP_DAYS = plan_config.get("KP_OMNOI_SETUP_DAYS")
+BASE_DIR = Path(__file__).parent
 _cfg = _cp.ConfigParser(interpolation=None)  # ปิด interpolation ให้ใช้ %USERPROFILE% ใน path ได้
 if not _cfg.read(BASE_DIR / "config.ini", encoding="utf-8"):
     raise FileNotFoundError(f"ไม่พบ config.ini ที่ {BASE_DIR / 'config.ini'} — กรุณาสร้างไฟล์ config.ini ก่อนรัน")
@@ -76,7 +86,7 @@ def get_setup_days_for_item(material_content: str, yarn_used: str, mc_group: str
     _mc_type = _MC_GROUP_TO_TYPE.get(_mc_u, "").replace("SINGEL", "SINGLE")
     if _mc_u and _mc_type.startswith("SINGLE"):
         _pfx_days = _lookup_item_prefix_setup(item_code)
-        return _pfx_days if _pfx_days is not None else 3
+        return _pfx_days if _pfx_days is not None else SETUP_DAYS
     if mc_group:
         if _mc_u in _mc_setup_time_map:
             return _mc_setup_time_map[_mc_u]
@@ -85,16 +95,24 @@ def get_setup_days_for_item(material_content: str, yarn_used: str, mc_group: str
 
     if mat == "COTTON":
         if "DTY" in yarn:
-            return 5
-        return 3
+            return SETUP_DAYS_HEAVY
+        return SETUP_DAYS
     if mat == "POLY":
-        return 5
+        return SETUP_DAYS_HEAVY
     if mat:  # CD, TC, CVC, CT, ฯลฯ
         if "DTY" in yarn:
-            return 5
-        return 3
-    return 3
-BOOKING_DIR = BASE_DIR / "Booking"
+            return SETUP_DAYS_HEAVY
+        return SETUP_DAYS
+    return SETUP_DAYS
+# env AVA_BOOKING_DIR = อ่าน booking จากโฟลเดอร์อื่นแทน Booking/ ของ pipeline
+# ใช้คู่กับ AVA_OUT_FILE (ดูข้างล่าง) ตอนหน้าแผนสั่ง "ดูประวัติย้อนหลัง": ดึง booking ช่วงเก่า
+# จาก DB ลงโฟลเดอร์ชั่วคราว แล้วรันไฟล์นี้บนโฟลเดอร์นั้น เพื่อให้ได้เลขเครื่อง/setup/carry
+# ด้วยตรรกะเดียวกับแผนจริง — โดยไม่แตะ Booking/ และไม่ทับ booking_final_ready*.xlsx ที่ใช้วางแผน
+# ไม่ตั้ง = ชี้ Booking/ เหมือนเดิมทุกประการ
+_ava_env_in = os.environ.get("AVA_BOOKING_DIR", "").strip()
+BOOKING_DIR = Path(os.path.expandvars(_ava_env_in)) if _ava_env_in else BASE_DIR / "Booking"
+# CAP รายไอเทม-รายเครื่อง จาก view CAP รายไอเทม (ดึงด้วย View_MC_Item.py)
+MC_ITEM_FILE = BASE_DIR / "MC_Item" / "view_mc_item.xlsx"
 MASTER_MC_FILE = Path(os.path.expandvars(_cfg["paths"]["master_mc"]))
 if not MASTER_MC_FILE.exists():
     raise FileNotFoundError(
@@ -104,27 +122,30 @@ if not MASTER_MC_FILE.exists():
 OUTPUT_DIR = BASE_DIR / "data_plan"
 from datetime import datetime as _datetime_now
 _d = _datetime_now.now()
-OUTPUT_FILE = OUTPUT_DIR / f"booking_final_ready_{_d.day}-{_d.month}-{_d.year+543}_{_d.hour:02d}{_d.minute:02d}.xlsx"
+# env AVA_OUT_FILE = เขียนผลลง path ที่กำหนด (ทับไฟล์เดิม) แทนไฟล์ใหม่ตามวัน-เวลา
+# ใช้กับหน้า Dashboard "เครื่องว่าง" บนเว็บที่สั่งรันไฟล์นี้ซ้ำ ๆ เพื่อดูตัวเลขสดจาก booking
+# — ไม่ตั้ง = ชื่อไฟล์ตามเวลาเหมือนเดิมทุกประการ (run_all.py / Planning ไม่กระทบ)
+_ava_env_out = os.environ.get("AVA_OUT_FILE", "").strip()
+OUTPUT_FILE = (
+    Path(os.path.expandvars(_ava_env_out)) if _ava_env_out
+    else OUTPUT_DIR / f"booking_final_ready_{_d.day}-{_d.month}-{_d.year+543}_{_d.hour:02d}{_d.minute:02d}.xlsx"
+)
 
-EXCLUDE_MC_GROUP = [
-    "CL-NP",
-    "CL-OM",
-    "COMKN",
-    "F-CL",
-    "CL",
-    "F-TSD",
-]
+# กลุ่มที่ไม่กินเครื่องทอของเรา = จ้างทอ (อ่านจาก MasterMC ไม่ hard-code ชื่อ) + งานตัด/ม้วน
+# ดู McGroups.py — แหล่งเดียว ใช้ร่วมกับ Order.py และ webapp/backend/workday.py
+EXCLUDE_MC_GROUP = sorted(McGroups.outsource_groups(MASTER_MC_FILE) | McGroups.CUT_GROUPS)
 
 # FQC: ไม่มีเครื่องใน MasterMC → วางแผนไม่ได้ แต่ต้องการโชว์ยอดใช้เครื่องในชีท AVA_MC
 # จึงปล่อยให้ไหลผ่านการคำนวณ แล้วตัดทิ้งก่อนเขียนชีท DETAIL (Planning.py อ่านชีทนี้)
-FQC_MC_GROUP = [
-    "FQCCL-NP",
-    "FQCCL-OM",
-    "FQC-Omnoi",
-    "FQC-Phet",
-    "FQC",
-]
+# ชื่อกลุ่มอยู่ที่ McGroups.py ที่เดียว และเทียบแบบไม่สนตัวพิมพ์ —
+# เดิมลิสต์เขียน "FQC-Omnoi"/"FQC-Phet" แล้วใช้ .isin() ซึ่งแยกตัวพิมพ์ ถ้า ERP ส่งมาเป็น
+# ตัวพิมพ์ใหญ่เมื่อไร แถว FQC จะหลุดเข้าชีท DETAIL เงียบ ๆ
 FQC_MC_CAT = {"FQC", "FQC-CL"}
+
+
+def is_fqc_group(s):
+    """mask ของแถวที่ MC_GROUP เป็นกลุ่มงานตรวจผ้า FQC (ไม่สนตัวพิมพ์/ช่องว่าง)"""
+    return s.astype(str).str.strip().str.upper().isin(McGroups.FQC_GROUPS)
 
 KEEP_COLUMNS = [
     "CAT",
@@ -132,6 +153,7 @@ KEEP_COLUMNS = [
     "GUAGE",
     "ITEM_CODE",
     "SO_NO",
+    "KP_NO",                # เลขใบจอง — ต้องไหลถึงชีท PLAN ของ production_plan (ผู้ใช้ขอ)
     "TEAM_NAME",
     "PO_IN_DATE",
     "CAP_KNIT",
@@ -143,6 +165,28 @@ KEEP_COLUMNS = [
     "STRUCTURE",
     "MATERIAL_CONTENT",
     "DESCRIPTION",
+    # กำหนดส่ง FG + ประเภท FOB ของงาน booking — ไม่ได้ใช้คำนวณเครื่อง แต่ต้องไหลลงชีท DETAIL
+    # ให้หน้าเว็บคิด TARGET_KNIT ของบล็อกแผนเก่าได้ (booking ไม่มีทางหา FG week จากที่อื่น:
+    # join SO_NO กับ view_sc ตรงแค่ ~1%)
+    "FG_YEAR",
+    "FG_WEEK",
+    "FOB_TYPE",
+    # ข้อมูลออร์เดอร์/สี/ยอด ของงาน booking — ไม่ได้ใช้คำนวณเครื่อง แต่ต้องไหลลงชีท DETAIL
+    # ให้การ์ดรายละเอียดบน Gantt (คลิกบล็อก History) อ่านได้เท่ากับการ์ดของงานแผน
+    "RDD_WEEK",             # กำหนดส่งลูกค้า (YYYYWW)
+    "COLOR",
+    "NAY_COLOR",
+    # ไม่เอา ORDER_WEIGHT — มีค่าเท่ากับ KP_WEIGHT (ยอดที่จัดลงสัปดาห์นั้น) ไม่ใช่ยอดทั้งใบ
+    "KNIT_WEIGHT",          # ทอไปแล้ว (อดีตทอเกินแผนได้ → KNIT > KP)
+    "OUTSTANDING",          # SCHEDULE_WEIGHT − KNIT_WEIGHT = ที่ยังไม่ได้ทอ
+    "KNIT_CUS_NAME",
+    "PO_NO",
+    "FR_CODE",              # 'S{SC_NO}-{ORDER_TYPE}' — แหล่งเดียวที่มี ORDER_TYPE
+    "SC_LINE_ID",           # เลขบรรทัดของใบ — ยกจาก view ตรง ๆ แทนที่ Replan จะเดาย้อนเอง
+    "REVOLUTION_WEIGHT",
+    # สถานะใบจอง (Pending/Closed) — ไหลลงชีท DETAIL เฉย ๆ ไม่ได้กรองอะไรที่นี่
+    # (การนับเครื่องรอบปกติยังนับ Closed เหมือนเดิม) ; Replan.py ใช้ตัวนี้กรองก่อนยกมาเป็นดีมานด์
+    "STATUS",
 ]
 
 
@@ -199,7 +243,7 @@ except Exception as _e_mmc:
 
 # วันทำงานรายสัปดาห์ (แหล่งเดียว: ชีท Work Day / Week Merge ใน Calendar.xlsx)
 import WorkDay
-WorkDay.init(_master_mc_df, get_working_days_in_week)
+WorkDay.init(_master_mc_df, get_working_days_in_week, timeline=_TL)
 
 # MC → Setup time map: mc_upper → setup_days (จาก MasterMC column "Set up time")
 for _, _mrow in _master_mc_df.iterrows():
@@ -271,6 +315,84 @@ def _norm_gauge_ava(gauge) -> str:
         return s.split(".", 1)[0]
     return s
 
+
+# =========================
+# CAP รายไอเทม-รายเครื่อง จาก view CAP รายไอเทม (MC_Item/view_mc_item.xlsx)
+# คีย์: ITEM_CODE + KNIT_MC_CAT + KNIT_MC_GROUP + KNIT_MC_GUAGE
+#       (= MC_CAT + MC_GROUP + GUAGE ฝั่ง booking)
+# ค่า : min(KP_PER_DAY_EFF) เฉพาะแถว ACTIVE_STATUS = Y — ใช้แทน CAP_KNIT ที่ติดมากับ booking
+#       min เป็นตัวกันเหนียวกรณีคีย์เดียวมีหลายแถว (ข้อมูลปัจจุบันคีย์นี้ไม่ซ้ำเลย)
+# =========================
+def _norm_gauge_key(gauge) -> str:
+    """เกจสำหรับใช้เป็นคีย์: 22.0 → 22, ตัวใหญ่, และ 'C0' (เลขศูนย์) ใน view = 'CO' (ตัวโอ) ใน booking"""
+    s = _norm_gauge_ava(gauge).upper()
+    return "CO" if s == "C0" else s
+
+
+def _load_mc_item_cap(path: Path) -> dict:
+    """อ่าน view_mc_item.xlsx → dict {(item, cat, mc_group, gauge): cap} ; คืน {} ถ้าอ่านไม่ได้"""
+    if not path.exists():
+        print(f"⚠️ ไม่พบ {path} — ใช้ CAP_KNIT ที่ติดมากับ booking ตามเดิม")
+        return {}
+    try:
+        _mi = pd.read_excel(path)
+    except Exception as _e_mi:
+        print(f"⚠️ อ่าน {path.name} ไม่ได้ ({_e_mi}) — ใช้ CAP_KNIT ที่ติดมากับ booking ตามเดิม")
+        return {}
+
+    _mi.columns = _mi.columns.str.strip().str.upper()
+    _need = ["ITEM_CODE", "KNIT_MC_CAT", "KNIT_MC_GROUP", "KNIT_MC_GUAGE", "KP_PER_DAY_EFF", "ACTIVE_STATUS"]
+    _miss = [c for c in _need if c not in _mi.columns]
+    if _miss:
+        print(f"⚠️ {path.name} ขาดคอลัมน์ {_miss} — ใช้ CAP_KNIT ที่ติดมากับ booking ตามเดิม")
+        return {}
+
+    _rows_all = len(_mi)
+    _mi = _mi[_mi["ACTIVE_STATUS"].map(lambda v: str(v).strip().upper()) == "Y"]
+    _caps = pd.to_numeric(_mi["KP_PER_DAY_EFF"], errors="coerce")
+    _items = _mi["ITEM_CODE"].map(lambda v: str(v).strip().upper())
+    _cats = _mi["KNIT_MC_CAT"].map(lambda v: str(v).strip().upper())
+    _mcs = _mi["KNIT_MC_GROUP"].map(lambda v: str(v).strip().upper())
+    _gs = _mi["KNIT_MC_GUAGE"].map(_norm_gauge_key)
+
+    # 3 ระดับคีย์ — ใช้ไล่จากตรงที่สุดไปหลวมที่สุด (ดู _cap_of_row)
+    #   exact   = (item, MC_CAT, เครื่อง, เกจ)  ตรงเป๊ะ
+    #   no_cat  = (item, เครื่อง, เกจ)          ตัด MC_CAT ทิ้ง — booking กับ view สะกดชื่อกลุ่ม
+    #             ไม่ตรงกัน (เครื่อง SYN เกจ 28 ตัวเดียวกัน booking ใส่ 'SYN-28' บ้าง
+    #             'DOUBLE-30' บ้าง) ทั้งที่ CAP ขึ้นกับเครื่อง+เกจ ไม่ใช่ป้ายกลุ่ม
+    #   item_g  = (item, เกจ)                   item เดียวกันบนเครื่องอื่นที่เกจเท่ากัน
+    #             = ค่าประมาณ ใช้เมื่อ master ยังไม่มีคู่ (item, เครื่อง) นั้นเลย
+    _out: dict = {}
+    _no_cat: dict = {}
+    _item_g: dict = {}
+    _dup = 0
+    for _it, _cat, _mc, _g, _v in zip(_items, _cats, _mcs, _gs, _caps):
+        if pd.isna(_v) or _v <= 0:
+            continue
+        _v = float(_v)
+        _k = (_it, _cat, _mc, _g)
+        _prev = _out.get(_k)
+        if _prev is None:
+            _out[_k] = _v
+        else:
+            _dup += 1
+            if _v < _prev:  # หลายค่าในคีย์เดียว → เอาค่าต่ำสุด
+                _out[_k] = _v
+        # คีย์หลวมใช้ค่าต่ำสุดเสมอ — ประเมินช้าไว้ก่อนปลอดภัยกว่าวางแผนเกินกำลังเครื่อง
+        for _bag, _bk in ((_no_cat, (_it, _mc, _g)), (_item_g, (_it, _g))):
+            if _bk not in _bag or _v < _bag[_bk]:
+                _bag[_bk] = _v
+    print(
+        f"✅ โหลด CAP รายไอเทม-รายเครื่อง: {len(_out)} คีย์ "
+        f"(ACTIVE=Y {len(_mi)}/{_rows_all} แถว, คีย์ซ้ำที่ใช้ min {_dup}) จาก {path.name}"
+        f" | คีย์สำรอง: ตัดกลุ่ม {len(_no_cat)} · item+เกจ {len(_item_g)}"
+    )
+    return {"exact": _out, "no_cat": _no_cat, "item_gauge": _item_g}
+
+
+_MC_ITEM_CAP_MAP = _load_mc_item_cap(MC_ITEM_FILE)
+
+
 # =========================
 # วัน/ชั่วโมงทำงาน: อ่านจากชีท Work Day (Calendar.xlsx) ผ่าน WorkDay เท่านั้น
 # — ไม่ใช้ Working Day / Working Hours. ของ MasterMC และไม่มีกฎพิเศษ Week 17/32 อีกต่อไป
@@ -318,7 +440,7 @@ except Exception as _e_is_ava:
 # LOCK_MC: เครื่องที่ user "กันไว้ให้ item" ในสัปดาห์ที่ item ไม่ได้ผลิต
 # Source: MasterMC.xlsx sheet "Lock_MC" (คอลัมน์ ITEM ไม่บังคับ)
 #
-# ความหมาย: กันกระบอกไว้ N เครื่อง → สัปดาห์นั้นเครื่องว่าง (Planning หักออกจาก pool)
+# ความหมาย: กันเครื่องไว้ N เครื่อง → สัปดาห์นั้นเครื่องว่าง (Planning หักออกจาก pool)
 # แต่พอ item กลับมาผลิต ถือว่าเครื่อง N ตัวนั้น "ยังอุ่น" → ไม่ต้อง setup ใหม่
 # ⚠️ จำนวนที่กันไว้ = จำนวนเครื่องที่อุ่นได้ (กัน 3 → อุ่น 3 ตัว ตัวที่ 4 เป็นเครื่องใหม่ต้อง setup)
 #
@@ -351,6 +473,15 @@ try:
         _lk_cnt = _lk_int(_lk_row.get("MC Lock")) or 0
         if _lk_week is None or _lk_cnt <= 0:
             continue
+        # Week To (ไม่บังคับ): กันเครื่องชุดเดิมยาวเป็นช่วง — ไม่มี/น้อยกว่า Week = สัปดาห์เดียว
+        # Year / Year To (ไม่บังคับ): ใส่เมื่อช่วงข้ามปี → กางช่วงตาม timeline ปฏิทินจริง
+        # ไม่ใส่ Year = ครั้งที่ใกล้วันนี้สุดของเลขสัปดาห์นั้น → คืนเป็น YW
+        _lk_weeks, _lk_warn = _TL.span(
+            _lk_week, _lk_int(_lk_row.get("Week To")),
+            _lk_int(_lk_row.get("Year")), _lk_int(_lk_row.get("Year To")),
+        )
+        if _lk_warn:
+            print(f"⚠️ Lock_MC W{_lk_week} ({_lk_item}): {_lk_warn}")
         _lk_key = (
             _lk_item,
             str(_lk_row.get("MC_CAT", "")).strip().upper(),
@@ -359,7 +490,8 @@ try:
         )
         _lk_slot = _LOCK_WARM.setdefault(_lk_key, {})
         # คีย์ซ้ำ (สัปดาห์เดียวกัน) → บวกรวม ให้ตรงกับที่ Planning หัก pool และที่การ์ดเตือนไว้
-        _lk_slot[_lk_week] = _lk_slot.get(_lk_week, 0) + _lk_cnt
+        for _lk_w in _lk_weeks:
+            _lk_slot[_lk_w] = _lk_slot.get(_lk_w, 0) + _lk_cnt
 
     if _LOCK_WARM:
         print(f"✅ Lock_MC warm map: {_LOCK_WARM}")
@@ -371,14 +503,19 @@ except Exception as _e_lk:
 
 # =========================
 # MC_TOTAL OVERRIDE: จำนวนเครื่องทั้งหมดของ (สัปดาห์ + MC_CAT + เกจ) ที่ user กำหนดเอง
-# Source: MasterMC.xlsx sheet "MC_Total" — คอลัมน์ Week | Factory | MC_CAT | Guage | Total MC
+# Source: MasterMC.xlsx sheet "MC_Total" — คอลัมน์ Week | Factory | MC_CAT | MC | Guage | Total MC
 #
 # ความหมาย: "สัปดาห์นี้ CAT+เกจ นี้มีเครื่องทั้งหมด N ตัว" → ใช้แทน Total MC จากชีท Master MC
+#   - N = ทั้งกอง รวมเครื่องที่ MC Special กันไว้ให้ POLY/COTTON (หน่วยเดียวกับ Total MC ของทะเบียน)
+#     → ตอนเขียนลงพูลปกติจะหักเครื่องกันไว้ออกให้เอง
 #   - มีผลเฉพาะสัปดาห์ที่ระบุ (สัปดาห์อื่นกลับไปใช้ค่าเดิม)
 #   - Factory เว้นว่าง = ทุกโรงงาน (กระจายยอดตามสัดส่วนเครื่องเดิมของแต่ละพูล)
+#   - MC (เช่น SKP) ไม่บังคับ: ระบุ = ปรับเฉพาะ "พูล" ของเครื่องนั้น (Group ใน Master MC)
+#     เว้นว่าง = ทั้ง CAT+เกจ (พฤติกรรมเดิม) — จำเป็นเมื่อ CAT เดียวมีหลายพูล เช่น
+#     SINGLE-32 26G = พูล SKP (5 เครื่อง) + พูล SKPLE,SKPTA (49 เครื่อง) ซึ่งใช้แทนกันไม่ได้
 #   - booking / Lock_MC ยังหักต่ออีกชั้นตามปกติ (TOTAL_MC_REMAIN = TOTAL_MC − MC_USE_CEIL)
 # =========================
-_MC_TOTAL_OVERRIDE: dict = {}  # (week, cat_upper, gauge_norm, factory_upper|"") → total
+_MC_TOTAL_OVERRIDE: dict = {}  # (YW, cat_upper, gauge_norm, factory_upper|"", mc_upper|"") → total
 
 try:
     _mt_df = pd.read_excel(MASTER_MC_FILE, sheet_name="MC_Total")
@@ -406,12 +543,20 @@ try:
         if _mt_week is None or _mt_total is None or _mt_total < 0 or not _mt_cat or not _mt_g:
             continue
         _mt_fac = str(_mt_row.get("Factory", "") or "").strip().upper().replace("NAN", "")
+        # MC (ไม่บังคับ): ระบุกลุ่มเครื่อง เช่น SKP → ปรับเฉพาะพูลของเครื่องนั้น
+        _mt_mc = str(_mt_row.get("MC", "") or "").strip().upper().replace("NAN", "")
         # Week To (ไม่บังคับ): ระบุช่วงสัปดาห์ที่ใช้ยอดเดียวกัน — ไม่มี/น้อยกว่า Week = สัปดาห์เดียว
-        _mt_week_to = _mt_int(_mt_row.get("Week To"))
-        _mt_week_end = _mt_week_to if (_mt_week_to is not None and _mt_week_to >= _mt_week) else _mt_week
+        # Year / Year To (ไม่บังคับ): ใส่เมื่อช่วงข้ามปี → กางช่วงตาม timeline ปฏิทินจริง
+        # ไม่ใส่ Year = ครั้งที่ใกล้วันนี้สุดของเลขสัปดาห์นั้น → คืนเป็น YW
+        _mt_weeks, _mt_warn = _TL.span(
+            _mt_week, _mt_int(_mt_row.get("Week To")),
+            _mt_int(_mt_row.get("Year")), _mt_int(_mt_row.get("Year To")),
+        )
+        if _mt_warn:
+            print(f"⚠️ MC_Total W{_mt_week} ({_mt_cat}): {_mt_warn}")
         # คีย์ซ้ำ = user แก้ยอดเดิม → ใช้แถวหลังสุด (ไม่บวกรวมแบบ Lock_MC เพราะเป็น "ยอดรวม")
-        for _mt_w in range(_mt_week, _mt_week_end + 1):
-            _MC_TOTAL_OVERRIDE[(_mt_w, _mt_cat, _mt_g, _mt_fac)] = _mt_total
+        for _mt_w in _mt_weeks:
+            _MC_TOTAL_OVERRIDE[(_mt_w, _mt_cat, _mt_g, _mt_fac, _mt_mc)] = _mt_total
     if _MC_TOTAL_OVERRIDE:
         print(f"✅ MC_Total override: {_MC_TOTAL_OVERRIDE}")
     else:
@@ -676,6 +821,75 @@ for (_ms_fac, _ms_cat, _ms_mc, _ms_g), _ms_vals in _MC_SPECIAL_LOOKUP.items():
         if _ms_normal_pk in _TOTAL_MC_BY_TYPE:
             _TOTAL_MC_BY_TYPE[_ms_normal_pk] = max(0, _TOTAL_MC_BY_TYPE[_ms_normal_pk] - _ms_vals["POLY"])
 
+# =========================
+# ก้อนเครื่องที่ใช้แทนกันได้ = "พูลเดียวกัน" (โรง + CAT + เกจ + Group) — นิยามเดียวกับ Planning.py
+#
+# item เดียวกันที่ booking กระจายอยู่หลายกลุ่มในก้อนเดียวกัน (เช่น RAP กับ RAP98 ใน
+# PHET|DOUBLE-30 22G) คือเครื่องชุดเดียวกันในทางปฏิบัติ ถ้าคิดแยกกลุ่มจะปัดเศษเครื่อง
+# คนละรอบ (ceil หลายครั้ง) → เครื่องรวมเกินจริง และสลับกลุ่มทีก็นับเป็น setup ใหม่ทุกที
+# → ยุบเป็นแถวเดียวใต้ "กลุ่มตัวแทน" = กลุ่มที่ CAP ของ item นั้นสูงสุดในก้อน
+# ปิดกลับพฤติกรรมเดิมได้ที่หน้า "ตั้งค่าระบบ" (ค่าเดียวกับที่ Planning ใช้)
+# =========================
+GROUP_MC_BY_CAT = plan_config.get("KP_GROUP_BY_CAT")
+_POOL_MEMBERS: dict = {}       # (pool_key, gauge) → [MC_GROUP ในก้อน]
+_CANON_PICK_CACHE: dict = {}   # (item, pool_key, gauge) → กลุ่มตัวแทน
+
+if GROUP_MC_BY_CAT:
+    for (_pm_mc_k, _pm_g_k), _pm_pk_k in _MC_TO_POOL.items():
+        _POOL_MEMBERS.setdefault((_pm_pk_k, _pm_g_k), set()).add(_pm_mc_k)
+    _POOL_MEMBERS = {k: sorted(v) for k, v in _POOL_MEMBERS.items()}
+    _multi_pool = {k: v for k, v in _POOL_MEMBERS.items() if len(v) > 1}
+    print(f"✅ ก้อนเครื่อง (พูลเดียวกัน): {len(_POOL_MEMBERS)} ก้อน, รวมหลายกลุ่ม {len(_multi_pool)} ก้อน")
+    for _k_mp, _v_mp in _multi_pool.items():
+        print(f"   • {_k_mp[0]} G{_k_mp[1]}: {', '.join(_v_mp)}")
+else:
+    print("ℹ️ KP_GROUP_BY_CAT=0 → คิดเครื่องแยกต่อ MC_GROUP เหมือนเดิม")
+
+
+def _cap_lookup_ava(item, mc_group, gauge, mc_cat="") -> float:
+    """CAP ต่อวัน (ฐาน 24 ชม.) ของ item บนกลุ่มนี้จาก view_mc_item — ไม่เจอคืน 0"""
+    if not _MC_ITEM_CAP_MAP:
+        return 0.0
+    _it = str(item).strip().upper()
+    _mc = str(mc_group).strip().upper()
+    _g = _norm_gauge_key(gauge)
+    _v = _MC_ITEM_CAP_MAP["exact"].get((_it, str(mc_cat).strip().upper(), _mc, _g))
+    if _v is None:
+        _v = _MC_ITEM_CAP_MAP["no_cat"].get((_it, _mc, _g))
+    return float(_v or 0)
+
+
+def _canon_mc_ava(item, mc_group, gauge, mc_cat="") -> str:
+    """กลุ่มตัวแทนของก้อนสำหรับ item นี้ = กลุ่มที่กำลังผลิตต่อวันสูงสุด (เท่ากัน → ชื่อเรียงก่อน)
+
+    เทียบกันที่กำลังผลิตจริง (CAP × ชั่วโมงของกลุ่ม/24) ไม่ใช่ CAP ดิบ เพราะแต่ละกลุ่ม
+    ตั้งชั่วโมงทำงานต่างกันได้ในแผงวันทำงาน
+    """
+    _mc = str(mc_group).strip().upper()
+    if not GROUP_MC_BY_CAT or not _mc:
+        return _mc
+    _g = _norm_gauge_ava(gauge)
+    _pk = _MC_TO_POOL.get((_mc, _g))
+    if not _pk:
+        return _mc
+    _members = _POOL_MEMBERS.get((_pk, _g), [_mc])
+    if len(_members) <= 1:
+        return _mc
+    _it = str(item).strip().upper()
+    _key = (_it, _pk, _g)
+    if _key in _CANON_PICK_CACHE:
+        return _CANON_PICK_CACHE[_key]
+    _best, _best_eff = None, -1.0
+    for _m in _members:
+        _eff = _cap_lookup_ava(_it, _m, _g, mc_cat) * (WorkDay.get_working_hours(_m, _g) / 24)
+        if _eff > _best_eff + 1e-9:
+            _best, _best_eff = _m, _eff
+    # ไม่มี CAP ของกลุ่มไหนเลย → ใช้ชื่อแรกของก้อน เพื่อให้ทุกแถวยุบไปตัวเดียวกันแน่นอน
+    _pick = _best if _best_eff > 0 else _members[0]
+    _CANON_PICK_CACHE[_key] = _pick
+    return _pick
+
+
 print(f"📊 Pools by Factory (sample): { dict(list(_TOTAL_MC_BY_TYPE.items())[:10]) }")
 if not _master_mc_df.empty and "Group" in _master_mc_df.columns:
     _show_cols = [c for c in ["Factory", "Type", "MC_CAT", "MC", "Guage", "Total MC", "Group"] if c in _master_mc_df.columns]
@@ -759,6 +973,63 @@ df = df[~df["MC_GROUP"].isin(EXCLUDE_MC_GROUP)]
 df["TYPE"] = df["TYPE"].astype(str).str.strip().str.upper()
 df = df[df["TYPE"] != "COLLAR"]
 
+# =========================
+# คีย์สัปดาห์ = YW (ปี*100+สัปดาห์)
+# =========================
+# เดิมคีย์ด้วยเลขสัปดาห์เปล่า → W32 ปีหน้ากับ W32 ปีนี้เป็นแถวเดียวกัน ตารางเครื่องเลยยาวได้ไม่เกิน
+# 1 ปี (และสัปดาห์ที่ผ่านไปแล้วยังกันเลขไว้ ทำให้ horizon สั้นลงอีก) ; ตอนนี้ WEEK ในไฟล์นี้เป็น YW
+# ทุกแถว (booking มี YEAR จริงจาก view) → groupby/merge ทุกจุดแยกปีเอง
+# ไม่มี YEAR (ไฟล์เก่า) → ตีความเลขสัปดาห์เป็นครั้งที่ใกล้วันนี้สุด ; W99 (งานล้น) คงเป็น 99
+_wk_src = pd.to_numeric(df["WEEK"], errors="coerce")
+_yr_src = (pd.to_numeric(df["YEAR"], errors="coerce") if "YEAR" in df.columns
+           else pd.Series(np.nan, index=df.index))
+if "YEAR" not in df.columns:
+    print("⚠️ booking ไม่มีคอลัมน์ YEAR — ตีความเลขสัปดาห์เป็นครั้งที่ใกล้วันนี้ที่สุด")
+df["WEEK"] = [
+    (_TL.key(w, y) if pd.notna(w) else np.nan)
+    for w, y in zip(_wk_src, _yr_src.where(_yr_src.notna(), None))
+]
+df = df[pd.to_numeric(df["WEEK"], errors="coerce").notna()].copy()
+df["WEEK"] = pd.to_numeric(df["WEEK"], errors="coerce").astype(int)
+# W99 ภายในไฟล์นี้ใช้ 999999 — ต้องเรียงอยู่ท้ายสุดเหมือนเดิม (99 เปล่า ๆ จะมาก่อน YW ทุกตัว)
+_SENT_YW = 999999
+df.loc[df["WEEK"] == 99, "WEEK"] = _SENT_YW
+_wk_real = df.loc[df["WEEK"] != _SENT_YW, "WEEK"]
+if not _wk_real.empty:
+    print(f"🗓️ สัปดาห์ใน booking: {yw_label(_wk_real.min())} → {yw_label(_wk_real.max())}")
+
+
+def _with_year(_d):
+    """แยกคีย์ YW กลับเป็น WEEK (เลขสัปดาห์) + YEAR (คอลัมน์สุดท้ายเสมอ) ตอนเขียนไฟล์
+
+    ไฟล์ที่ Planning/Replan/หน้าเว็บอ่านยังเป็นรูปเดิม ; W99 = sentinel 'งานล้น' ไม่มีปี → YEAR ว่าง
+    """
+    if _d is None or _d.empty or "WEEK" not in _d.columns:
+        return _d
+    _o = _d.copy()
+    _w = pd.to_numeric(_o["WEEK"], errors="coerce")
+    # W99 ไม่มีปีจริง — ใส่ปีปัจจุบันไว้ (ของเดิมได้ปีของ booking แถวนั้น ซึ่งก็คือปีนี้)
+    _sent_year = yw_year(_TL.at(_TL.today_idx))
+    _o["YEAR"] = pd.array([(yw_year(v) if int(v) != _SENT_YW else _sent_year) if pd.notna(v) else None
+                           for v in _w], dtype="Int64")
+    _o["WEEK"] = pd.array([yw_week(v) if pd.notna(v) else None for v in _w], dtype="Int64")
+    # คอลัมน์ช่วยที่เก็บสัปดาห์ (สัปดาห์ผลิตก่อนหน้า) → เลขสัปดาห์เปล่าเหมือนเดิม
+    if "_prev_week" in _o.columns:
+        _pw = pd.to_numeric(_o["_prev_week"], errors="coerce")
+        _o["_prev_week"] = [yw_week(v) if pd.notna(v) else np.nan for v in _pw]
+    return _o[[c for c in _o.columns if c != "YEAR"] + ["YEAR"]]
+
+
+def _week_pos(w) -> int:
+    """สัปดาห์ (YW) → ตำแหน่งบนปฏิทิน — ใช้เรียงลำดับและวัดระยะห่าง (W52→W1 ข้ามปี = 1)
+    ไม่อยู่ในปฏิทิน (เช่น W99) → ไปอยู่ท้ายสุด (ตำแหน่งจริงมีแค่หลักร้อย)"""
+    try:
+        wi = int(w)
+    except (TypeError, ValueError):
+        return 0
+    p = _TL.idx(wi)
+    return p if p is not None else 10_000_000 + wi
+
 # สอน WorkDay ว่าเครื่องในบุ๊คกิ้งอยู่กลุ่มไหนของแผง (ใช้ FACTORY+CAT+เกจ ซึ่งเป็นคีย์ของแผง)
 # ต้องทำก่อนตัดคอลัมน์ FACTORY ทิ้ง — ครอบคลุมเครื่องที่ไม่มีใน MasterMC เช่น SKPHF/SKPSL/SKPAO
 _wd_alias = WorkDay.register_aliases(df[[c for c in ("FACTORY", "CAT", "MC_GROUP", "GUAGE") if c in df.columns]])
@@ -774,6 +1045,97 @@ df["GUAGE"] = df["GUAGE"].astype(str).str.strip()
 df["CAP_KNIT"] = pd.to_numeric(df["CAP_KNIT"], errors="coerce")
 df["KP_WEIGHT"] = pd.to_numeric(df["KP_WEIGHT"], errors="coerce")
 
+# ยุบกลุ่มเครื่องที่อยู่ก้อนเดียวกันเข้าสู่กลุ่มตัวแทน (ดู _canon_mc_ava) — ต้องทำก่อนหา CAP
+# และก่อน groupby เพื่อให้ CAP/ชั่วโมง/setup/ลูกโซ่ carry ทั้งหมดคิดบนกลุ่มเดียวกันทั้งก้อน
+# เก็บชื่อกลุ่มจริงไว้ที่ MC_GROUP_SRC เพื่อให้ยังตามกลับไปดูได้ว่ายอดมาจากกลุ่มไหนบ้าง
+if GROUP_MC_BY_CAT and not df.empty:
+    _canon_vals = [
+        _canon_mc_ava(_i, _m, _g, _c)
+        for _i, _m, _g, _c in zip(df["ITEM_CODE"], df["MC_GROUP"], df["GUAGE"], df["MC_CAT"])
+    ]
+    df["MC_GROUP_SRC"] = df["MC_GROUP"].astype(str).str.strip().str.upper()
+    _n_moved = int((pd.Series(_canon_vals, index=df.index) != df["MC_GROUP_SRC"]).sum())
+    df["MC_GROUP"] = _canon_vals
+    if _n_moved:
+        _moved = (
+            df.loc[df["MC_GROUP"] != df["MC_GROUP_SRC"], ["ITEM_CODE", "MC_GROUP_SRC", "MC_GROUP", "GUAGE"]]
+            .drop_duplicates()
+        )
+        print(f"🔗 ยุบกลุ่มเครื่องเข้าก้อนเดียวกัน {_n_moved} แถว ({len(_moved)} คู่):")
+        print(_moved.head(15).to_string(index=False))
+
+# =========================
+# OVERRIDE CAP_KNIT ด้วยค่าจาก view_mc_item (view CAP รายไอเทม)
+# — ค่าใน booking เป็น snapshot ตอนเปิดออร์เดอร์ ส่วน view คือค่าปัจจุบันของ master
+# — ไล่หา 3 ระดับ (ดู _load_mc_item_cap) เพราะ "ไม่มี CAP" = Planning ข้ามงานนั้นทั้งใบ
+#   (ดู Planning "[SKIP] ... ไม่มี CAP_PER_DAY") แล้วยอดหายจากแผนเงียบ ๆ
+#   1. ตรงเป๊ะ (item, MC_CAT, เครื่อง, เกจ)
+#   2. ตัด MC_CAT — booking กับ view สะกดชื่อกลุ่มไม่ตรงกันสำหรับเครื่องตัวเดียวกัน
+#   3. item เดียวกันบนเครื่องอื่นที่เกจเท่ากัน = ค่าประมาณ (master ยังไม่มีคู่นั้น)
+#      → ต้อง print ให้เห็นทุกครั้ง เพื่อให้ตามไปเติม master ได้
+# =========================
+if _MC_ITEM_CAP_MAP and not df.empty:
+    _cap_exact = _MC_ITEM_CAP_MAP["exact"]
+    _cap_nocat = _MC_ITEM_CAP_MAP["no_cat"]
+    _cap_itemg = _MC_ITEM_CAP_MAP["item_gauge"]
+    _cap_old = df["CAP_KNIT"].copy()
+    _src_rows = []          # แถวที่ต้องใช้คีย์สำรอง — สรุปท้ายบล็อก
+    _vals, _lv2, _lv3 = [], 0, 0
+    for _i, _c, _g, _gg in zip(df["ITEM_CODE"], df["MC_CAT"], df["MC_GROUP"], df["GUAGE"]):
+        _it = str(_i).strip().upper()
+        _cat = str(_c).strip().upper()
+        _mc = str(_g).strip().upper()
+        _gn = _norm_gauge_key(_gg)
+        _v = _cap_exact.get((_it, _cat, _mc, _gn))
+        if _v is None:
+            _v = _cap_nocat.get((_it, _mc, _gn))
+            if _v is not None:
+                _lv2 += 1
+                _src_rows.append((_it, _cat, _mc, _gn, "ตัดกลุ่ม", _v))
+            else:
+                _v = _cap_itemg.get((_it, _gn))
+                if _v is not None:
+                    _lv3 += 1
+                    _src_rows.append((_it, _cat, _mc, _gn, "item+เกจ (ประมาณ)", _v))
+        # ก้อนเดียวกัน = ใช้ CAP ของกลุ่มที่ทอได้มากที่สุด (กันกรณีคีย์ของกลุ่มตัวแทนหาไม่เจอ
+        # แล้วตกไปใช้ค่าประมาณที่ต่ำกว่าความจริง)
+        if GROUP_MC_BY_CAT:
+            _pk_row = _MC_TO_POOL.get((_mc, _norm_gauge_ava(_gg)))
+            for _m_row in (_POOL_MEMBERS.get((_pk_row, _norm_gauge_ava(_gg)), []) if _pk_row else []):
+                _vg = _cap_lookup_ava(_it, _m_row, _gg, _cat)
+                if _vg > 0 and (_v is None or _vg > _v):
+                    _v = _vg
+        _vals.append(np.nan if _v is None else _v)
+    _cap_new = pd.Series(_vals, index=df.index)
+    _hit = _cap_new.notna()
+    df["CAP_KNIT"] = _cap_new.where(_hit, _cap_old)
+
+    _filled = int((_hit & _cap_old.isna()).sum())
+    _changed = _hit & _cap_old.notna() & ((_cap_new - _cap_old).abs() / _cap_old.abs().replace(0, np.nan) > 0.10)
+    print(
+        f"✅ CAP_KNIT จาก view_mc_item: ใช้ได้ {int(_hit.sum())}/{len(df)} แถว "
+        f"(ตรงเป๊ะ {int(_hit.sum()) - _lv2 - _lv3} · ตัดกลุ่ม {_lv2} · item+เกจ {_lv3} | "
+        f"หาไม่เจอ {int((~_hit).sum())} แถว → คงค่าเดิมจาก booking, เติมช่องว่างได้ {_filled} แถว)"
+    )
+    _still_nan = int(df["CAP_KNIT"].isna().sum())
+    if _still_nan:
+        _sn = df[df["CAP_KNIT"].isna()][["ITEM_CODE", "MC_CAT", "MC_GROUP", "GUAGE"]].drop_duplicates()
+        print(f"⛔ ยังไม่มี CAP เลย {_still_nan} แถว ({len(_sn)} คู่) — Planning จะข้ามงานพวกนี้ "
+              f"ต้องเพิ่มใน master:\n{_sn.head(15).to_string(index=False)}")
+    if _src_rows:
+        _sr = pd.DataFrame(_src_rows, columns=["ITEM_CODE", "MC_CAT", "MC_GROUP", "GUAGE", "ที่มา", "CAP"]).drop_duplicates()
+        _approx = _sr[_sr["ที่มา"].str.startswith("item+เกจ")]
+        if not _approx.empty:
+            print(f"⚠️ ใช้ CAP ประมาณจาก item เดียวกันบนเครื่องอื่น {len(_approx)} คู่ "
+                  f"(master ยังไม่มีคู่ item+เครื่องนี้ — ควรเพิ่ม):\n{_approx.to_string(index=False)}")
+    if int(_changed.sum()):
+        _chg = (
+            df.loc[_changed, ["ITEM_CODE", "MC_CAT", "MC_GROUP", "GUAGE"]]
+            .assign(CAP_BOOKING=_cap_old[_changed].round(2), CAP_VIEW=_cap_new[_changed].round(2))
+            .drop_duplicates()
+        )
+        print(f"⚠️ CAP เปลี่ยนเกิน 10% {len(_chg)} คีย์ (ตัวอย่าง 10 แรก):\n{_chg.head(10).to_string(index=False)}")
+
 # =========================
 # APPLY 20/24 (เฉพาะ MC group ที่มี Working Hours. == 20 ใน MasterMC.xlsx)
 # =========================
@@ -787,6 +1149,11 @@ def _apply_cap_adj(r):
 
 df["_CAP_ADJ"] = df.apply(_apply_cap_adj, axis=1)
 
+# เลขใบสั่งเป็นข้อความตั้งแต่ก่อน groupby — DETAIL_SC ใช้ SO_NO เป็น "คีย์" จึงคงชนิด
+# ตัวเลขไว้ตอนเขียน Excel และกลายเป็น "720188.0" ได้ถ้ามีใบไหนไม่มี SO
+if "SO_NO" in df.columns:
+    df["SO_NO"] = df["SO_NO"].map(ColorOpen.so_text)
+
 # =========================
 # GROUP ITEM
 # =========================
@@ -799,7 +1166,12 @@ agg_dict = {
 if "CAT" in df.columns:
     agg_dict["CAT"] = "first"
 if "SO_NO" in df.columns:
-    agg_dict["SO_NO"] = lambda x: ",".join(x.dropna().astype(str).unique())
+    # ⚠️ ต้อง so_text ก่อน join: SO_NO เป็นเลขล้วน ถ้ามีแถวไหนว่าง pandas จะทำทั้ง
+    # คอลัมน์เป็น float64 แล้ว astype(str) ได้ "720188.0" ติดไปทั้ง DETAIL/DETAIL_SC
+    # → ไหลต่อเป็น SC_SO_NO ในชีทแผน และ join กับ order/งานสีพลาดเงียบ ๆ
+    agg_dict["SO_NO"] = lambda x: ",".join(
+        dict.fromkeys(v for v in x.map(ColorOpen.so_text) if v)
+    )
 if "TEAM_NAME" in df.columns:
     agg_dict["TEAM_NAME"] = lambda x: ",".join(x.dropna().astype(str).unique())
 if "PO_IN_DATE" in df.columns:
@@ -809,10 +1181,121 @@ if "PO_IN_DATE" in df.columns:
 for col in ["YARN-USED", "YARN_USED", "STRUCTURE", "MATERIAL_CONTENT", "DESCRIPTION"]:
     if col in df.columns:
         agg_dict[col] = "first"
+# ── ข้อมูลออร์เดอร์ของงาน booking (การ์ดรายละเอียดบน Gantt) ──
+# ค่าประจำ item → เอาค่าแรก ; ค่าที่ต่างกันได้ตาม SO (สี/ลูกค้า/PO/ประเภท) → ต่อกันด้วย comma
+# แบบเดียวกับ SO_NO เพื่อไม่ให้ข้อมูลของ SO อื่นในกลุ่มหายไป
+for col in ["REVOLUTION_WEIGHT"]:
+    if col in df.columns:
+        agg_dict[col] = "first"
+def _uniq_items(x):
+    """ค่าที่ view ส่งมาเป็นลิสต์คั่น comma อยู่แล้ว (สี) → แตกแล้วรวมไม่ซ้ำ
+    ตัดช่องว่างทิ้ง เพราะค่าจริงมีจุลภาคนำ เช่น ',White,Royal'"""
+    return ", ".join(dict.fromkeys(
+        i.strip() for v in x.dropna().astype(str) for i in v.split(",")
+        if i.strip() and i.strip().lower() != "nan"))
+
+
+def _uniq_values(x):
+    """ค่าเดี่ยวที่ต่างกันได้ตาม SO (ลูกค้า/PO/FR_CODE) → ต่อด้วย ' | '
+    ห้ามใช้ comma เป็นตัวคั่น: ชื่อลูกค้ามีจุลภาคในตัวเอง เช่น 'TRIMAX CO.,LTD.'"""
+    return " | ".join(dict.fromkeys(
+        s.strip() for s in x.dropna().astype(str)
+        if s.strip() and s.strip().lower() != "nan"))
+
+
+for col in ["COLOR", "NAY_COLOR"]:
+    if col in df.columns:
+        agg_dict[col] = _uniq_items
+for col in ["KNIT_CUS_NAME", "PO_NO", "FR_CODE", "KP_NO"]:
+    if col in df.columns:
+        agg_dict[col] = _uniq_values
+
+
+def _uniq_lines(x):
+    """เลขบรรทัดใบ → รวมไม่ซ้ำคั่น ',' (ห้ามใช้ ' | ' เหมือน FR_CODE/PO_NO)
+    ต้องเป็นคอมมาเพราะฝั่ง Replan (attach_sc_line_id) และ Planning เขียน/อ่าน SC_LINE_ID
+    ที่ยุบหลายบรรทัดด้วยคอมมามาตลอด — ใช้คนละตัวคั่นแล้วแถวจาก booking กับจากใบ SC
+    จะกลายเป็นคนละคีย์บนหน้าเว็บ (KnitPlan.ORDER_KEY_COLS มี SC_LINE_ID อยู่ด้วย)
+    ค่าจาก view เป็นเลขเดี่ยว แต่แตกคอมมาก่อนเผื่อไฟล์ที่ยุบมาแล้ว
+    ผ่าน so_text เพราะคอลัมน์เลขล้วนที่มีช่องว่างปนจะถูก pandas อ่านเป็น float → "3.0"
+    (กับดักเดียวกับ SO_NO ที่เคยทำให้ ".0" หลุดเข้าชีทแผน)
+
+    ⚠️ view ส่ง 0 มาแทน "ไม่มีเลขบรรทัด" — วัดจริง 2,662/8,597 แถว เป็นงาน CL-ORDERS
+    กับ YD-ORDERS ทั้งหมด ; user 21/9/2569: "ถ้าข้อมูลมาแบบนั้นก็ใส่ข้อมูลไปแบบนั้น"
+    → ส่ง 0 ต่อไปตามต้นทาง ไม่ทิ้ง (เดิมกรองทิ้งจนคอลัมน์ว่างทั้งงาน CL/YD)
+    แต่ถ้าก้อนนี้มีทั้งเลขจริงและ 0 → เก็บเฉพาะเลขจริง (0 ของอีกใบไม่เพิ่มข้อมูล)"""
+    _all = list(dict.fromkeys(
+        t.strip() for v in x.dropna() for t in ColorOpen.so_text(v).split(",") if t.strip()))
+    _real = [t for t in _all if t.strip("0")]
+    return ",".join(_real or _all[:1])
+
+
+if "SC_LINE_ID" in df.columns:
+    agg_dict["SC_LINE_ID"] = _uniq_lines
+# กลุ่มเครื่องจริงก่อนยุบเข้าก้อน — เก็บไว้ดูย้อนกลับว่ายอดของบล็อกนี้มาจากกลุ่มไหนบ้าง
+if "MC_GROUP_SRC" in df.columns:
+    agg_dict["MC_GROUP_SRC"] = _uniq_values
+# ยอดทอ/ค้างทอ = ยอดรายสัปดาห์เหมือน KP_WEIGHT → รวมกันได้
+for col in ["KNIT_WEIGHT", "OUTSTANDING"]:
+    if col in df.columns:
+        agg_dict[col] = "sum"
+# RDD ของกลุ่ม = เร็วสุด (เหตุผลเดียวกับ FG week — ยึด deadline ที่บีบสุด)
+# view ส่ง RDD_WEEK มาเป็นข้อความ 'YYYY/WW' (เช่น '2026/30') → ต้องแปลงเป็นเลข YYYYWW ก่อน
+# ไม่งั้น to_numeric ตรง ๆ ได้ NaN ทั้งคอลัมน์ (เคยทำให้ RDD หายทั้งไฟล์)
+if "RDD_WEEK" in df.columns:
+    _rdd_yw = df["RDD_WEEK"].astype(str).str.extract(r"(\d{4})\s*[/-]\s*(\d{1,2})")
+    _rdd_num = pd.to_numeric(_rdd_yw[0], errors="coerce") * 100 + pd.to_numeric(_rdd_yw[1], errors="coerce")
+    # เผื่อไฟล์ที่เก็บเป็นเลข YYYYWW มาแต่ต้น (ไม่มี '/') → ใช้ค่าเดิม
+    df["RDD_WEEK"] = _rdd_num.fillna(pd.to_numeric(df["RDD_WEEK"], errors="coerce"))
+    agg_dict["RDD_WEEK"] = "min"
+# FG week ของกลุ่ม = เร็วสุด — 1 item ในสัปดาห์เดียวอาจมีหลาย SO คนละกำหนดส่ง
+# ต้องยึด deadline ที่บีบสุด ไม่งั้นบล็อกจะบอกว่า "ทัน" ทั้งที่ SO ที่ส่งก่อนไม่ทันแล้ว
+# ต้อง min บนเลขรวม YEAR*100+WEEK ไม่ใช่ min แยกคอลัมน์ — ไม่งั้นข้ามปีจะเพี้ยน
+# (เช่น (2026,52) กับ (2027,3) → min แยกคอลัมน์ได้ (2026,3) ซึ่งไม่มีอยู่จริง)
+_has_fg = "FG_YEAR" in df.columns and "FG_WEEK" in df.columns
+if _has_fg:
+    _fg_y = pd.to_numeric(df["FG_YEAR"], errors="coerce")
+    _fg_w = pd.to_numeric(df["FG_WEEK"], errors="coerce")
+    df["_FG_YW"] = (_fg_y * 100 + _fg_w).where(_fg_y.notna() & _fg_w.notna())
+    agg_dict["_FG_YW"] = "min"
+if "FOB_TYPE" in df.columns:
+    agg_dict["FOB_TYPE"] = "first"
+
+# ── DETAIL_SC: ภาพระดับ SC ก่อนยุบ (ไม่ได้ใช้คำนวณเครื่อง) ────────────────────
+# groupby ด้านล่างยุบทุก SO ของ item เดียวกันในสัปดาห์เดียวเป็นแถวเดียว — จำเป็นสำหรับ
+# การนับเครื่อง (MC_USE คิดจากยอดรวมทั้งบล็อก) แต่ทำให้กำหนดส่งของใบที่เหลือหายไป:
+# FG_WEEK/RDD_WEEK เก็บได้ค่าเดียวคือใบที่เร็วสุด แล้วยอดทั้งก้อนถูกวางตาม deadline ใบนั้น
+# (เช่น FD1BASMK32B0 W37 = SO 708936 FG 2025/39 + SO 719941 FG 2026/32 → ใบหลังถูกลากมา
+#  ผลิตเร็วเกินเกือบปี ; ทั้ง booking มี 729 บล็อกที่ FG ของใบในบล็อกต่างกันจริง)
+#
+# ต้นทางสะอาดอยู่แล้ว — view booking ส่งมา 1 แถว = 1 SC (SO_NO/FR_CODE ไม่เคยยุบมาจาก DB)
+# จึงเก็บภาพระดับ SC ไว้ก่อนยุบ ให้ Replan วางแผนตาม target ของแต่ละใบ และให้แถว core/OLD
+# แตกโชว์ deadline ต่อใบได้ ; ชีท DETAIL ยังยุบเหมือนเดิมทุกประการ การนับเครื่องจึงไม่ขยับ
+_SC_KEYS = [
+    c for c in ["MC_GROUP", "GUAGE", "ITEM_CODE", "WEEK", "SO_NO", "COLOR"]
+    if c in df.columns
+]
+detail_sc = pd.DataFrame()
+if "SO_NO" in df.columns:
+    # คีย์คือ SO (+สี) แล้ว → ตัวไหนเป็นคีย์ไม่ต้อง agg ซ้ำ ; ที่เหลือใช้กติกาเดียวกับ DETAIL
+    _sc_agg = {k: v for k, v in agg_dict.items() if k not in _SC_KEYS}
+    detail_sc = df.groupby(_SC_KEYS, as_index=False, dropna=False).agg(_sc_agg)
+    if _has_fg:
+        _yw_sc = pd.to_numeric(detail_sc["_FG_YW"], errors="coerce")
+        detail_sc["FG_YEAR"] = (_yw_sc // 100).astype("Int64")
+        detail_sc["FG_WEEK"] = (_yw_sc % 100).astype("Int64")
+        detail_sc = detail_sc.drop(columns=["_FG_YW"])
 
 df = df.groupby(["MC_GROUP", "GUAGE", "ITEM_CODE", "WEEK"], as_index=False).agg(
     agg_dict
 )
+
+# คืน FG_YEAR/FG_WEEK จากเลขรวมที่ min แล้ว (แถวที่ไม่มี FG week → ปล่อยว่าง)
+if _has_fg:
+    _yw = pd.to_numeric(df["_FG_YW"], errors="coerce")
+    df["FG_YEAR"] = (_yw // 100).astype("Int64")
+    df["FG_WEEK"] = (_yw % 100).astype("Int64")
+    df = df.drop(columns=["_FG_YW"])
 
 # =========================
 # WORKING DAY
@@ -840,9 +1323,9 @@ if _wd_missing:
         print(f"     ... และอีก {len(_wd_missing) - 30} คู่")
 
 # =========================
-# SETUP DETECTION (เหมือน Planning.py: SETUP_GAP_WEEK = 3)
+# SETUP DETECTION (ใช้ค่าเดียวกับ Planning — หน้า "ตั้งค่าระบบ")
 # =========================
-SETUP_GAP_WEEK = 3
+SETUP_GAP_WEEK = plan_config.get("KP_SETUP_GAP_WEEK")
 df = df.sort_values(["MC_GROUP", "GUAGE", "ITEM_CODE", "WEEK"])
 
 # สร้าง key สำหรับเช็ค carryover
@@ -876,31 +1359,41 @@ def _detect_setup_group(g):
     _cat = str(g["MC_CAT"].iloc[0]).strip().upper() if "MC_CAT" in g.columns else ""
     _locks = _lock_warm_weeks(_item, _cat, g["GUAGE"].iloc[0], g["MC_GROUP"].iloc[0])
 
-    out = []
+    # ต้องไล่ตาม "ลำดับเวลาจริง" ไม่ใช่เลขสัปดาห์ — booking คร่อมปีได้ (W52/ปีนี้ → W1/ปีหน้า)
+    # ถ้าเรียงด้วยเลขดิบ W1 ของปีหน้าจะถูกมองเป็นสัปดาห์แรกสุด แล้วนับ setup ผิดทั้งชุด
+    _order = sorted(zip(g.index, [int(w) for w in g["WEEK"].tolist()]),
+                    key=lambda t: _week_pos(t[1]))
+    out_by_idx = {}
     prev_week = None
-    for wk in g["WEEK"].tolist():
-        wk = int(wk)
+    for _ridx, wk in _order:
         warm_cap = None
         eff_prev = prev_week
         if prev_week is not None and _locks:
-            for lw in sorted(_locks):
-                if eff_prev < lw < wk and (lw - eff_prev) <= SETUP_GAP_WEEK:
+            for lw in sorted(_locks, key=_week_pos):
+                if _week_pos(eff_prev) < _week_pos(lw) < _week_pos(wk) \
+                        and (_week_pos(lw) - _week_pos(eff_prev)) <= SETUP_GAP_WEEK:
                     eff_prev = lw
                     warm_cap = _locks[lw] if warm_cap is None else min(warm_cap, _locks[lw])
         if prev_week is None:
             gap, is_new = np.nan, True
         else:
-            gap = wk - eff_prev
+            # ระยะห่างวัดบนปฏิทิน — ข้ามปีแล้วยังได้ 1 สัปดาห์ (เลขดิบจะได้ -51)
+            # W99 ไม่อยู่บนปฏิทิน → ใช้ผลต่างเลขสัปดาห์แทน (ค่าไม่มีความหมาย แค่ไม่ให้เป็นเลขยักษ์)
+            if _TL.idx(wk) is None or _TL.idx(eff_prev) is None:
+                gap = int(yw_week(wk)) - int(yw_week(eff_prev))
+            else:
+                gap = _week_pos(wk) - _week_pos(eff_prev)
             is_new = bool(gap > SETUP_GAP_WEEK)
-        out.append({
+        out_by_idx[_ridx] = {
             "_prev_week": prev_week,
             "_week_gap": gap,
             "_is_new_setup": is_new,
             "_lock_warm_mc": warm_cap if warm_cap is not None else np.nan,
             "_lock_same_week_mc": int(_locks.get(wk, 0)) if _locks else 0,
-        })
+        }
         prev_week = wk
-    return pd.DataFrame(out, index=g.index)
+    # คืนตามลำดับแถวเดิมของกลุ่ม (ไล่คำนวณตามเวลา แต่ผลต้องแปะกลับแถวเดิม)
+    return pd.DataFrame([out_by_idx[i] for i in g.index], index=g.index)
 
 
 df = df.join(
@@ -961,8 +1454,8 @@ df["MC_USE_CEIL"] = np.ceil(df["MC_USE"]).replace([np.inf, -np.inf], 0).fillna(0
 #   → ถือว่าเครื่องวิ่งอยู่แล้ว: setup = 0, carry = n → ไม่กินโควตา job
 # =========================
 _wk_num_all = pd.to_numeric(df["WEEK"], errors="coerce")
-_BASELINE_WEEK = int(_wk_num_all[_wk_num_all != 99].min()) if _wk_num_all.notna().any() else -1
-_SENTINEL_WEEK = 99
+_BASELINE_WEEK = int(_wk_num_all[_wk_num_all != _SENT_YW].min()) if (_wk_num_all != _SENT_YW).any() else -1
+_SENTINEL_WEEK = _SENT_YW
 
 
 def _solve_mc(kp, cap, wd, warm, charge_setup=True):
@@ -989,7 +1482,7 @@ _n_lock_rows = 0
 
 for _key, _g in df.groupby("_carry_key", sort=False):
     _last_week, _last_n = None, 0
-    for _ix in _g.sort_values("WEEK").index:
+    for _ix in _g.sort_values("WEEK", key=lambda s: s.map(_week_pos)).index:
         _wk = pd.to_numeric(df.at[_ix, "WEEK"], errors="coerce")
         _wk = int(_wk) if pd.notna(_wk) else -1
         _kp = float(pd.to_numeric(df.at[_ix, "KP_WEIGHT"], errors="coerce") or 0)
@@ -1000,7 +1493,8 @@ for _key, _g in df.groupby("_carry_key", sort=False):
 
         # เครื่องอุ่นที่ยกมาได้จากสัปดาห์ล่าสุดที่รันจริง
         _warm = 0
-        if _last_week is not None and ((_wk - _last_week) <= SETUP_GAP_WEEK or _lock_used):
+        # ระยะห่างวัดบนปฏิทิน (WEEK เป็น YW — ลบกันตรง ๆ ข้ามปีจะได้ ~49)
+        if _last_week is not None and ((_week_pos(_wk) - _week_pos(_last_week)) <= SETUP_GAP_WEEK or _lock_used):
             _warm = _last_n
             if _lock_used:
                 _warm = min(_warm, int(_lock_cap))   # กันไว้กี่เครื่อง = carry ได้แค่นั้น
@@ -1018,7 +1512,7 @@ for _key, _g in df.groupby("_carry_key", sort=False):
         _ch_eff[_p] = _eff
         _ch_use[_p] = (_kp / (_cap * _eff)) if (_cap > 0 and _eff > 0) else 0.0
         # setup ใหม่ทั้งตัว = ไม่มีเครื่องอุ่นเลย (ให้ตรงกับ setup = n) — ใช้ตัดสินใจ job
-        # ที่ Planning.py / order_color_advisor.py ซึ่งอ่าน _is_new_setup คู่กับ _mc_increase
+        # ที่ Planning.py / job_setup_live.py ซึ่งอ่าน _is_new_setup คู่กับ _mc_increase
         _ch_new[_p] = bool(_n > 0 and _setup >= _n and not _is_baseline)
 
         if _n > 0:
@@ -1039,7 +1533,7 @@ print(
     f" | ตั้งเครื่องใหม่ {int((_ch_setup > 0).sum())} แถว (รวม {int(_ch_setup.sum())} เครื่อง)"
     f" | สูงสุดในแถวเดียว {int(_ch_setup.max()) if len(_ch_setup) else 0} เครื่อง"
     f" | carry + setup = จำนวนเครื่อง ครบทุกแถว"
-    f" | baseline ไม่นับ setup: W{_BASELINE_WEEK} + W{_SENTINEL_WEEK}"
+    f" | baseline ไม่นับ setup: {yw_label(_BASELINE_WEEK)} + W99"
     f" | ใช้เพดาน Lock_MC {_n_lock_rows} แถว"
 )
 
@@ -1323,58 +1817,72 @@ if not summary.empty and "FACTORY" in summary.columns:
         print(f"🔧 ตัดแถว non-pool ซ้ำซ้อน {int(_dup_np.sum())} แถว (มี pool row แล้ว)")
         summary = summary[~_dup_np].reset_index(drop=True)
 
+# =========================
+# เติมสัปดาห์อนาคตให้ครบ horizon (ให้แผนวางข้ามปีได้)
+# =========================
+# ตารางนี้เดิมมีเฉพาะสัปดาห์ที่ booking แตะถึง → พอแผนเดินเลยสัปดาห์สุดท้ายก็ไม่มีเครื่องให้จอง
+# → เติมแถวของสัปดาห์ที่ยังไม่มี ด้วยเครื่องเต็มพูล (ยังไม่มีใครจอง)
+#
+# คีย์เป็น YW แล้ว (ไม่ชนข้ามปี) → เติมได้ถึงสุดปฏิทิน ไม่มีเพดาน 52 สัปดาห์อีกต่อไป
+# งานจะตก UNPLANNED เพราะ horizon ก็ต่อเมื่อเลยสุด Calendar.xlsx เท่านั้น (ให้ไปเติมปฏิทินปีถัดไป)
+# "วางแผนล่วงหน้ากี่สัปดาห์" ในหน้า "ตั้งค่าระบบ" = จำกัดเอง (เว้นว่าง = ถึงสุดปฏิทิน)
+_hz_cfg = plan_config.get("KP_HORIZON_WEEKS")
+HORIZON_WEEKS_AHEAD = int(_hz_cfg) if _hz_cfg else None
+_horizon = []
+if not summary.empty:
+    _t_idx = _TL.today_idx
+    _hz_end = len(_TL.keys) if HORIZON_WEEKS_AHEAD is None else min(len(_TL.keys), _t_idx + HORIZON_WEEKS_AHEAD)
+    _horizon = _TL.keys[_t_idx:_hz_end]
+    if _horizon:
+        print(f"📅 horizon ตารางเครื่อง: {yw_label(_horizon[0])} → {yw_label(_horizon[-1])} "
+              f"({len(_horizon)} สัปดาห์{'' if HORIZON_WEEKS_AHEAD else ' = สุดปฏิทิน'})")
+
+    _sw_num = pd.to_numeric(summary["WEEK"], errors="coerce")
+    _grp_cols = ["FACTORY", "MC_CAT", "GUAGE", "MC_POOL"]
+    _fill_rows = []
+    for _keys, _g in summary[_sw_num != _SENT_YW].groupby(_grp_cols, dropna=False):
+        _gw = pd.to_numeric(_g["WEEK"], errors="coerce")
+        _have = set(_gw.dropna().astype(int))
+        # TOTAL_MC ของสัปดาห์ที่ "ใหม่ที่สุดเท่าที่มี" = ยอดทะเบียนของพูล (ยังไม่ผ่าน MC_Total
+        # ซึ่งมีผลเฉพาะสัปดาห์ที่กรอก — เขียนทับทีหลังในบล็อกถัดไป)
+        _last_total = int(pd.to_numeric(_g.loc[_gw.idxmax(), "TOTAL_MC"], errors="coerce") or 0) \
+            if _gw.notna().any() else 0
+        for _w in _horizon:
+            if _w in _have or _last_total <= 0:
+                continue
+            _fill_rows.append(dict(zip(_grp_cols, _keys)) | {
+                "TOTAL_MC": _last_total, "WEEK": _w,
+                "MC_USE_CEIL": 0, "TOTAL_MC_REMAIN": _last_total,
+            })
+    if _fill_rows:
+        summary = pd.concat([summary, pd.DataFrame(_fill_rows)], ignore_index=True)
+        _fw = sorted({r["WEEK"] for r in _fill_rows})
+        print(f"📅 เติมสัปดาห์อนาคตในตารางเครื่อง {len(_fill_rows)} แถว "
+              f"({len(_fw)} สัปดาห์: " + ", ".join(yw_label(_w) for _w in _fw[:6])
+              + (" ..." if len(_fw) > 6 else "") + ") — เครื่องเต็มพูล ยังไม่มีใครจอง")
+    else:
+        print("📅 ตารางเครื่องครอบ horizon อยู่แล้ว — ไม่ต้องเติมสัปดาห์อนาคต")
+
 # 🔢 MC_Total override: เขียนทับ TOTAL_MC ของสัปดาห์ที่ user กำหนดเอง แล้วคิด remain ใหม่
+#    (ตรรกะอยู่ใน McTotal.py — แยกเป็นฟังก์ชันล้วนให้ทดสอบได้ : tests/test_mc_total_pile.py)
 #    ทำ "หลัง" ตัดแถวซ้ำ เพื่อให้ยอดที่ user เห็น (= ผลรวมของ CAT+เกจ+สัปดาห์) ตรงกับที่กรอก
-#    หลายพูล/โรงงาน → กระจายตามสัดส่วนเครื่องเดิม (เศษให้พูลใหญ่สุด) เพราะพูลแยกกันใช้แทนกันไม่ได้
+#    และ "หลัง" เติมสัปดาห์อนาคต — สัปดาห์ที่ยังไม่มี booking ไม่มีแถวก่อนเติม ถ้าทำก่อน
+#    ค่าที่ตั้งไว้จะถูกข้าม ("ไม่พบแถว") แล้วได้ยอดทะเบียนแทน (เคสจริง W53/2026)
 #    _MC_TOTAL_DELTA เก็บ "ส่วนต่าง" ไว้ให้ชีทรายงาน AVA_MC (ซึ่งใช้ Total mc จาก MasterMC ตรง ๆ)
 #    ปรับตาม — ใช้ delta แทนยอดรวม เพราะ override อาจระบุแค่โรงงานเดียว แต่ชีทนั้นรวมทุกโรงงาน
 _MC_TOTAL_DELTA: dict = {}   # (week, cat_upper, gauge_norm) → ส่วนต่างเครื่อง
 if _MC_TOTAL_OVERRIDE and not summary.empty:
-    def _split_total(new_total, olds):
-        """กระจาย new_total ให้แต่ละพูลตามสัดส่วนของ olds (largest remainder)
-        olds รวมกัน = 0 → กระจายเท่า ๆ กัน"""
-        n = len(olds)
-        if n == 1:
-            return [new_total]
-        base = sum(olds)
-        if base <= 0:
-            shares = [new_total / n] * n
-        else:
-            shares = [new_total * o / base for o in olds]
-        out = [int(s) for s in shares]
-        rest = new_total - sum(out)
-        # เศษที่เหลือ → ให้พูลที่เศษทศนิยมมากสุดก่อน (เท่ากันให้พูลใหญ่กว่า)
-        order = sorted(range(n), key=lambda i: (shares[i] - out[i], olds[i]), reverse=True)
-        for i in range(rest):
-            out[order[i % n]] += 1
-        return out
-
-    _mt_cat_u = summary["MC_CAT"].astype(str).str.strip().str.upper()
-    _mt_g_n = summary["GUAGE"].apply(_norm_gauge_ava)
-    _mt_fac_u = summary["FACTORY"].astype(str).str.strip().str.upper()
-    _mt_week_i = summary["WEEK"].astype(int)
-    _mt_applied = 0
-    for (_ov_w, _ov_cat, _ov_g, _ov_fac), _ov_total in sorted(_MC_TOTAL_OVERRIDE.items()):
-        _mask = (_mt_week_i == _ov_w) & (_mt_cat_u == _ov_cat) & (_mt_g_n == _ov_g)
-        if _ov_fac:
-            _mask &= (_mt_fac_u == _ov_fac)
-        _idx = list(summary.index[_mask])
-        if not _idx:
-            print(f"⚠️ MC_Total: ไม่พบแถว W{_ov_w} {_ov_cat} เกจ {_ov_g}"
-                  f"{' โรงงาน ' + _ov_fac if _ov_fac else ''} → ข้าม")
-            continue
-        _olds = [int(summary.at[i, "TOTAL_MC"] or 0) for i in _idx]
-        for _i, _new in zip(_idx, _split_total(int(_ov_total), _olds)):
-            summary.at[_i, "TOTAL_MC"] = _new
-            summary.at[_i, "TOTAL_MC_REMAIN"] = _new - int(summary.at[_i, "MC_USE_CEIL"] or 0)
-        _dk = (_ov_w, _ov_cat, _ov_g)
-        _MC_TOTAL_DELTA[_dk] = _MC_TOTAL_DELTA.get(_dk, 0) + int(_ov_total) - sum(_olds)
-        _mt_applied += 1
-        print(f"🔢 MC_Total: W{_ov_w} {_ov_cat} เกจ {_ov_g}"
-              f"{' โรงงาน ' + _ov_fac if _ov_fac else ''} → {sum(_olds)} เป็น {int(_ov_total)} เครื่อง"
-              f"{' (กระจาย ' + '+'.join(str(int(summary.at[i, 'TOTAL_MC'])) for i in _idx) + ')' if len(_idx) > 1 else ''}")
+    _MC_TOTAL_DELTA, _mt_applied, _mt_skipped = McTotal.apply_override(
+        summary, _MC_TOTAL_OVERRIDE, _MC_TO_POOL, _TOTAL_MC_BY_TYPE, _norm_gauge_ava)
     if _mt_applied:
-        print(f"🔢 MC_Total: ปรับจำนวนเครื่องทั้งหมด {_mt_applied} รายการ")
+        print(f"🔢 MC_Total: ปรับจำนวนเครื่องทั้งหมด {len(_mt_applied)} รายการ")
+    # ตัวตรวจ: ค่าที่ตั้งไว้ต้องถูกใช้ครบทุกสัปดาห์ใน horizon และ ปกติ + กันไว้ = ยอดที่กรอก
+    _mt_bad = McTotal.verify(summary, _mt_applied, _mt_skipped, _TOTAL_MC_BY_TYPE,
+                             _norm_gauge_ava, horizon=_horizon)
+    for _mt_msg in _mt_bad:
+        print(f"❌ MC_Total ไม่ตรงกับที่ตั้งไว้: {_mt_msg}")
+    if not _mt_bad:
+        print("✅ MC_Total: ตรวจแล้ว จำนวนเครื่องในตารางตรงกับที่ตั้งไว้ทุกรายการ")
 
 # เครื่องที่กันไว้ (POLY/COTTON) ต่อ MC_CAT+GUAGE — ให้หน้าเว็บโชว์แยกว่าเครื่องไม่ได้หาย
 # (เครื่องกลุ่มนี้อยู่ใน sub-pool ใช้แทนงานปกติไม่ได้ จึงไม่รวมใน TOTAL_MC ปกติ)
@@ -1433,25 +1941,25 @@ else:
 # =========================
 # AVAILABILITY SUMMARY: WEEK 25-35 (แยกรายสัปดาห์ เรียงไปทางขวา)
 # =========================
-from datetime import date as _date, timedelta as _td
-# สัปดาห์ปัจจุบัน (ศุกร์–พฤหัส = ISO week ของ วันที่+3) → ย้อนหลัง 5 สัปดาห์ ไปข้างหน้าจนหมด
-_AVA_CUR_WEEK = (_date.today() + _td(days=3)).isocalendar()[1]
-_ava_all_weeks = set(summary["WEEK"].unique())
+# สัปดาห์ปัจจุบัน (ตามปฏิทิน) → ย้อนหลัง 5 สัปดาห์ ไปข้างหน้า ; คีย์เป็น YW
+_AVA_CUR_WEEK = _TL.at(_TL.today_idx)
+_ava_all_weeks = set(int(w) for w in summary["WEEK"].unique())
 
 def _ava_week_delta(_w):
-    # ระยะห่าง(สัปดาห์)จากสัปดาห์ปัจจุบัน รองรับข้ามปี (ISO week วน 1..52)
-    _d = int(_w) - _AVA_CUR_WEEK
-    if _d > 26:
-        _d -= 52
-    elif _d < -26:
-        _d += 52
-    return _d
+    # ระยะห่าง(สัปดาห์)จากสัปดาห์ปัจจุบัน วัดบนปฏิทิน (ข้ามปีถูกต้อง)
+    return _week_pos(_w) - _TL.today_idx
 
-# ย้อนหลัง 5 สัปดาห์ (รวมข้ามปี) → ไปข้างหน้าจนหมด, ตัด week 99
-ava_weeks = sorted(
-    (w for w in _ava_all_weeks if w != 99 and _ava_week_delta(w) >= -5),
-    key=_ava_week_delta,
-)
+# ย้อนหลัง 5 สัปดาห์ → ไปข้างหน้า, ตัด week 99
+# ชีทนี้เป็นรายงานให้คนอ่าน หัวคอลัมน์เป็น "WEEK <เลข>" → แสดงไม่เกินช่วงที่เลขสัปดาห์ยังไม่ซ้ำ
+# (ตารางเครื่องจริงยาวถึงสุดปฏิทินอยู่ในชีท SUMMARY_MC_REMAIN)
+ava_weeks = []
+_ava_seen_num = set()
+for _aw in sorted((w for w in _ava_all_weeks if w != _SENT_YW and _ava_week_delta(w) >= -5),
+                  key=_ava_week_delta):
+    if yw_week(_aw) in _ava_seen_num:
+        break
+    _ava_seen_num.add(yw_week(_aw))
+    ava_weeks.append(_aw)
 AVA_WK_START = ava_weeks[0]  if ava_weeks else _AVA_CUR_WEEK
 AVA_WK_END   = ava_weeks[-1] if ava_weeks else _AVA_CUR_WEEK
 AVA_SHEET = "AVA_MC"
@@ -1460,7 +1968,13 @@ AVA_SHEET = "AVA_MC"
 _AVA_CAT_MAP = {"SYN-30": "DOUBLE-30", "SYN-28": "DOUBLE-30"}
 def _ava_cat_disp(_s):
     # MC_CAT ที่ใช้แสดง/จัดกลุ่ม (upper + รวม SYN เข้า DOUBLE-30)
-    return _s.astype(str).str.strip().str.upper().replace(_AVA_CAT_MAP)
+    # normalize สะกด SINGEL→SINGLE ตั้งแต่ชั้นชื่อที่ใช้แสดง เพราะ MasterMC สะกด SINGEL-16..26
+    # แต่ booking/DETAIL สะกด SINGLE-16..26 → ถ้าไม่รวมจะได้ 2 แถวที่ค่าเหมือนกันเป๊ะ และ subtotal บวกซ้ำ
+    return (
+        _s.astype(str).str.strip().str.upper()
+        .str.replace("SINGEL", "SINGLE", regex=False)
+        .replace(_AVA_CAT_MAP)
+    )
 def _ava_catkey(_s):
     # key match ระหว่าง df (SINGLE) กับ summary/MasterMC (SINGEL)
     return _s.str.replace("SINGEL", "SINGLE", regex=False)
@@ -1510,17 +2024,31 @@ _ava_idx_df = pd.concat(
     ],
     ignore_index=True,
 ).drop_duplicates()
-# IMPORT = ผ้านำเข้า ไม่ได้ถักเอง → ไม่ต้องโชว์ในชีท AVA (ยังคงอยู่ใน DETAIL เหมือนเดิม)
+# กลุ่มรายงาน DOUBLE / SINGLE / OTHER — ใช้ทั้งจัดเรียงแถวและแทรก subtotal
+def _ava_group(_cat):
+    _c = str(_cat).strip().upper().replace("SINGEL", "SINGLE")
+    if _c.startswith("DOUBLE"):
+        return "DOUBLE"
+    if _c.startswith("SINGLE"):
+        return "SINGLE"
+    return "OTHER"
+
+_AVA_GROUP_ORDER = {"DOUBLE": 0, "SINGLE": 1, "OTHER": 2}
+
+# IMPORT = ผ้านำเข้า ไม่ได้ทอเอง → ไม่ต้องโชว์ในชีท AVA (ยังคงอยู่ใน DETAIL เหมือนเดิม)
 _AVA_HIDE_CAT = {"IMPORT"}
-# FQC ไม่ใช่เครื่องถักใน MasterMC → ดันไปไว้ล่างสุดของชีท ไม่ให้แทรกกลางกลุ่ม DOUBLE/SINGLE
+# FQC ไม่ใช่เครื่องทอใน MasterMC → ดันไปไว้ล่างสุดของชีท ไม่ให้แทรกกลางกลุ่ม DOUBLE/SINGLE
 _AVA_BOTTOM_CAT = set(FQC_MC_CAT)
 _ava_idx_df = _ava_idx_df[
     ~_ava_idx_df["MC_CAT"].astype(str).str.strip().str.upper().isin(_AVA_HIDE_CAT)
 ]
 _ava_idx_df["_ORD"] = _ava_idx_df["MC_CAT"].astype(str).str.strip().str.upper().isin(_AVA_BOTTOM_CAT).astype(int)
+# เรียงตามกลุ่มก่อน (DOUBLE → SINGLE → OTHER) ให้แต่ละกลุ่มอยู่ติดกัน
+# ไม่งั้นสมาชิก OTHER ที่กระจาย (COMKN บนสุด, FQC ล่างสุด) จะทำให้เกิดแถว "OTHER Total" 2 แถว
+_ava_idx_df["_GRP"] = _ava_idx_df["MC_CAT"].map(_ava_group).map(_AVA_GROUP_ORDER)
 _ava_idx_df = (
-    _ava_idx_df.sort_values(["_ORD", "MC_CAT", "GUAGE"])
-    .drop(columns="_ORD")
+    _ava_idx_df.sort_values(["_GRP", "_ORD", "MC_CAT", "GUAGE"])
+    .drop(columns=["_GRP", "_ORD"])
 )
 _ava_idx = pd.MultiIndex.from_frame(_ava_idx_df)
 
@@ -1565,7 +2093,7 @@ for _wk in ava_weeks:
         _m.set_index(["MC_CAT", "GUAGE"])[["Total mc", "KP_Cat", "MC_USE_Cat", "Dif", "%ava"]]
         .reindex(_ava_idx)
     )
-    _blk.columns = pd.MultiIndex.from_product([[f"WEEK {_wk}"], _blk.columns])
+    _blk.columns = pd.MultiIndex.from_product([[f"WEEK {yw_week(_wk)}"], _blk.columns])
     _ava_blocks.append(_blk)
 
 ava_data = (
@@ -1574,15 +2102,7 @@ ava_data = (
     else pd.DataFrame(index=_ava_idx)
 )
 
-# ---------- แทรกแถว subtotal แยกกลุ่ม DOUBLE / SINGEL ----------
-def _ava_group(_cat):
-    _c = str(_cat).strip().upper().replace("SINGEL", "SINGLE")
-    if _c.startswith("DOUBLE"):
-        return "DOUBLE"
-    if _c.startswith("SINGLE"):
-        return "SINGLE"
-    return "OTHER"
-
+# ---------- แทรกแถว subtotal แยกกลุ่ม DOUBLE / SINGLE / OTHER (_ava_group นิยามไว้ด้านบน) ----------
 def _ava_subtotal(_members):
     _sub = ava_data.loc[_members]
     _vals = []
@@ -1637,7 +2157,7 @@ ITEM_SHEET = "AVA_MC_ITEM"
 _it = df[["MC_CAT", "MC_GROUP", "GUAGE", "ITEM_CODE", "WEEK", "KP_WEIGHT", "MC_USE_CEIL"]].copy()
 _it = _it[~_it["MC_CAT"].astype(str).str.strip().str.upper().isin(_AVA_HIDE_CAT)]
 _it = _it.merge(_CAP_ADJ_SNAP, on=["MC_GROUP", "GUAGE", "ITEM_CODE"], how="left")
-_it["TYPE"] = np.where(_it["MC_GROUP"].isin(FQC_MC_GROUP), "FQC", "NORMAL")
+_it["TYPE"] = np.where(is_fqc_group(_it["MC_GROUP"]), "FQC", "NORMAL")
 _it["MC_CAT"] = _ava_cat_disp(_it["MC_CAT"])
 _it["GUAGE"] = _it["GUAGE"].map(_norm_gauge_ava)
 _it["MC"] = _it["MC_GROUP"].astype(str).str.strip().str.upper()
@@ -1687,7 +2207,7 @@ for _wk in ava_weeks:
         _m.set_index(_IT_KEYS)[["Total mc", "KP", "MC_USE", "Dif", "%ava"]]
         .reindex(_it_idx)
     )
-    _blk.columns = pd.MultiIndex.from_product([[f"WEEK {_wk}"], _blk.columns])
+    _blk.columns = pd.MultiIndex.from_product([[f"WEEK {yw_week(_wk)}"], _blk.columns])
     _it_blocks.append(_blk)
 
 item_wide = (
@@ -1700,10 +2220,30 @@ item_wide = (
 # SAVE
 # =========================
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)   # AVA_OUT_FILE อาจชี้ไปโฟลเดอร์อื่น
 
 # FQC โชว์เฉพาะชีท AVA_MC (สร้างเสร็จแล้วด้านบน) — ชีทที่ Planning.py/webapp อ่านต้องไม่มี FQC
-_detail_out = df[~df["MC_GROUP"].isin(FQC_MC_GROUP)]
+_detail_out = df[~is_fqc_group(df["MC_GROUP"])]
 print(f"🧹 ตัด FQC ออกจากชีท DETAIL: {len(df) - len(_detail_out)} แถว (เหลือ {len(_detail_out)})")
+
+# DETAIL_SC ต้องกรอง FQC ด้วยเกณฑ์เดียวกับ DETAIL — สองชีทนี้ต้องมองเห็นงานชุดเดียวกัน
+_detail_sc_out = (
+    detail_sc[~is_fqc_group(detail_sc["MC_GROUP"])]
+    if not detail_sc.empty
+    else detail_sc
+)
+if not _detail_sc_out.empty:
+    # บอกให้เห็นว่าการยุบทำ deadline หายไปกี่บล็อก — ตัวเลขนี้คือจำนวนงานที่เคยถูกวาง
+    # ตาม target ของใบอื่น และจะได้ target ของตัวเองคืนเมื่อวางแผนจาก DETAIL_SC
+    _blk = _detail_sc_out.groupby(["MC_GROUP", "GUAGE", "ITEM_CODE", "WEEK"], dropna=False)
+    _n_multi = int((_blk["SO_NO"].nunique() > 1).sum())
+    _n_diff_fg = (
+        int((_blk["FG_WEEK"].nunique() > 1).sum()) if "FG_WEEK" in _detail_sc_out.columns else 0
+    )
+    print(
+        f"🧾 DETAIL_SC (ยอดต่อ SC ก่อนยุบ): {len(_detail_sc_out)} แถว | "
+        f"บล็อกที่มีหลาย SC {_n_multi} | ในนั้น FG week ต่างกันจริง {_n_diff_fg}"
+    )
 
 def _drop_fqc_cat(_d):
     if _d.empty or "MC_CAT" not in _d.columns:
@@ -1730,10 +2270,13 @@ pool_map_df = (
 )
 
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
-    _detail_out.to_excel(writer, sheet_name="DETAIL", index=False)
-    _drop_fqc_cat(summary).to_excel(writer, sheet_name="SUMMARY_MC_REMAIN", index=False)
+    # YEAR = คอลัมน์สุดท้ายของทั้งสองชีท (ดู _with_year) — Planning ใช้กันการหยิบเครื่องข้ามปี
+    _with_year(_detail_out).to_excel(writer, sheet_name="DETAIL", index=False)
+    # ยอด/กำหนดส่งต่อ SC ของบล็อกเดียวกันใน DETAIL (join ด้วย MC_GROUP+GUAGE+ITEM_CODE+WEEK)
+    _with_year(_detail_sc_out).to_excel(writer, sheet_name="DETAIL_SC", index=False)
+    _with_year(_drop_fqc_cat(summary)).to_excel(writer, sheet_name="SUMMARY_MC_REMAIN", index=False)
     _drop_fqc_cat(reserved_summary).to_excel(writer, sheet_name="MC_RESERVED", index=False)
-    _drop_fqc_cat(reserved_weekly_summary).to_excel(writer, sheet_name="MC_RESERVED_WEEKLY", index=False)
+    _with_year(_drop_fqc_cat(reserved_weekly_summary)).to_excel(writer, sheet_name="MC_RESERVED_WEEKLY", index=False)
     _drop_fqc_cat(pool_map_df).to_excel(writer, sheet_name="MC_POOL_MAP", index=False)
     ava_wide.to_excel(writer, sheet_name=AVA_SHEET)
     # freeze คอลัมน์ A-B (MC_CAT, GUAGE) + แถวหัวตาราง ให้ค้างเวลาเลื่อนดู week ทางขวา

@@ -26,19 +26,23 @@ View_SC.py
 View_Stock.py
 View_Datamining.py
 View_MC_Item.py
+View_BOM.py
+View_PO_Yarn.py
+View_SCFol_Item.py
+View_SCFol_Yarn.py
+View_Yarn_Aging.py
+View_Yarn_JoKnit.py
+# สคริปต์ deploy (ชื่อ server + user ที่ใช้ SSH) — อยู่ในเครื่องที่ deploy เท่านั้น
+deploy_to_webchat.py
 
 # release builds & debug
 gen_unplan_survey.py
-KnitPlan_Release.zip
-KnitPlan_Release*.zip
-KnitPlan_Release/
 _debug_week.py
 build/
 dist/
 build.bat
 run.bat
 config.ini
-KnitPlan.spec
 predict.py
 
 # log files
@@ -50,3 +54,19 @@ plan_log.txt
 CLAUDE.md
 ITEM_Cap.py
 Planning_recovered.py
+
+# ค่าที่ตั้งจากหน้า "ตั้งค่าระบบ" — เป็นของแต่ละเครื่อง/server ไม่เข้า repo
+plan_config.json
+plan_config.json.bak
+plan_config_log.jsonl
+
+# ไฟล์จองคิวแก้ไข/ไฟล์ชั่วคราวตอนเขียน (file_guard.py) — เกิดแล้วหายระหว่างทำงาน
+*.lock
+*.tmp[0-9]*
+# สมุดบันทึกว่าใครแก้อะไร (เซฟอัตโนมัติ) — เป็นของแต่ละ server
+edit_log.jsonl
+
+# รายชื่อ/อีเมลพนักงานฝ่ายขาย (ค่าตั้งต้นของชีท Sales_Mail) — ข้อมูลบุคคล ไม่เข้า git
+# ⚠ ต้องวางไฟล์นี้ไว้ที่ webapp/backend/ บนเครื่องที่ build image เอง ไม่งั้นชีท Sales_Mail
+#   จะถูกสร้างเป็นชีทว่าง (ไม่พัง) แล้วต้องไปกรอกรายชื่อเองบนหน้าเว็บ
+webapp/backend/sales_mail_seed.csv

@@ -1,11 +1,15 @@
 """
 add_user.py — เครื่องมือจัดการ user สำหรับ login เว็บ (ผู้ดูแลใช้เท่านั้น)
 
-วิธีใช้ (รันในโฟลเดอร์ webapp/backend):
-    python add_user.py <username>          เพิ่ม/ตั้งรหัสผ่าน user (พิมพ์รหัสแบบซ่อน)
-    python add_user.py --list              แสดงรายชื่อ user ทั้งหมด
-    python add_user.py --delete <username> ลบ user
+วิธีใช้ (รันในโฟลเดอร์ webapp/backend ; บน server: docker exec -it knitplan-app python add_user.py ...):
+    python add_user.py <username>                  เพิ่ม/ตั้งรหัสผ่าน user (พิมพ์รหัสแบบซ่อน ; สิทธิ์เดิมคงไว้)
+    python add_user.py <username> --admin          เพิ่ม/ตั้งรหัส + ให้สิทธิ์ admin
+    python add_user.py <username> --superadmin     เพิ่ม/ตั้งรหัส + ให้สิทธิ์ superadmin
+    python add_user.py --role <username> <user|yarn|admin|superadmin>   เปลี่ยนสิทธิ์อย่างเดียว
+    python add_user.py --list                      แสดงรายชื่อ user ทั้งหมด
+    python add_user.py --delete <username>         ลบ user
 
+superadmin ตั้งได้ทางนี้ทางเดียว (หน้าเว็บตั้งไม่ได้) — ปกติมีคนเดียวคือ 'admin'
 รหัสผ่านถูกเก็บเป็น hash (PBKDF2) ใน users.json — ไม่เก็บ plain text
 """
 import sys
@@ -14,13 +18,14 @@ import getpass
 import auth
 
 
-def add_user(username: str) -> None:
+def add_user(username: str, role: str = None) -> None:
     username = username.strip()
     if not username:
         print("ชื่อ user ว่างไม่ได้")
         sys.exit(1)
     users = auth.load_users()
-    if username in users:
+    old = users.get(username)
+    if old:
         print(f"มี user '{username}' อยู่แล้ว — กำลังตั้งรหัสผ่านใหม่")
     pw1 = getpass.getpass("รหัสผ่านใหม่: ")
     if not pw1:
@@ -30,19 +35,42 @@ def add_user(username: str) -> None:
     if pw1 != pw2:
         print("รหัสผ่านไม่ตรงกัน")
         sys.exit(1)
-    users[username] = auth.hash_password(pw1)
+    # คงข้อมูลเดิม (role/วันที่สร้าง) ไว้ — เดิมเขียนทับทั้งก้อนทำให้ admin ที่รีเซ็ตรหัสกลายเป็น user
+    rec = dict(old or {"created_at": auth._now(), "created_by": "add_user.py"})
+    rec.update(auth.hash_password(pw1))
+    if role:
+        rec["role"] = role
+    rec["updated_at"] = auth._now()
+    users[username] = rec
     auth.save_users(users)
-    print(f"บันทึก user '{username}' เรียบร้อย → {auth.USERS_FILE}")
+    auth._log("add_user.py", "cli_set_password", username, rec.get("role", "user"))
+    print(f"บันทึก user '{username}' ({auth._role_of(rec)}) เรียบร้อย → {auth.USERS_FILE}")
+
+
+def set_role(username: str, role: str) -> None:
+    if role not in auth.ROLES:
+        print(f"สิทธิ์ต้องเป็น {' / '.join(auth.ROLES)}")
+        sys.exit(1)
+    users = auth.load_users()
+    if username not in users:
+        print(f"ไม่พบ user '{username}'")
+        sys.exit(1)
+    old = auth._role_of(users[username])
+    users[username]["role"] = role
+    users[username]["updated_at"] = auth._now()
+    auth.save_users(users)
+    auth._log("add_user.py", "cli_set_role", username, f"{old} → {role}")
+    print(f"'{username}': {old} → {role}")
 
 
 def list_users() -> None:
-    users = auth.load_users()
+    users = auth.list_users()
     if not users:
         print("ยังไม่มี user")
         return
     print(f"user ทั้งหมด ({len(users)}):")
-    for name in sorted(users):
-        print(f"  - {name}")
+    for u in users:
+        print(f"  - {u['username']}  [{u['role']}]")
 
 
 def delete_user(username: str) -> None:
@@ -50,8 +78,10 @@ def delete_user(username: str) -> None:
     if username not in users:
         print(f"ไม่พบ user '{username}'")
         sys.exit(1)
+    role = auth._role_of(users[username])
     del users[username]
     auth.save_users(users)
+    auth._log("add_user.py", "cli_delete", username, role)
     print(f"ลบ user '{username}' เรียบร้อย")
 
 
@@ -67,8 +97,14 @@ def main() -> None:
             print("ระบุชื่อ user ที่จะลบ: python add_user.py --delete <username>")
             sys.exit(1)
         delete_user(args[1])
+    elif args[0] == "--role":
+        if len(args) < 3:
+            print("ใช้: python add_user.py --role <username> <user|yarn|admin|superadmin>")
+            sys.exit(1)
+        set_role(args[1], args[2])
     else:
-        add_user(args[0])
+        role = "superadmin" if "--superadmin" in args[1:] else "admin" if "--admin" in args[1:] else None
+        add_user(args[0], role)
 
 
 if __name__ == "__main__":

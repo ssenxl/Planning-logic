@@ -15,6 +15,9 @@ import pandas as pd
 from openpyxl import load_workbook
 
 import config
+import edit_diff
+import livesync
+import masters
 
 SHEET_V2 = "Master_Item V2"
 COL_ITEM_LIST = "ITEM_LIST"
@@ -278,32 +281,64 @@ def _read_upload(data: bytes) -> tuple:
     return df, sheet
 
 
-def import_v2(data: bytes, filename: str = "") -> dict:
+def import_v2(data: bytes, filename: str = "", user: str = "") -> dict:
     """เขียนทับเฉพาะชีท 'Master_Item V2' ใน Master_Item.xlsx (ชีทอื่นคงเดิม)
 
-    สำรองไฟล์เดิมเป็น .<timestamp>.bak ก่อนเสมอ
+    สำรองไฟล์เดิมเป็น .<timestamp>.bak ก่อนเสมอ แล้วจดประวัติว่าใครนำเข้าไฟล์ไหน เปลี่ยนอะไรบ้าง
     """
     df, src_sheet = _read_upload(data)
     path = _master_path()
     if not path.exists():
         raise FileNotFoundError(f"ไม่พบไฟล์ {path}")
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    bak = path.with_suffix(path.suffix + f".{ts}.bak")
-    shutil.copy2(path, bak)
+    new_cols = [str(c) for c in df.columns]
+    new_rows = [[None if (not isinstance(v, str) and pd.isna(v)) else v for v in row]
+                for row in df.itertuples(index=False, name=None)]
 
-    wb = load_workbook(path)
-    pos = wb.sheetnames.index(SHEET_V2) if SHEET_V2 in wb.sheetnames else len(wb.sheetnames)
-    if SHEET_V2 in wb.sheetnames:
-        wb.remove(wb[SHEET_V2])
-    ws = wb.create_sheet(SHEET_V2, pos)
+    with livesync.file_lock(path):
+        # ค่าก่อนนำเข้า — ไว้จดประวัติ (ยังไม่มีชีท = ทุกแถวคือของใหม่)
+        try:
+            before = masters.read_sheet("Master_Item", SHEET_V2)
+        except KeyError:
+            before = {"columns": [], "rows": []}
+        except Exception:
+            before = None
 
-    ws.append([str(c) for c in df.columns])
-    for row in df.itertuples(index=False, name=None):
-        ws.append([None if (not isinstance(v, str) and pd.isna(v)) else v for v in row])
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bak = path.with_suffix(path.suffix + f".{ts}.bak")
+        shutil.copy2(path, bak)
 
-    wb.save(path)
-    wb.close()
+        wb = load_workbook(path)
+        pos = wb.sheetnames.index(SHEET_V2) if SHEET_V2 in wb.sheetnames else len(wb.sheetnames)
+        if SHEET_V2 in wb.sheetnames:
+            wb.remove(wb[SHEET_V2])
+        ws = wb.create_sheet(SHEET_V2, pos)
+
+        ws.append(new_cols)
+        for row in new_rows:
+            ws.append(row)
+
+        with livesync.atomic_save(path) as tmp:
+            wb.save(tmp)
+        wb.close()
+
+        changes = None
+        if before is not None:
+            try:
+                changes = edit_diff.sheet_changes(before["columns"], before["rows"],
+                                                  new_cols, new_rows)
+            except Exception as e:
+                print(f"[SUBSTITUTE] เทียบก่อน/หลังนำเข้าไม่ได้: {e}")
+        src = filename or "(ไม่ระบุชื่อไฟล์)"
+        if changes is not None:
+            # นำเข้าทั้งไฟล์ = การแก้ครั้งเดียว จดเสมอแม้ข้อมูลเหมือนเดิม (ให้รู้ว่ามีคนนำเข้า)
+            head = f"นำเข้าไฟล์ {src} ({len(new_rows):,} แถว)"
+            if not changes["total"]:
+                head += " — ข้อมูลเหมือนเดิมทุกแถว"
+            changes = {"lines": [head] + changes["lines"], "total": changes["total"] + 1}
+        livesync.bump(livesync.masters_res("Master_Item", SHEET_V2), user=user,
+                      detail=f"นำเข้าไฟล์ {src} → {SHEET_V2} {len(new_rows)} แถว",
+                      changes=changes)
 
     global _index_cache
     _index_cache = None      # บังคับให้อ่าน index ใหม่รอบหน้า

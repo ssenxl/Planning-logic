@@ -25,7 +25,8 @@ function fmtClock(hour, minute) {
   return `${h}:${m}`
 }
 
-export default function Data() {
+// canEdit = เป็น admin ไหม — ส่งต่อให้ Substitute ซ่อนส่วนนำเข้าไฟล์ (ด่านจริงอยู่ที่ backend)
+export default function Data({ canEdit = false }) {
   const [view, setView] = useState('source')
   const [groups, setGroups] = useState([])
   const [sched, setSched] = useState(null)
@@ -206,17 +207,18 @@ export default function Data() {
     : 0
 
   const hasFilter = search.trim() || Object.keys(filters).length
-  const autoCfg = sched?.full
+  const autoRuns = (sched?.runs || []).filter(r => r.enabled)
   const isRunning = !!runStatus.running
   const runLabel = isRunning ? `กำลังรัน: ${runStatus.label || '-'}` : 'ยังไม่มีงานกำลังรัน'
   const autoLoadLabel = sched == null
     ? 'กำลังโหลดเวลาตั้งอัตโนมัติ...'
-    : autoCfg?.enabled === false
+    : !autoRuns.length
       ? 'ปิดการโหลดอัตโนมัติอยู่'
-      : `ตั้งโหลดทุกวันเวลา ${fmtClock(autoCfg?.hour, autoCfg?.minute)} น.`
+      : 'ตั้งรันอัตโนมัติ ' + autoRuns.map(r =>
+        `${fmtClock(r.hour, r.minute)} น. ${r.mode_label} (${r.days_text})`).join(' · ')
   const nextRunLabel = sched == null
     ? 'กำลังโหลด...'
-    : autoCfg?.enabled === false ? 'ปิดอยู่' : fmtIso(autoCfg?.next_run)
+    : sched.next ? `${fmtIso(sched.next.next_run)} · ${sched.next.mode_label}` : 'ปิดอยู่'
 
   function openColMenu(e, ci) {
     e.stopPropagation()
@@ -257,7 +259,7 @@ export default function Data() {
       {view === 'map-item' ? (
         <MapItem embedded />
       ) : view === 'substitute' ? (
-        <Substitute />
+        <Substitute ro={!canEdit} />
       ) : (
         <div className="data-page">
           <aside className="data-sidebar">

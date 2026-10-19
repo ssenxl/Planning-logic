@@ -15,6 +15,7 @@ import json
 from datetime import datetime
 
 import config
+import livesync
 import plan_view
 
 # ไฟล์การแบ่งงานไปจ้างทอที่ user ยืนยัน — Planning.py อ่านไฟล์นี้ตอนรันแผน (ดู _load_outsource_split)
@@ -47,6 +48,47 @@ def _to_num(v):
         return float(v)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _week_of(v):
+    """RDD_WEEK/FG_WEEK เก็บเป็น YYYYWW (เช่น 202650) → คืนเลขสัปดาห์ล้วน (50)
+    เดิมใช้ค่าดิบมาลบกับ PLAN_WEEK ตรง ๆ (week − 202650) ซึ่งติดลบเสมอ = ไม่เคยขึ้นว่าสาย"""
+    n = _to_int(v)
+    if n is None:
+        return None
+    s = str(n)
+    return int(s[4:]) if len(s) >= 5 else n
+
+
+def _year_of(v):
+    """ปีของค่า YYYYWW — เลขสัปดาห์ล้วนไม่มีปีให้ (คืน None)"""
+    n = _to_int(v)
+    if n is None:
+        return None
+    s = str(n)
+    return int(s[:4]) if len(s) >= 5 else None
+
+
+def _week_delta(a_y, a_w, b_y, b_w) -> int:
+    """a − b เป็นจำนวนสัปดาห์ (บวก = a มาหลัง b) ; ปีไหนไม่รู้ → เทียบเลขสัปดาห์ล้วน
+
+    ต้องคิดปีด้วยเพราะแผนคร่อมปีได้: งานที่วางไว้ W2 ของปีถัดไปคือเลยเดดไลน์ W46 ของปีนี้
+    ไม่ใช่ 2 − 46 = ติดลบ (= ยังทัน)"""
+    if not a_y or not b_y:
+        return int(a_w) - int(b_w)
+    base = min(int(a_y), int(b_y))
+
+    def _weeks_in(y):
+        import datetime
+        return int(datetime.date(y, 12, 28).isocalendar()[1])
+
+    def _abs(y, w):
+        n = int(w)
+        for k in range(base, int(y)):
+            n += _weeks_in(k)
+        return n
+
+    return _abs(a_y, a_w) - _abs(b_y, b_w)
 
 
 def _gnorm(g):
@@ -102,8 +144,9 @@ def load_split() -> dict:
 
 def _write_split(items: dict) -> None:
     SPLIT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SPLIT_FILE.write_text(
-        json.dumps({"items": items}, ensure_ascii=False, indent=2), encoding="utf-8")
+    with livesync.atomic_save(SPLIT_FILE) as tmp:
+        tmp.write_text(
+            json.dumps({"items": items}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def save_split(item_code: str, outsource_qty, start_week, user: str = "") -> dict:
@@ -112,11 +155,19 @@ def save_split(item_code: str, outsource_qty, start_week, user: str = "") -> dic
     if not item:
         raise ValueError("ไม่ได้ระบุ item")
     qty = _to_num(outsource_qty)
-    items = load_split()
-    if qty <= 0:
-        items.pop(item, None)
-        _write_split(items)
-        return {"ok": True, "removed": item, "items": items}
+    # อ่าน-แก้-เขียนทั้งก้อนต้องอยู่ในล็อกเดียว ไม่งั้นคนที่บันทึกพร้อมกันคนละ item
+    # จะเขียนทับรายการของอีกฝ่ายด้วยทะเบียนฉบับก่อนหน้าที่ตัวเองอ่านมา
+    with livesync.file_lock(SPLIT_FILE):
+        items = load_split()
+        if qty <= 0:
+            items.pop(item, None)
+            _write_split(items)
+            livesync.bump(livesync.OUTSOURCE, user=user, detail=f"ยกเลิกจ้างทอ {item}")
+            return {"ok": True, "removed": item, "items": items}
+        return _save_split_locked(item, qty, start_week, user, items)
+
+
+def _save_split_locked(item, qty, start_week, user, items) -> dict:
 
     wk = _to_int(start_week)
     if wk is None:
@@ -134,13 +185,17 @@ def save_split(item_code: str, outsource_qty, start_week, user: str = "") -> dic
         "by": user or "",
     }
     _write_split(items)
+    livesync.bump(livesync.OUTSOURCE, user=user, detail=f"จ้างทอ {item} {qty:,.0f} กก.")
     return {"ok": True, "saved": item, "items": items}
 
 
-def delete_split(item_code: str) -> dict:
-    items = load_split()
-    items.pop(str(item_code).strip().upper(), None)
-    _write_split(items)
+def delete_split(item_code: str, user: str = "") -> dict:
+    item = str(item_code).strip().upper()
+    with livesync.file_lock(SPLIT_FILE):
+        items = load_split()
+        items.pop(item, None)
+        _write_split(items)
+        livesync.bump(livesync.OUTSOURCE, user=user, detail=f"ลบการจ้างทอ {item}")
     return {"ok": True, "items": items}
 
 
@@ -211,6 +266,9 @@ def gather_candidates() -> dict:
     i_item = _col_index(cols, "ITEM_CODE")
     i_week = _col_index(cols, "PLAN_WEEK")
     i_rdd = _col_index(cols, "RDD_WEEK", "FG_WEEK", "TARGET_KNIT")
+    # ปีของสัปดาห์ผลิต/เดดไลน์ — ต้องมีคู่กับเลขสัปดาห์ ไม่งั้นเทียบสาย/ไม่สายข้ามปีไม่ได้
+    i_year = _col_index(cols, "PLAN_YEAR")
+    i_tgy = _col_index(cols, "TARGET_YEAR")
     i_cat = _col_index(cols, "CAT")
     i_gauge = _col_index(cols, "MC_GUAGE", "GUAGE")
     i_qty = _col_index(cols, "PLAN_QTY", "PENDING_PLAN", "PRODUCE_QTY")
@@ -238,12 +296,20 @@ def gather_candidates() -> dict:
             continue
 
         week = _to_int(r[i_week]) if i_week < len(r) else None
-        rdd = _to_int(r[i_rdd]) if 0 <= i_rdd < len(r) else None
+        rdd = _week_of(r[i_rdd]) if 0 <= i_rdd < len(r) else None
+        # ปีของเดดไลน์: คอลัมน์ YYYYWW ถอดปีจากค่าเองได้ ไม่งั้นใช้ TARGET_YEAR
+        rdd_y = (_year_of(r[i_rdd]) if 0 <= i_rdd < len(r) else None) \
+            or (_to_int(r[i_tgy]) if 0 <= i_tgy < len(r) else None)
+        week_y = _to_int(r[i_year]) if 0 <= i_year < len(r) else None
         cat = str(r[i_cat]).strip() if 0 <= i_cat < len(r) else ""
         cust = str(r[i_cust]).strip() if 0 <= i_cust < len(r) else ""
         mcg = str(r[i_mcg]).strip() if 0 <= i_mcg < len(r) else ""
 
-        late = max(0, week - rdd) if (week is not None and rdd is not None) else 0
+        late = (
+            max(0, _week_delta(week_y, week, rdd_y, rdd))
+            if (week is not None and rdd is not None)
+            else 0
+        )
 
         # คอขวด: เครื่องว่างในสัปดาห์ที่ต้องผลิต (remain ต่ำ/ติดลบ)
         remain = None
@@ -303,13 +369,14 @@ def gather_candidates() -> dict:
 
 
 _SYSTEM_PROMPT = (
-    "คุณเป็นผู้ช่วยวางแผนการผลิตผ้าถักของโรงงานทอผ้า หน้าที่ของคุณคือแนะนำว่า "
+    "คุณเป็นผู้ช่วยวางแผนการผลิตผ้าทอของโรงงานทอผ้า หน้าที่ของคุณคือแนะนำว่า "
     "ควรส่ง item ใดไป 'จ้างทอข้างนอก (outsource/S9)' ก่อน เพื่อให้คุ้มค่าที่สุด "
     "โดยพิจารณา 3 ปัจจัย: (1) ความเร่งด่วน — วางแผนช้ากว่ากำหนดส่งกี่สัปดาห์ (late_weeks) "
-    "(2) การปลดคอขวดเครื่อง — เครื่องในเกจนั้นขาดกี่ตัว (machine_shortage) "
+    "(2) การปลดคอขวดเครื่อง — เครื่องใน Guage นั้นขาดกี่ตัว (machine_shortage) "
     "(3) ปริมาณค้างผลิต (qty กก.) "
     "ตัวเลขทั้งหมดถูกคำนวณมาให้แล้ว ห้ามแก้ไขหรือสร้างตัวเลขใหม่ ใช้ตามที่ให้เท่านั้น "
     "จัดอันดับจากคุ้มค่าที่สุดไปน้อยสุด และอธิบายเหตุผลสั้นๆ เป็นภาษาไทยที่เข้าใจง่าย "
+    "เรียกขนาดเข็มของเครื่องว่า 'Guage' เสมอ ห้ามเขียนคำนี้เป็นภาษาไทย "
     "ตอบกลับเป็น JSON เท่านั้น รูปแบบ: "
     '{"summary": "สรุปภาพรวม 1-2 ประโยค", '
     '"ranking": [{"item_code": "...", "rank": 1, "reason": "เหตุผลไทยสั้นๆ"}]}'

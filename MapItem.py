@@ -4,7 +4,7 @@ MapItem — เชื่อม (map) ข้อมูล item ระหว่า�
     Datamining/view_datamining.xlsx   (คอลัมน์ ITEM = ระดับ "ITEM Color")
             join  key: ITEM = รหัสเต็มที่ตัด suffix A0/B0 ออก
     Master_Item.xlsx ชีท "Master_Item V2"
-            1 แถว = 1 spec เครื่องถัก, ITEM_LIST = รหัสเต็มทุกตัวที่ "ใช้แทนกันได้"
+            1 แถว = 1 spec เครื่องทอ, ITEM_LIST = รหัสเต็มทุกตัวที่ "ใช้แทนกันได้"
 
 ผลลัพธ์: ตาราง view_datamining เดิม + คอลัมน์:
     ORA_ITEM_CODE       = รหัสเต็มของ item คั่นด้วย ", " (เช่น F100413A0, F100413B0)
@@ -37,7 +37,7 @@ import pandas as pd
 
 
 # ---------- CONFIG ----------
-BASE = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+BASE = Path(__file__).parent
 CONFIG_INI = Path(os.environ.get("KNITPLAN_CONFIG", str(BASE / "config.ini")))
 
 
@@ -157,7 +157,7 @@ def _pairs_to_ora_map(pairs: pd.DataFrame) -> pd.DataFrame:
 def _load_master_v2() -> tuple:
     """อ่านชีท 'Master_Item V2' -> (ora_map, spec_by_code, group_codes)
 
-    V2: 1 แถว = 1 spec เครื่องถัก, ITEM_LIST = รหัสเต็มทุกตัวที่ "ใช้แทนกันได้"
+    V2: 1 แถว = 1 spec เครื่องทอ, ITEM_LIST = รหัสเต็มทุกตัวที่ "ใช้แทนกันได้"
       spec_by_code : รหัสเต็ม -> {SPEC_KEY, MC_GROUP, ...}
       group_codes  : SPEC_KEY -> [รหัสเต็มทั้งกลุ่ม]
     """

@@ -115,7 +115,13 @@ export function columnFilterData(grid, filters, search, ci) {
 }
 
 // ---- ป็อปอัพตัวกรองแบบ Excel ----
-export function ColumnFilter({ available, domain, selected, anchor, onApply, onClose }) {
+// autoFocusSearch = false : ไม่แย่งโฟกัสจากช่องที่ผู้ใช้กำลังพิมพ์อยู่ (เปิดจากช่องค้นหาหลัก)
+// backdrop = false        : ไม่คลุมจอด้วยฉากหลัง — ให้ผู้เรียกจัดการปิดเองตอนคลิกนอกกล่อง
+//                           (ถ้าคลุมไว้ ผู้ใช้จะคลิกช่องค้นหาหลักไม่ได้เพราะโดนฉากหลังกินคลิก)
+// narrowed = true         : ลิสต์ถูกกรองมาจากภายนอกแล้ว (คำค้นหลัก) → ตอนกดตกลงให้ยึด
+//                           เฉพาะรายการที่เห็นอยู่ เหมือนกรณีพิมพ์ในช่อง "ค้นหาค่า" ของป็อปอัพเอง
+export function ColumnFilter({ available, domain, selected, anchor, onApply, onClose,
+  autoFocusSearch = true, backdrop = true, narrowed = false }) {
   // draft = ค่าที่ถูกติ๊ก; ถ้ายังไม่เคยกรอง (selected == null) ให้ถือว่าเลือกทั้งหมด (ทั้งโดเมน)
   const [draft, setDraft] = useState(() => new Set(selected ?? domain))
   const [q, setQ] = useState('')
@@ -165,7 +171,7 @@ export function ColumnFilter({ available, domain, selected, anchor, onApply, onC
   }
   function apply() {
     // ถ้ากำลังค้นหาอยู่ = แบบ Excel: กรองเฉพาะผลการค้นหาที่ติ๊กไว้ (ตัดค่าที่ไม่ตรงคำค้นทิ้ง)
-    const result = q.trim()
+    const result = (q.trim() || narrowed)
       ? new Set(shown.filter(a => draft.has(a.value)).map(a => a.value))
       : new Set(draft)
     // ถือว่า "ไม่กรอง" ก็ต่อเมื่อเลือกครบทุกค่าในโดเมนของคอลัมน์
@@ -175,13 +181,13 @@ export function ColumnFilter({ available, domain, selected, anchor, onApply, onC
 
   return (
     <>
-      <div className="filterbackdrop" onClick={onClose} />
+      {backdrop && <div className="filterbackdrop" onClick={onClose} />}
       <div className="filterpop" ref={popRef} style={style}>
         <div className="popsort">
           <button className={sortDir === 'asc' ? 'on' : ''} onClick={() => setSortDir('asc')}>▲ A→Z</button>
           <button className={sortDir === 'desc' ? 'on' : ''} onClick={() => setSortDir('desc')}>▼ Z→A</button>
         </div>
-        <input className="popsearch" autoFocus placeholder="ค้นหาค่า..."
+        <input className="popsearch" autoFocus={autoFocusSearch} placeholder="ค้นหาค่า..."
           value={q} onChange={e => setQ(e.target.value)} />
         <label className="popitem all">
           <input type="checkbox" ref={allRef} checked={allShownChecked} onChange={toggleAll} />

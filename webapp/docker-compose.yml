@@ -1,6 +1,7 @@
 # Knit Plan — stack แยกอิสระจาก webchat
 # project name: knitplan  (docker compose -p knitplan ...)
-# เข้าใช้งาน: http://docker-webchat:8080
+# เข้าใช้งาน: http://docker-webchat/knitplan/   (ผ่าน webchat-proxy ที่ port 80)
+# port 8080 ยังเปิดไว้เป็นทางสำรอง/ดีบัก: http://docker-webchat:8080
 
 services:
   knitplan:
@@ -14,6 +15,13 @@ services:
     environment:
       TZ: Asia/Bangkok
       KNITPLAN_SETTINGS: /data/knitplan/config/settings.json
+      # ค่าที่ตั้งจากหน้า "ตั้งค่าระบบ" — ต้องอยู่บน volume ไม่งั้นค่าหายทุกครั้งที่ deploy ใหม่
+      KNITPLAN_PLAN_CONFIG: /data/knitplan/config/plan_config.json
+      # บัญชีผู้ใช้ (เพิ่ม/ลบผ่านหน้า ตั้งค่าระบบ › ผู้ใช้งาน) + กุญแจ sign token — ต้องอยู่บน volume
+      # ไม่งั้น user ที่เพิ่มผ่านเว็บหายทุกครั้งที่ deploy (โดน users.json ในเครื่อง dev ทับ)
+      # ครั้งแรกที่ยังไม่มีไฟล์บน volume auth.py คัดลอกของเดิมที่ติดมากับ image ไปให้เอง
+      KNITPLAN_USERS: /data/knitplan/config/users.json
+      KNITPLAN_AUTH_SECRET: /data/knitplan/config/auth_secret.txt
     volumes:
       - /home/scm/knitplan/masters:/data/knitplan/masters   # ไฟล์ Master (แก้ผ่านเว็บ)
       - /home/scm/knitplan/output:/app/data_plan            # ผลลัพธ์ production_plan
@@ -23,13 +31,25 @@ services:
       - /home/scm/knitplan/booking:/app/Booking             # ไฟล์ Booking ที่ดึงมา
       - /home/scm/knitplan/order:/app/Order                 # ไฟล์ Order (SC) ที่ดึงมา
       - /home/scm/knitplan/datamining:/app/Datamining       # ไฟล์ Datamining ที่ดึงมา
+      # CAP รายไอเทม-รายเครื่อง (View_MC_Item) — AVA_MC ใช้ override CAP_KNIT ของ booking
+      # ต้อง mount เหมือน input อื่น ไม่งั้นไฟล์อยู่ใน layer ชั่วคราวแล้วหายทุกครั้งที่ deploy
+      # → โหมด "รันแผนการผลิต" (--from AVA_MC) ที่ไม่ได้ดึง DB ใหม่จะไม่มี CAP ให้ใช้
+      - /home/scm/knitplan/mc_item:/app/MC_Item             # CAP รายไอเทม-รายเครื่อง
+      # ด้ายในคลัง (View_Yarn_Aging) ของหน้า Dashboard › Stock Yarn — ดึงตามรอบตั้งเวลาโหมด yarn
+      - /home/scm/knitplan/yarn:/app/Yarn                   # ไฟล์ Stock Yarn ที่ดึงมา
     ports:
       - "8080:8080"
     restart: unless-stopped
     mem_limit: 6g
     networks:
       - knitplan-net
+      - proxy-net
 
 networks:
   knitplan-net:
     driver: bridge
+  # network ที่ webchat-proxy (nginx port 80) เกาะอยู่ — ต้องเข้าร่วมด้วย
+  # ไม่งั้น proxy resolve ชื่อ knitplan-app ไม่เจอ แล้ว /knitplan/ จะ 502
+  proxy-net:
+    external: true
+    name: ai_dye_default

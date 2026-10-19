@@ -22,6 +22,9 @@ COPY *.py ./
 # input data dirs ที่ pipeline อ่าน
 COPY Estimate_Core ./Estimate_Core
 COPY Datamining ./Datamining
+# รายการใบสั่ง/item ที่สั่งบล็อกไม่ให้เข้าแผน (Order.py อ่านผ่าน blocklist.py)
+# ไม่ mount volume — รายการมากับ repo ทุกครั้งที่ deploy
+COPY Blocklist ./Blocklist
 # data/ และ Yarn_Master/ ไม่ได้ใช้งานแล้ว จึงไม่ copy
 
 # webapp backend + frontend build
@@ -31,7 +34,7 @@ COPY --from=fe /fe/dist ./webapp/frontend/dist
 COPY webapp/config.docker.ini ./config.ini
 
 # โฟลเดอร์ทำงาน/ผลลัพธ์ (ถูก mount ทับด้วย volume บาง path)
-RUN mkdir -p Booking Stock Order data_plan webapp/logs /data/knitplan/config
+RUN mkdir -p Booking Stock Order MC_Item Yarn data_plan webapp/logs /data/knitplan/config
 
 EXPOSE 8080
 WORKDIR /app/webapp/backend

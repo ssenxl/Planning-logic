@@ -11,7 +11,8 @@ function fmtTime(ts) {
   return new Date(ts * 1000).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-export default function Substitute() {
+// ro = ดูอย่างเดียว (ไม่ใช่ admin) — ซ่อนเฉพาะส่วนนำเข้าไฟล์ ; ค้นหา/ดู/Export ยังใช้ได้ครบ
+export default function Substitute({ ro = false }) {
   const [info, setInfo] = useState(null)
   const [q, setQ] = useState('')
   const [onlyMulti, setOnlyMulti] = useState(true)
@@ -104,6 +105,20 @@ export default function Substitute() {
     }
   }
 
+  // ---------- export ชีท Master_Item V2 (ไฟล์ที่ได้ Import กลับได้ทันที) ----------
+  const [exporting, setExporting] = useState(false)
+  async function doExport() {
+    setExporting(true)
+    setErr('')
+    try {
+      await api.masterExport('Master_Item', info?.sheet || 'Master_Item V2')
+    } catch (e) {
+      setErr('Export ไม่สำเร็จ: ' + e.message)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const rows = res?.rows || []
 
   return (
@@ -141,33 +156,47 @@ export default function Substitute() {
           </ul>
         </div>
 
+        {/* ทับชีท Master_Item V2 = แก้ข้อมูลหลัก → เฉพาะผู้ดูแลระบบ (ด่านจริงอยู่ที่ server.py
+            ADMIN_ONLY_PREFIX) ; คนอื่นยังดาวน์โหลดดูได้ ไม่งั้นกดปุ่มแล้วเจอ 403 เฉย ๆ */}
         <div className="sub-import">
-          <b>นำเข้าไฟล์ (import)</b>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".xlsx"
-            onChange={e => pickFile(e.target.files?.[0])}
-            disabled={importing}
-          />
-          {preview && (
-            <div className="sub-preview">
-              <div>ชีทที่อ่าน: <b>{preview.sheet}</b></div>
-              <div>{fmtInt(preview.rows)} แถว • {fmtInt(preview.codes)} รหัส • มีตัวแทน {fmtInt(preview.multi_groups)} กลุ่ม</div>
-            </div>
-          )}
-          <button className="primary" onClick={doImport} disabled={!preview || importing}>
-            {importing ? 'กำลังนำเข้า...' : 'นำเข้า ทับชีท Master_Item V2'}
+          <b>{ro ? 'Export' : 'Import / Export'}</b>
+          <button onClick={doExport} disabled={!info?.ok || exporting}
+            title="ดาวน์โหลดชีท Master_Item V2 เป็นไฟล์ .xlsx (Import กลับได้)">
+            {exporting ? 'กำลัง Export...' : '📤 Export'}
           </button>
-          <small>
-            ทับ<b>เฉพาะชีท Master_Item V2</b> ชีทอื่นในไฟล์คงเดิม และสำรองไฟล์เก่าเป็น <b>.bak</b> ให้ทุกครั้ง
-          </small>
+          {ro ? (
+            <small>นำเข้าไฟล์ได้เฉพาะสิทธิ์ Knit / Super Admin</small>
+          ) : (
+            <>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".xlsx"
+                onChange={e => pickFile(e.target.files?.[0])}
+                disabled={importing}
+              />
+              {preview && (
+                <div className="sub-preview">
+                  <div>ชีทที่อ่าน: <b>{preview.sheet}</b></div>
+                  <div>{fmtInt(preview.rows)} แถว • {fmtInt(preview.codes)} รหัส • มีตัวแทน {fmtInt(preview.multi_groups)} กลุ่ม</div>
+                </div>
+              )}
+              <button className="primary" onClick={doImport} disabled={!preview || importing}>
+                {importing ? 'กำลัง Import...' : '📥 Import ทับชีท Master_Item V2'}
+              </button>
+              <small>
+                ทับ<b>เฉพาะชีท Master_Item V2</b> ชีทอื่นในไฟล์คงเดิม และสำรองไฟล์เก่าเป็น <b>.bak</b> ให้ทุกครั้ง
+              </small>
+            </>
+          )}
         </div>
 
-        <div className="data-note">
-          ไฟล์ที่นำเข้าต้องมีคอลัมน์ <b>ITEM_LIST</b> และ <b>SPEC_KEY</b> เป็นอย่างน้อย
-          (รูปแบบเดียวกับชีท Master_Item V2)
-        </div>
+        {!ro && (
+          <div className="data-note">
+            ไฟล์ที่นำเข้าต้องมีคอลัมน์ <b>ITEM_LIST</b> และ <b>SPEC_KEY</b> เป็นอย่างน้อย
+            (รูปแบบเดียวกับชีท Master_Item V2)
+          </div>
+        )}
       </aside>
 
       <section className="editor">
@@ -193,7 +222,7 @@ export default function Substitute() {
         {info && !info.ok && (
           <div className="msg note">
             ⚠ {info.error || `ยังอ่านชีท ${info.sheet || 'Master_Item V2'} ไม่ได้`}
-            <br />ใช้กล่อง <b>นำเข้าไฟล์ (import)</b> ด้านซ้าย อัปโหลดไฟล์ที่มีชีท <b>Master_Item V2</b> เพื่อเริ่มใช้งานหน้านี้
+            <br />ใช้กล่อง <b>Import / Export</b> ด้านซ้าย อัปโหลดไฟล์ที่มีชีท <b>Master_Item V2</b> เพื่อเริ่มใช้งานหน้านี้
           </div>
         )}
         {err && <div className="msg">{err}</div>}
@@ -214,7 +243,7 @@ export default function Substitute() {
                 <div className="sub-tags">
                   <span className="sub-tag mc">{g.mc_group || '-'}</span>
                   <span className="sub-tag">{g.knit_mc_cat || '-'}</span>
-                  <span className="sub-tag">เกจ {g.mc_gauge || '-'}</span>
+                  <span className="sub-tag">Guage {g.mc_gauge || '-'}</span>
                   <span className="sub-tag">{g.suffix === 'B0' ? 'อบกลม (B0)' : g.suffix === 'A0' ? 'อบผ่า (A0)' : g.suffix}</span>
                 </div>
                 <div className="sub-cardmeta">

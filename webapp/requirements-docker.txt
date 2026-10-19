@@ -17,3 +17,5 @@ python-multipart
 tzdata
 # LLM — ฟีเจอร์ "จ้างทอ (AI)"
 openai
+# ส่งเมลแจ้งแผนเปลี่ยนผ่าน Power Automate (เดิมติดมากับ msal โดยบังเอิญ)
+requests

@@ -19,7 +19,7 @@ Write-Host "==> Pack source: $repo -> $tgz" -ForegroundColor Cyan
 $excludes = @(
   "--exclude=./.venv", "--exclude=./.venv-*", "--exclude=./.git", "--exclude=./build", "--exclude=./dist",
   "--exclude=./model", "--exclude=./data_plan", "--exclude=./Booking", "--exclude=./Stock",
-  "--exclude=./Order", "--exclude=./KnitPlan_Release", "--exclude=./.claude",
+  "--exclude=./Order", "--exclude=./.claude",
   "--exclude=./webapp/frontend/node_modules", "--exclude=./webapp/frontend/dist",
   "--exclude=./webapp/logs", "--exclude=*.zip", "--exclude=*.pyc", "--exclude=__pycache__",
   "--exclude=*.log", "--exclude=./plan_log.txt"

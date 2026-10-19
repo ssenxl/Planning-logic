@@ -17,7 +17,7 @@ export default function ConfigEditor(props) {
 const sumCol = (rows, ci) => ci < 0 ? 0 : rows.reduce((a, r) => a + (Number(val(r[ci])) || 0), 0)
 
 // ---------- การ์ด (mcspecial / itemspecial / substitute) ----------
-function CardList({ grid, info, rids, setCell, addRow, delRow, isChanged }) {
+function CardList({ grid, info, rids, setCell, addRow, delRow, isChanged, ro }) {
   const { headline, hint, addLabel, itemWord, titleField, idFields = [], numFields = [], noteFields = [], summary = [] } = info
   const wrapRef = useRef(null)
   const chg = (ri, ci) => ci >= 0 && isChanged(ri, ci)
@@ -34,7 +34,7 @@ function CardList({ grid, info, rids, setCell, addRow, delRow, isChanged }) {
 
   const textInput = (ri, ci, ph) => (
     <input className={chg(ri, ci) ? 'chg' : ''} value={grid.rows[ri][ci] ?? ''} placeholder={ph || ''}
-      onChange={e => setCell(ri, ci, e.target.value)} />
+      readOnly={ro} onChange={e => setCell(ri, ci, e.target.value)} />
   )
 
   return (
@@ -44,15 +44,19 @@ function CardList({ grid, info, rids, setCell, addRow, delRow, isChanged }) {
           {summary.map(f => <span key={f.ci}> · {f.label} รวม <b className="cfgnum">{sumCol(grid.rows, f.ci)}</b></span>)}
         </span>
         {hint && <span className="cfghint">{hint}</span>}
-        <button className="cfgaddbtn" onClick={add}>{addLabel}</button>
+        {!ro && <button className="cfgaddbtn" onClick={add}>{addLabel}</button>}
       </div>
 
-      {!grid.rows.length && <div className="cfgempty">ยังไม่มีข้อมูล — กด <b>{addLabel}</b> เพื่อเริ่ม</div>}
+      {!grid.rows.length && (
+        <div className="cfgempty">
+          {ro ? 'ยังไม่มีข้อมูล' : <>ยังไม่มีข้อมูล — กด <b>{addLabel}</b> เพื่อเริ่ม</>}
+        </div>
+      )}
 
       <div className="cfgcards">
         {grid.rows.map((r, ri) => (
           <div key={rids?.[ri] ?? ri} className="cfgcard">
-            <button className="cfgdel" title="ลบรายการนี้" onClick={() => delRow(ri)}>✕</button>
+            {!ro && <button className="cfgdel" title="ลบรายการนี้" onClick={() => delRow(ri)}>✕</button>}
 
             {titleField && (
               <label className="cfgfield title">
@@ -78,7 +82,7 @@ function CardList({ grid, info, rids, setCell, addRow, delRow, isChanged }) {
                   <label key={f.ci} className={'cfgfield num' + (f.accent ? ' ' + f.accent : '')}>
                     <span>{f.label}</span>
                     <input className={'big ' + (chg(ri, f.ci) ? 'chg' : '')} inputMode="numeric"
-                      value={grid.rows[ri][f.ci] ?? ''} placeholder="0"
+                      value={grid.rows[ri][f.ci] ?? ''} placeholder="0" readOnly={ro}
                       onChange={e => setNum(ri, f.ci, e.target.value)} />
                   </label>
                 ))}
@@ -95,13 +99,17 @@ function CardList({ grid, info, rids, setCell, addRow, delRow, isChanged }) {
         ))}
       </div>
 
-      <div className="gridhelp">แต่ละการ์ด = 1 {itemWord} · แก้แล้วกด <b>บันทึก</b> (Ctrl+S) · Ctrl+Z = ย้อนกลับ</div>
+      <div className="gridhelp">แต่ละการ์ด = 1 {itemWord} ·{' '}
+        {ro
+          ? <><b>หน้านี้ดูอย่างเดียว</b> — แก้ได้ที่ ⚙️ Setting › ข้อมูลหลัก</>
+          : <>แก้แล้วกด <b>บันทึก</b> (Ctrl+S) · Ctrl+Z = ย้อนกลับ</>}
+      </div>
     </div>
   )
 }
 
 // ---------- Spare part: ลิสต์จัดกลุ่มตาม Factory + ค้นหา ----------
-function SpareList({ grid, info, rids, setCell, addRow, delRow, isChanged, isNewRow }) {
+function SpareList({ grid, info, rids, setCell, addRow, delRow, isChanged, isNewRow, ro }) {
   const { headline, addLabel, groupCi, spareCi, lineCis = [], summary = [] } = info
   const [q, setQ] = useState('')
   const rowsRef = useRef(null)
@@ -139,17 +147,17 @@ function SpareList({ grid, info, rids, setCell, addRow, delRow, isChanged, isNew
   const rowEl = ri => (
     <div key={rids?.[ri] ?? ri} className={'cfgrow' + (isNewRow(ri) ? ' newrow' : '')}>
       {lineCis.map(f => (
-        <input key={f.ci} className={'cfgcell ' + (chg(ri, f.ci) ? 'chg' : '')}
+        <input key={f.ci} className={'cfgcell ' + (chg(ri, f.ci) ? 'chg' : '')} readOnly={ro}
           value={grid.rows[ri][f.ci] ?? ''} placeholder={f.label}
           onChange={e => setCell(ri, f.ci, e.target.value)} />
       ))}
       <label className="cfgsparebox">
         <span>สำรอง</span>
-        <input className={'big ' + (chg(ri, spareCi) ? 'chg' : '')} inputMode="numeric"
+        <input className={'big ' + (chg(ri, spareCi) ? 'chg' : '')} inputMode="numeric" readOnly={ro}
           value={grid.rows[ri][spareCi] ?? ''} placeholder="0"
           onChange={e => setNum(ri, spareCi, e.target.value)} />
       </label>
-      <button className="cfgdel" title="ลบรายการนี้" onClick={() => delRow(ri)}>✕</button>
+      {!ro && <button className="cfgdel" title="ลบรายการนี้" onClick={() => delRow(ri)}>✕</button>}
     </div>
   )
 
@@ -159,9 +167,9 @@ function SpareList({ grid, info, rids, setCell, addRow, delRow, isChanged, isNew
         <span className="cfgtotal">{headline}
           {summary.map(f => <span key={f.ci}> · {f.label} <b className="cfgnum">{sumCol(grid.rows, f.ci)}</b> เครื่อง</span>)}
         </span>
-        <input className="cfgsearch" placeholder="🔍 ค้นหา Factory / กลุ่ม / เกจ..."
+        <input className="cfgsearch" placeholder="🔍 ค้นหา Factory / กลุ่ม / Guage..."
           value={q} onChange={e => setQ(e.target.value)} />
-        <button className="cfgaddbtn" onClick={add}>{addLabel}</button>
+        {!ro && <button className="cfgaddbtn" onClick={add}>{addLabel}</button>}
       </div>
 
       <div className="cfgrows" ref={rowsRef}>
@@ -184,7 +192,11 @@ function SpareList({ grid, info, rids, setCell, addRow, delRow, isChanged, isNew
         )}
       </div>
 
-      <div className="gridhelp">จัดกลุ่มตาม Factory · แก้/ลบได้ทันที · แก้เสร็จกด <b>บันทึก</b> (Ctrl+S)</div>
+      <div className="gridhelp">จัดกลุ่มตาม Factory ·{' '}
+        {ro
+          ? <><b>หน้านี้ดูอย่างเดียว</b> — แก้ได้ที่ ⚙️ Setting › ข้อมูลหลัก</>
+          : <>แก้/ลบได้ทันที · แก้เสร็จกด <b>บันทึก</b> (Ctrl+S)</>}
+      </div>
     </div>
   )
 }

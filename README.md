@@ -1,6 +1,6 @@
 # Knit Plan AI — Planning Logic System
 
-ระบบวางแผนการผลิตผ้าถักอัตโนมัติ (Knit Planning) ของบริษัท Nan Yang Textile  
+ระบบวางแผนการผลิตผ้าทออัตโนมัติ (Knit Planning) ของบริษัท Nan Yang Textile  
 พัฒนาด้วย Python — ดึงข้อมูลจาก Oracle DB → คำนวณ Machine Availability → วางแผนผลิตรายสัปดาห์ → Export Excel
 
 ---
@@ -76,7 +76,6 @@ python run_all.py --ignore-errors
 | `SETUP_TRACKING` | ประวัติ setup แต่ละ item/MC_GROUP |
 | `UNPLANNED` | Order ที่ระบบข้ามไม่ได้วางแผน |
 | `CYLINDER_CHANGE` | สรุปการเปลี่ยน Gauge cylinder รายสัปดาห์ |
-| `PIVOT_PLAN` | PivotTable (PLAN_WEEK × ITEM_CODE) |
 
 
 ---
@@ -87,4 +86,4 @@ python run_all.py --ignore-errors
 oracledb  pandas  openpyxl  xlrd  numpy  msal
 ```
 
-Optional: `pywin32` (สร้าง Excel PivotTable บน Windows — ติดตั้งอัตโนมัติเมื่อรัน)
+ไม่ต้องใช้ `pywin32` แล้ว — เลิกสร้างชีท PIVOT_PLAN (Excel PivotTable) ตั้งแต่ 2026-09-11 ดูสรุปผ่านหน้า Pivot ของเว็บแทน

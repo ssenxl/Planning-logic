@@ -1,12 +1,11 @@
 import os
 import re
-import sys
 import configparser as _cp
 import pandas as pd
 import io
 from pathlib import Path
 
-_APP_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+_APP_DIR = Path(__file__).parent
 _cfg = _cp.ConfigParser(interpolation=None)  # ปิด interpolation ให้ใช้ %USERPROFILE% ใน path ได้
 _cfg.read(_APP_DIR / "config.ini", encoding="utf-8")
 _CALENDAR_LOCAL_PATH = os.path.expandvars(_cfg.get("paths", "calendar", fallback=""))
@@ -369,10 +368,10 @@ def _num(v):
 
 def load_workday(file_path: Path | str | None = None) -> dict:
     """อ่านชีท Work Day → {"default": {(fac,cat,gauge): วัน}, "week": {(fac,cat,gauge,week): วัน},
-    "hour": {(fac,cat,gauge): ชั่วโมง}}
+    "hour": {(fac,cat,gauge): ชั่วโมง}, "week_hour": {(fac,cat,gauge,week): ชั่วโมง}}
     ไม่มีชีท/อ่านไม่ได้ → คืน dict ว่าง (ทุกกลุ่มจะใช้ DEFAULT_WORK_DAYS / ชั่วโมงตามเดิม)"""
     src = file_path or _CALENDAR_LOCAL_PATH
-    out = {"default": {}, "week": {}, "hour": {}}
+    out = {"default": {}, "week": {}, "hour": {}, "week_hour": {}}
     try:
         df = pd.read_excel(src, sheet_name=WORKDAY_SHEET)
     except Exception:
@@ -391,16 +390,25 @@ def load_workday(file_path: Path | str | None = None) -> dict:
             continue
         days = _num(r[cols["WORK_DAY"]])
         wk = _num(r[cols["WEEK"]]) if "WEEK" in cols else None
+        # YEAR (ไม่บังคับ) → คีย์เป็น YW เฉพาะปีนั้น ; ว่าง = เลขเปล่า (WorkDay.init ตีความเป็นครั้งที่ใกล้วันนี้สุด)
+        yr = _num(r[cols["YEAR"]]) if "YEAR" in cols else None
+        if wk is not None and yr is not None and int(wk) < 100000:
+            wk = int(yr) * 100 + int(wk)
+        hr = _num(r[cols["WORK_HOUR"]]) if has_hour else None
         if wk is None:
-            # ค่ามาตรฐานของกลุ่ม: วัน + ชั่วโมง (ชั่วโมงเป็น override ต่อกลุ่มอย่างเดียว ไม่รายสัปดาห์)
+            # ค่ามาตรฐานของกลุ่ม: วัน + ชั่วโมง (ใช้ทุกสัปดาห์ที่ไม่ได้ตั้งค่าเฉพาะไว้)
             if days is not None:
                 out["default"][key] = days
-            if has_hour:
-                hr = _num(r[cols["WORK_HOUR"]])
-                if hr is not None:
-                    out["hour"][key] = hr
-        elif days is not None:
-            out["week"][key + (int(wk),)] = days
+            if hr is not None:
+                out["hour"][key] = hr
+        else:
+            # แถวรายสัปดาห์: ตั้งวันอย่างเดียว / ชั่วโมงอย่างเดียว / ทั้งคู่ ก็ได้
+            # ชั่วโมงรายสัปดาห์ใช้ตอนสัปดาห์นั้นเดินไม่เท่าปกติ (เช่น สัปดาห์ที่ยุบรวมแล้วเดิน 24 ชม.)
+            wkey = key + (int(wk),)
+            if days is not None:
+                out["week"][wkey] = days
+            if hr is not None:
+                out["week_hour"][wkey] = hr
     return out
 
 
@@ -420,11 +428,22 @@ def load_week_merge(file_path: Path | str | None = None) -> dict:
     raw = {}
     for _, r in df.iterrows():
         src_w, dst_w = _num(r[cols["WEEK"]]), _num(r[cols["MERGE_TO"]])
-        if src_w is None or dst_w is None or int(src_w) == int(dst_w):
+        if src_w is None or dst_w is None:
+            continue
+        # YEAR (ไม่บังคับ) = ปีของสัปดาห์ต้นทาง ; MERGE_TO_YEAR ว่าง = ปีเดียวกัน → คีย์เป็น YW
+        yr = _num(r[cols["YEAR"]]) if "YEAR" in cols else None
+        if yr is not None:
+            dyr = _num(r[cols["MERGE_TO_YEAR"]]) if "MERGE_TO_YEAR" in cols else None
+            src_w = int(yr) * 100 + int(src_w) if int(src_w) < 100000 else int(src_w)
+            dst_w = int(dyr if dyr is not None else yr) * 100 + int(dst_w) if int(dst_w) < 100000 else int(dst_w)
+        if int(src_w) == int(dst_w):
             continue
         raw[int(src_w)] = int(dst_w)
+    return unchain_merge(raw)
 
-    # คลาย chain (31→32, 32→33 ⇒ 31→33) และตัดวงจร
+
+def unchain_merge(raw: dict) -> dict:
+    """คลาย chain ของการยุบสัปดาห์ (31→32, 32→33 ⇒ 31→33) และตัดวงจร"""
     out = {}
     for w in raw:
         seen, cur = {w}, raw[w]
@@ -433,6 +452,34 @@ def load_week_merge(file_path: Path | str | None = None) -> dict:
             cur = raw[cur]
         out[w] = cur
     return out
+
+
+def pin_merge_years(merge: dict, timeline, unchain: bool = True) -> dict:
+    """{ต้นทาง: ปลายทาง} (YW หรือเลขเปล่าแถวเก่าที่ไม่มีปี) → {YW: YW}
+
+    การยุบเป็นของปีใดปีหนึ่งเสมอ → แถวที่ไม่มีปี: หาปีของ "ปลายทาง" ก่อน (ครั้งที่ใกล้วันนี้สุด)
+    แล้วต้นทางอยู่ปีเดียวกัน (ข้ามขอบปีเมื่อห่างเกินครึ่งปี เช่น 52 → 1 = W52 ของปีก่อน)
+    ห้ามหาปีทีละฝั่ง: ปฏิทิน 2026 ไม่มี W31 → W31 ถูกตีเป็น 2027 แล้วยุบเข้า W32/2026 ข้ามปี
+    (W31/2027 ได้ 0 วันทุกกอง)
+    unchain=False: คงคู่ตามที่กรอก (หน้าเว็บแสดง/เขียนกลับทีละคู่)"""
+    out = {}
+    for s, d in (merge or {}).items():
+        s, d = int(s), int(d)
+        dst = d if d >= 100000 else timeline.resolve_bare(d)
+        if dst is None:
+            continue
+        if s >= 100000:
+            src = s
+        else:
+            y, dw = dst // 100, dst % 100
+            if s - dw > 26:
+                y -= 1
+            elif dw - s > 26:
+                y += 1
+            src = y * 100 + s
+        if src != dst:
+            out[src] = dst
+    return unchain_merge(out) if unchain else out
 
 
 def calendar_week_map(calendar_df: pd.DataFrame) -> pd.DataFrame:
@@ -461,6 +508,222 @@ def calendar_week_map(calendar_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     return weekly
+
+
+def week_span(weekly, week_from, week_to=None, year_from=None, year_to=None, limit=260):
+    """ลำดับ "เลขสัปดาห์เปล่า" ของช่วงสัปดาห์ — ใช้กับชีทที่กรอกเป็นช่วงได้ (Lock_MC / MC_Total)
+
+    - ไม่ระบุปี → เดินตรง ๆ ด้วยเลขสัปดาห์ (week_to < week_from = สัปดาห์เดียว) = พฤติกรรมเดิม
+    - ระบุปี   → เดินบน timeline จริงของปฏิทิน (calendar_week_map เรียงตามวันที่แล้ว)
+                 จึงข้ามปีได้ถูกต้องโดยไม่ต้องเดาว่าปีนั้นมี 52 หรือ 53 สัปดาห์
+
+    คืน (weeks, warn):
+      weeks = list[int] เลขสัปดาห์เปล่าเรียงตามเวลา (ทั้ง pipeline ใช้เลขสัปดาห์เปล่า ปีจึงมีผล
+              แค่ตอน "กางช่วง" เท่านั้น — ยังแยก W1 ของคนละปีในคีย์ไม่ได้)
+      warn  = ข้อความเตือนถ้าหาในปฏิทินไม่เจอ/ช่วงกลับหลัง (ตกกลับไปใช้แบบไม่มีปี) · ปกติ = None
+    """
+    if week_from is None:
+        return [], None
+    w0 = int(week_from)
+    w1 = int(week_to) if week_to is not None else w0
+    bare = list(range(w0, w1 + 1)) if w1 >= w0 else [w0]
+
+    if year_from is None and year_to is None:
+        return bare, None
+
+    y0 = int(year_from) if year_from is not None else int(year_to)
+    y1 = int(year_to) if year_to is not None else y0
+
+    cols = {str(c).strip().upper(): c for c in getattr(weekly, "columns", [])}
+    yc, wc = cols.get("YEAR"), cols.get("WEEK")
+    if yc is None or wc is None:
+        return bare, "ปฏิทินไม่มีคอลัมน์ YEAR/WEEK → ใช้ช่วงแบบไม่มีปี"
+
+    ys = pd.to_numeric(weekly[yc], errors="coerce").tolist()
+    ws = pd.to_numeric(weekly[wc], errors="coerce").tolist()
+    pos = {}
+    for i, (y, w) in enumerate(zip(ys, ws)):
+        if pd.notna(y) and pd.notna(w):
+            pos.setdefault((int(y), int(w)), i)
+
+    i0, i1 = pos.get((y0, w0)), pos.get((y1, w1))
+    if i0 is None or i1 is None:
+        miss = f"W{w0}/{y0}" if i0 is None else f"W{w1}/{y1}"
+        return bare, f"ไม่พบ {miss} ในปฏิทิน → ใช้ช่วงแบบไม่มีปี"
+    if i1 < i0:
+        return [w0], f"W{w1}/{y1} มาก่อน W{w0}/{y0} → ใช้สัปดาห์เดียว"
+    if i1 - i0 + 1 > limit:
+        i1 = i0 + limit - 1
+        return ([int(w) for w in ws[i0:i1 + 1]],
+                f"ช่วงยาวเกิน {limit} สัปดาห์ → ตัดเหลือ {limit}")
+    return [int(w) for w in ws[i0:i1 + 1]], None
+
+
+# =========================================================
+# คีย์สัปดาห์แบบมีปี — YW = ปี*100 + สัปดาห์ (เช่น W42/2026 → 202642)
+# =========================================================
+# ทั้ง pipeline เดิมคีย์ด้วยเลขสัปดาห์เปล่า (1–53) ซึ่งซ้ำกันทุกปี → แผนยาวเกิน 1 ปีไม่ได้
+# (W32 ปีหน้าไปหยิบเครื่อง/ยอดใช้ของ W32 ปีนี้) ; YW ไม่ซ้ำข้ามปีและเรียงตามเวลาได้ตรง ๆ
+# ใช้ YW เป็นคีย์ภายใน ส่วนไฟล์ที่เขียนออกยังแยกเป็น WEEK + YEAR ให้ของเดิมอ่านได้
+YW_SENTINEL = 99  # W99 ของ booking = งานล้น ไม่มีปีจริง → คงเป็น 99
+
+
+def to_int(v):
+    """ค่าจาก Excel (float/str/NaN) → int ; แปลงไม่ได้ = None"""
+    try:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return None
+        s = str(v).strip()
+        if not s or s.lower() in ("nan", "none", "nat"):
+            return None
+        return int(float(s))
+    except (TypeError, ValueError):
+        return None
+
+
+def is_yw(v) -> bool:
+    i = to_int(v)
+    return i is not None and i >= 100000
+
+
+def make_yw(year, week):
+    """(ปี, สัปดาห์) → YW ; ไม่มีปี = None (ผู้เรียกต้อง resolve เอง) ; W99 → 99"""
+    w = to_int(week)
+    if w is None:
+        return None
+    if w >= 100000:
+        return w
+    if w == YW_SENTINEL:
+        return YW_SENTINEL
+    y = to_int(year)
+    return None if y is None else y * 100 + w
+
+
+def yw_week(v):
+    """YW → เลขสัปดาห์ (เลขเปล่าคืนตัวเดิม)"""
+    i = to_int(v)
+    if i is None:
+        return None
+    return i % 100 if i >= 100000 else i
+
+
+def yw_year(v):
+    """YW → ปี (เลขเปล่า = None ไม่รู้ปี)"""
+    i = to_int(v)
+    return i // 100 if i is not None and i >= 100000 else None
+
+
+def yw_label(v) -> str:
+    """ป้ายอ่านง่ายใน log: 202642 → 'W42/2026' ; เลขเปล่า → 'W42'"""
+    i = to_int(v)
+    if i is None:
+        return "W?"
+    return f"W{i % 100}/{i // 100}" if i >= 100000 else f"W{i}"
+
+
+class WeekTimeline:
+    """ไทม์ไลน์สัปดาห์ของปฏิทิน (เรียงตามวันที่จริง) + ตัวแปลงเลขสัปดาห์เปล่าเป็น YW
+
+    weekly = ผลของ calendar_week_map (คอลัมน์ year/week/week_start/week_end ตัวเล็กหรือตัวใหญ่ก็ได้)
+    เลขสัปดาห์เปล่าที่ user กรอกโดยไม่ใส่ปี (Lock_Plan / MC_Total / Work Day / Week Merge ...)
+    → ตีความเป็น "ครั้งที่ใกล้วันนี้ที่สุด" (ห่างเท่ากันเลือกอนาคต) ; เลยครึ่งปีไปแล้วควรใส่ปีกำกับ
+    """
+
+    def __init__(self, weekly: pd.DataFrame, today=None):
+        cols = {str(c).strip().upper(): c for c in weekly.columns}
+        ys = pd.to_numeric(weekly[cols["YEAR"]], errors="coerce").tolist()
+        ws = pd.to_numeric(weekly[cols["WEEK"]], errors="coerce").tolist()
+        starts = pd.to_datetime(weekly[cols["WEEK_START"]], errors="coerce").tolist()
+        ends = pd.to_datetime(weekly[cols["WEEK_END"]], errors="coerce").tolist()
+        self.keys: list = []
+        self.starts: list = []
+        self.ends: list = []
+        self.pos: dict = {}
+        for y, w, s, e in zip(ys, ws, starts, ends):
+            if pd.isna(y) or pd.isna(w):
+                continue
+            k = int(y) * 100 + int(w)
+            if k in self.pos:
+                continue
+            self.pos[k] = len(self.keys)
+            self.keys.append(k)
+            self.starts.append(s)
+            self.ends.append(e)
+        today = pd.Timestamp(today) if today is not None else pd.Timestamp.now().normalize()
+        self.today_idx = self.idx_of_date(today)
+        if self.today_idx is None:
+            before = [i for i, s in enumerate(self.starts) if pd.notna(s) and s <= today]
+            self.today_idx = before[-1] if before else 0
+        self._bare: dict = {}
+        self._bare_by_num: dict = {}
+        for i, k in enumerate(self.keys):
+            self._bare_by_num.setdefault(k % 100, []).append(i)
+
+    def idx_of_date(self, d):
+        d = pd.Timestamp(d)
+        for i, (s, e) in enumerate(zip(self.starts, self.ends)):
+            if pd.notna(s) and pd.notna(e) and s <= d <= e + pd.Timedelta(hours=23, minutes=59):
+                return i
+        return None
+
+    def resolve_bare(self, week):
+        """เลขสัปดาห์เปล่า → YW ของครั้งที่ใกล้วันนี้ที่สุด (ไม่มีในปฏิทิน = None)"""
+        w = to_int(week)
+        if w is None:
+            return None
+        if w >= 100000 or w == YW_SENTINEL:
+            return w
+        if w in self._bare:
+            return self._bare[w]
+        cands = self._bare_by_num.get(w, [])
+        out = None
+        if cands:
+            t = self.today_idx
+            best = min(cands, key=lambda i: (abs(i - t), 0 if i >= t else 1))
+            out = self.keys[best]
+        self._bare[w] = out
+        return out
+
+    def key(self, week, year=None):
+        """(สัปดาห์[, ปี]) → YW ; มีปี = ตรงตัว ; ไม่มีปี = resolve_bare ; W99 คงเดิม"""
+        k = make_yw(year, week)
+        if k is not None:
+            return k
+        return self.resolve_bare(week)
+
+    def idx(self, week, year=None):
+        k = self.key(week, year)
+        return None if k is None else self.pos.get(k)
+
+    def at(self, i):
+        return self.keys[i] if i is not None and 0 <= i < len(self.keys) else None
+
+    def shift(self, week, n: int):
+        i = self.idx(week)
+        return None if i is None else self.at(i + int(n))
+
+    def span(self, week_from, week_to=None, year_from=None, year_to=None, limit=260):
+        """ช่วงสัปดาห์ → (list YW เรียงตามเวลา, warn) — ใช้กับชีทที่กรอกเป็นช่วง (Lock_MC / MC_Total)
+        ไม่ใส่ปี = ตีความทีละปลายด้วย resolve_bare ; ปลายทางมาก่อนต้นทาง = สัปดาห์เดียว"""
+        a = self.key(week_from, year_from)
+        if a is None:
+            return [], (f"ไม่พบ W{to_int(week_from)} ในปฏิทิน" if to_int(week_from) is not None else None)
+        if a == YW_SENTINEL:
+            return [a], None
+        _yt = year_to if year_to is not None else year_from
+        b = self.key(week_to, _yt) if to_int(week_to) is not None else a
+        if b is None:
+            return [a], f"ไม่พบ W{to_int(week_to)} ในปฏิทิน → ใช้สัปดาห์เดียว"
+        i0, i1 = self.pos.get(a), self.pos.get(b)
+        if i0 is None:
+            return [a], f"ไม่พบ {yw_label(a)} ในปฏิทิน"
+        if i1 is None or i1 < i0:
+            return [a], (f"{yw_label(b)} มาก่อน {yw_label(a)} → ใช้สัปดาห์เดียว" if i1 is not None else None)
+        warn = None
+        if i1 - i0 + 1 > limit:
+            i1 = i0 + limit - 1
+            warn = f"ช่วงยาวเกิน {limit} สัปดาห์ → ตัดเหลือ {limit}"
+        return self.keys[i0:i1 + 1], warn
 
 
 if __name__ == "__main__":

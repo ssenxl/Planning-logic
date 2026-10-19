@@ -1,44 +1,24 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api.js'
-import { ColumnFilter, columnFilterData, filterRows, label as valLabel, norm } from './ColumnFilter.jsx'
+import * as live from '../live.js'
+import { useAutoSave } from '../autosave.js'
+import SaveStatus from './SaveStatus.jsx'
+import { norm } from './ColumnFilter.jsx'
 import CalendarEditor from './CalendarEditor.jsx'
 import LockMcEditor from './LockMcEditor.jsx'
-import S9Editor from './S9Editor.jsx'
+import S9Editor, { s9Enums } from './S9Editor.jsx'
 import ConfigEditor from './ConfigEditor.jsx'
-import LookupEditor from './LookupEditor.jsx'
+import DataTable from './DataTable.jsx'
 import MasterMcTable from './MasterMcTable.jsx'
 import McTotalEditor from './McTotalEditor.jsx'
+import JobDoneEditor from './JobDoneEditor.jsx'
+import McHub from './McHub.jsx'
+import S9Hub from './S9Hub.jsx'
+import SheetImport from './SheetImport.jsx'
+import { catalogFor, describe, sheetOf, splitColumns } from '../masterCatalog.js'
 
-// ชีทที่ pipeline ใช้จริง — แสดง hint ให้ user
-const USED_SHEETS = {
-  Calendar: ['Sheet1'],
-}
-
-const ROWNUM_W = 46
-const ACT_W = 40
-const MIN_COL_W = 70
-const MAX_INIT_W = 240
-
-// ความกว้างเริ่มต้นของคอลัมน์ — เดาจากหัวคอลัมน์ + ค่าตัวอย่าง 40 แถวแรก
-function guessWidth(columns, rows, ci) {
-  let len = String(columns[ci] ?? '').length
-  for (let i = 0; i < Math.min(rows.length, 40); i++) {
-    len = Math.max(len, String(rows[i][ci] ?? '').length)
-  }
-  return Math.round(Math.max(MIN_COL_W, Math.min(MAX_INIT_W, 46 + len * 7.4)))
-}
-
-const isNum = v => v !== '' && v != null && !isNaN(Number(v))
-
-// เรียงค่า: ตัวเลขเทียบเป็นตัวเลข, ว่างไปท้ายเสมอ
-function cmpVal(a, b) {
-  const x = norm(a), y = norm(b)
-  if (x === y) return 0
-  if (x === '') return 1
-  if (y === '') return -1
-  if (isNum(x) && isNum(y)) return Number(x) - Number(y)
-  return String(x).localeCompare(String(y), 'th', { numeric: true })
-}
+// ชื่อชีท/คำอธิบาย/ชีทไหนใช้บ่อย ย้ายไปอยู่ทะเบียนเดียวที่ masterCatalog.js
+// (เดิมมี USED_SHEETS / KEY_SHEETS กระจายอยู่ที่นี่ — เมนูซ้ายไม่ได้โชว์ชื่อชีทดิบแล้ว)
 
 // normalize เกจให้ตรงกับที่ Planning/AVA ใช้ (ตัด G / GAUGE ออก) เช่น "20G" → "20"
 const normGauge = v => String(v ?? '').trim().toUpperCase().replace('GAUGE', '').replace('G', '').trim()
@@ -49,14 +29,25 @@ const sortSet = s => [...s].sort(numCmp)
 // - cats: รายชื่อกลุ่มเครื่อง (MC_CAT) ทั้งหมด
 // - gaugeByCat / mcByCat / facByCat: เกจ / เครื่อง (FA/SKP) / โรงงาน ของแต่ละกลุ่ม (cascading)
 // - totalByCatGauge: จำนวนเครื่องเดิม "CAT|เกจ" → { all, byFac } ให้ MC_Total เทียบค่าเดิมได้
+// - mcByCatGauge: เครื่องที่มีจริงใน "CAT|เกจ" นั้น (mcByCat รวมทุกเกจ → กว้างไป)
+// - poolByMc: "CAT|เกจ|MC" → { label, pool, total, reserved, mcs } = พูลของเครื่องนั้น
+//   พูล = หน่วยที่ระบบนับเครื่องจริง — กติกาเดียวกับ _MC_TO_POOL ใน AVA_MC:
+//     SINGLE-32 ที่มี Group → "Factory|Group" · Group ที่คร่อมหลาย cat/เกจ → "Factory|Group"
+//     ที่เหลือ → "Factory|CAT:เกจ" (เครื่องทุกตัวใน cat+เกจ นั้นเป็นพูลเดียว)
+//   total = ยอดทั้งกอง "รวม" เครื่องที่ MC Special กันไว้ให้ POLY/COTTON (reserved = ส่วนที่กันไว้)
+//   — หน่วยเดียวกับยอดที่กรอกใน MC_Total : AVA_MC หักเครื่องกันไว้ออกจากยอดที่กรอกเอง (McTotal.py)
 // รองรับ merged cell ในไฟล์ (MC_CAT/MC/Factory เว้นว่างในแถวถัดไป) ด้วยการ forward-fill
-function buildLockOpts(main, weekMap) {
+// - calWeeks: ลำดับ [ปี, สัปดาห์] ตามเวลาจริง (ใช้กางช่วงข้ามปีให้ตรงกับ Calendar.week_span)
+function buildLockOpts(main, weekMap, calWeeks, special) {
   const cats = []
   const gaugeByCat = {}
   const mcByCat = {}
   const facByCat = {}
   const factories = new Set()
   const totalByCatGauge = {}
+  const mcByCatGauge = {}
+  const rows = []              // แถว Master MC ที่ใช้ได้ (หลัง forward-fill)
+  const groupSpan = {}         // Group → { Factory → Set("CAT|เกจ") } ใช้หา cross-pool group
   if (main && main.columns) {
     const up = main.columns.map(c => String(c).trim().toUpperCase())
     const catCi = up.indexOf('MC_CAT')
@@ -64,6 +55,7 @@ function buildLockOpts(main, weekMap) {
     const mcCi = up.indexOf('MC')
     const facCi = up.indexOf('FACTORY')
     const totCi = up.indexOf('TOTAL MC')
+    const grpCi = up.indexOf('GROUP')
     let lastCat = '', lastMc = '', lastFac = ''
     for (const r of main.rows) {
       let cat = String(r[catCi] ?? '').trim(); if (cat) lastCat = cat; else cat = lastCat
@@ -80,7 +72,8 @@ function buildLockOpts(main, weekMap) {
       if (fac) { facByCat[cat].add(fac); factories.add(fac) }
       // ยอดเครื่องเดิม: รวมทั้ง CAT+เกจ และแยกรายโรงงาน (ตรงกับที่ AVA_MC ใช้ตัดสิน)
       const tot = totCi >= 0 ? Number(String(r[totCi] ?? '').trim()) : NaN
-      if (g && !isNaN(tot) && String(r[totCi] ?? '').trim() !== '') {
+      const hasTot = !isNaN(tot) && String(r[totCi] ?? '').trim() !== ''
+      if (g && hasTot) {
         const k = `${cat.toUpperCase()}|${g}`
         const slot = totalByCatGauge[k] || (totalByCatGauge[k] = { all: 0, byFac: {} })
         slot.all += tot
@@ -89,38 +82,106 @@ function buildLockOpts(main, weekMap) {
           slot.byFac[fk] = (slot.byFac[fk] || 0) + tot
         }
       }
+      if (g && mc) {
+        const cg = `${cat.toUpperCase()}|${g}`
+        ;(mcByCatGauge[cg] || (mcByCatGauge[cg] = new Set())).add(mc)
+        const grp = grpCi >= 0 ? String(r[grpCi] ?? '').trim() : ''
+        rows.push({ cat, g, mc, fac, grp, tot: hasTot ? tot : 0 })
+        if (grp) {
+          const byFac = groupSpan[grp] || (groupSpan[grp] = {})
+          ;(byFac[fac] || (byFac[fac] = new Set())).add(cg)
+        }
+      }
+    }
+  }
+  // Group ที่คร่อมหลาย (cat, เกจ) ในโรงงานเดียว = cross-pool → ใช้ Group เป็นพูล
+  const crossGroups = new Set(
+    Object.entries(groupSpan)
+      .filter(([, byFac]) => Object.values(byFac).some(s => s.size > 1))
+      .map(([grp]) => grp))
+  // ป้ายพูล — ต้องสะกดตรงกับ MC_POOL ที่ AVA_MC เขียนลงชีท SUMMARY_MC_REMAIN
+  const poolKeyOf = ({ cat, g, fac, grp }) => {
+    const pfx = fac ? `${fac}|` : ''
+    if (grp && (cat.toUpperCase() === 'SINGLE-32' || crossGroups.has(grp))) return `${pfx}${grp}`
+    return `${pfx}${cat.toUpperCase()}:${g}`
+  }
+  const poolAcc = {}      // poolKey → { label, total, reserved, mcs:Set }
+  const poolOfMc = {}     // "CAT|เกจ|MC" → poolKey
+  for (const r of rows) {
+    const pk = poolKeyOf(r)
+    const p = poolAcc[pk] || (poolAcc[pk] = {
+      label: r.grp || `${r.cat} Guage ${r.g}`, total: 0, reserved: 0, mcs: new Set(),
+    })
+    p.mcs.add(r.mc)
+    p.total += r.tot
+    poolOfMc[`${r.cat.toUpperCase()}|${r.g}|${r.mc.toUpperCase()}`] = pk
+  }
+  // MC Special: เครื่องที่กันไว้ให้ POLY/COTTON = ส่วนหนึ่งของกองเดียวกัน → จดไว้ที่ reserved
+  // ไม่หักออกจาก total (ยอดที่กรอกใน MC_Total คือทั้งกอง — ถ้าหักที่นี่ เลข "เดิม" จะต่ำกว่าจริง)
+  // (AVA_MC ใช้ Group ของ "MC ตัวแรก" ที่ระบุ — ลอกกติกาเดียวกันเพื่อให้จับพูลตรงกัน)
+  if (special && special.columns) {
+    const su = special.columns.map(c => String(c).trim().toUpperCase())
+    const idx = n => su.indexOf(n)
+    const sCat = idx('MC_CAT'), sMc = idx('MC'), sG = idx('GUAGE') >= 0 ? idx('GUAGE') : idx('GAUGE')
+    const sFac = idx('FACTORY'), sPoly = idx('POLY'), sCot = idx('COTTON')
+    const grpOfMc = {}
+    for (const r of rows) if (r.grp) grpOfMc[`${r.mc.toUpperCase()}|${r.g}`] = r.grp
+    for (const r of special.rows || []) {
+      const cat = sCat >= 0 ? String(r[sCat] ?? '').trim() : ''
+      const g = sG >= 0 ? normGauge(r[sG]) : ''
+      const fac = sFac >= 0 ? String(r[sFac] ?? '').trim() : ''
+      if (!cat || !g) continue
+      const num = ci => { const v = Number(String(r[ci] ?? '').trim()); return isNaN(v) ? 0 : v }
+      const keep = (sPoly >= 0 ? num(sPoly) : 0) + (sCot >= 0 ? num(sCot) : 0)
+      if (keep <= 0) continue
+      const mc0 = (sMc >= 0 ? String(r[sMc] ?? '').trim().split(',')[0].trim() : '').toUpperCase()
+      const grp = mc0 ? grpOfMc[`${mc0}|${g}`] || '' : ''
+      const pfx = fac ? `${fac}|` : ''
+      const pk = grp ? `${pfx}${grp}` : `${pfx}${cat.toUpperCase()}:${g}`
+      const p = poolAcc[pk]
+      if (!p) continue
+      p.reserved += keep
     }
   }
   const gOut = {}, mOut = {}, fOut = {}
   for (const c of cats) {
     gOut[c] = sortSet(gaugeByCat[c]); mOut[c] = sortSet(mcByCat[c]); fOut[c] = sortSet(facByCat[c])
   }
+  const mcgOut = {}
+  for (const k of Object.keys(mcByCatGauge)) mcgOut[k] = sortSet(mcByCatGauge[k])
+  const poolByMc = {}
+  for (const [k, pk] of Object.entries(poolOfMc)) {
+    const p = poolAcc[pk]
+    poolByMc[k] = {
+      pool: pk, group: p.label, total: p.total, reserved: p.reserved, mcs: sortSet(p.mcs),
+    }
+  }
   return {
     cats: cats.sort(numCmp),
     gaugeByCat: gOut,
     mcByCat: mOut,
+    mcByCatGauge: mcgOut,
+    poolByMc,
     facByCat: fOut,
     factories: sortSet(factories),
     totalByCatGauge,
     weeks: Object.keys(weekMap || {}).sort(numCmp),
+    calWeeks: (calWeeks || []).map(([y, w]) => [Number(y), Number(w)]),
+    years: [...new Set((calWeeks || []).map(([y]) => String(y)))].sort(numCmp),
   }
 }
 
 const insertAt = (arr, i, v) => { const n = arr.slice(); n.splice(i, 0, v); return n }
 const removeAt = (arr, i) => arr.filter((_, j) => j !== i)
 
-// เลื่อน key ของตัวกรอง (ที่คีย์ด้วย index คอลัมน์) เมื่อมีการแทรก/ลบคอลัมน์
-function shiftFilters(filters, at, delta) {
-  const out = {}
-  for (const k of Object.keys(filters)) {
-    const ci = Number(k)
-    if (delta < 0 && ci === at) continue          // คอลัมน์ที่ถูกลบ
-    out[ci >= at ? ci + delta : ci] = filters[k]
-  }
-  return out
-}
-
-export default function Masters() {
+// mode = 'view' (ค่าเริ่มต้น) : ดูอย่างเดียว — แท็บ "Master Data" ใช้โหมดนี้
+//        'edit'               : แก้ได้จริง — ใช้เฉพาะในหน้า "ตั้งค่าระบบ › ข้อมูลหลัก" (admin เท่านั้น)
+// โหมดดูยังรับข่าว live เหมือนเดิม → มีคนแก้จากหน้าตั้งค่าระบบ จอนี้เห็นของใหม่ทันทีโดยไม่ต้องกดอะไร
+// canEdit / onGoEdit : ถ้าคนที่เปิดอยู่เป็น admin ให้มีปุ่มพาไปหน้าที่แก้ได้
+// only = {file, sheet, ...} → โหมด "ชีทเดียว": ไม่มีเมนูซ้าย เปิดชีทนั้นให้เลย
+// ใช้ตอนฝังตารางไว้ท้ายกลุ่มในหน้าตั้งค่าระบบ (ตารางที่ผูกกับกติกาข้อนั้น ๆ)
+export default function Masters({ mode = 'view', canEdit = false, onGoEdit, only }) {
+  const ro = mode !== 'edit'
   const [files, setFiles] = useState([])
   const [fq, setFq] = useState('')            // ค้นหาไฟล์/ชีทใน sidebar
   const [collapsed, setCollapsed] = useState({})
@@ -130,36 +191,113 @@ export default function Masters() {
   const [orig, setOrig] = useState(new Map()) // `${rid}:${cid}` -> ค่าตอนโหลด
   const [origRids, setOrigRids] = useState(new Set())
   const [hist, setHist] = useState([])        // stack สำหรับ undo
-  const [widths, setWidths] = useState([])
-  const [sort, setSort] = useState(null)      // { ci, dir } — เรียงเพื่อดูเท่านั้น ไม่เปลี่ยนลำดับในไฟล์
   const [loading, setLoading] = useState(false)
-  const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
   const [dirty, setDirty] = useState(false)
-  const [search, setSearch] = useState('')
-  const [filters, setFilters] = useState({})  // { colIndex: Set(ค่าที่เลือก) }
-  const [openCol, setOpenCol] = useState(null)   // popup ตัวกรอง
-  const [menuCol, setMenuCol] = useState(null)   // popup เมนู ⋮ ของคอลัมน์
-  const [renameCi, setRenameCi] = useState(null) // คอลัมน์ที่กำลังเปลี่ยนชื่อ
   const [dlg, setDlg] = useState(null)           // dialog เพิ่มคอลัมน์: { name, at }
-  const [view, setView] = useState('cal')        // ชีทแบบปฏิทิน: 'cal' = ปฏิทิน, 'table' = ตารางดิบ
+  const [importing, setImporting] = useState(false) // แผงนำเข้าทับทั้งชีท (ไฟล์ / วางจาก Excel)
+  // ปีที่หน้าปฏิทินกำลังดู — เก็บไว้ที่นี่เพราะโหลดชีทซ้ำ (มีคนบันทึก / เพิ่มปี) หน้าปฏิทินถูกสร้างใหม่
+  // null = ปีปัจจุบัน ; เปิดชีทใหม่จากเมนูทุกครั้งกลับเป็น null (user: เข้าหน้าปฏิทินต้องเริ่มที่ปีปัจจุบัน)
+  const [calYear, setCalYear] = useState(null)
+  // มุมมองของชีท: 'auto' = ค่าเริ่มต้นของชีทนั้น · 'cal' = มุมมองเฉพาะ (ปฏิทิน/การ์ด) · 'table' = ตาราง
+  // ชีทที่เคยเปิดมาเป็น "การ์ด" (Lock_MC, MC_Total, config, MC S9) ตอนนี้เปิดมาเป็นตารางก่อน
+  // แต่ยังกดปุ่มสลับกลับไปการ์ดได้ — การ์ดมีช่องช่วยเลือกค่าที่ตารางเปล่าไม่มี
+  const [view, setView] = useState('auto')
   const nextId = useRef({ r: 0, c: 0 })
+  const revRef = useRef(null)                 // เลขรุ่นของชีทนี้ที่จอนี้ถืออยู่
+  const selRef = useRef(null); selRef.current = sel
+  const idsRef = useRef(null); idsRef.current = ids
+  // ตัวเซฟอ่านตารางล่าสุดจาก ref ไม่ใช่จาก payload ที่คำนวณตอนกด — คำสั่งแก้บางตัว
+  // (เช่น LockMcEditor ตั้งกลุ่มเครื่องแล้วตั้งเกจต่อทันที) เรียก setCell สองครั้งในจังหวะ
+  // เดียว ถ้าแต่ละครั้งคำนวณตารางใหม่จากค่าที่อ่านมาตอนเริ่ม ครั้งหลังจะทับครั้งแรก
+  const gridRef = useRef(null); gridRef.current = grid
+  const [savedAt, setSavedAt] = useState(null)
+  const [conflict, setConflict] = useState(null)   // มีคนแก้แซง → ให้เลือกว่าจะทำยังไง
+  const [liveNote, setLiveNote] = useState(null)   // (โหมดดู) เพิ่งมีคนแก้ชีทนี้ → เราโหลดใหม่ให้แล้ว
+
+  // เซฟให้เองทุกครั้งที่ขยับ — ไม่มีปุ่มบันทึกแล้ว (ดู autosave.js)
+  const autosave = useAutoSave(async () => {
+    const s = selRef.current
+    const g = gridRef.current
+    if (!s || !g) return
+    try {
+      const r = await api.saveSheet(s.name, s.sheet, g.columns, g.rows, revRef.current)
+      revRef.current = r.rev
+      setSavedAt(Date.now())
+      setConflict(null)
+      // ยึดข้อมูลที่เพิ่งเซฟเป็นค่าตั้งต้นใหม่ → ไฮไลต์เซลล์ที่แก้หายไป
+      const m = new Map()
+      const idn = idsRef.current
+      g.rows.forEach((r2, i) => g.columns.forEach((_, j) => m.set(`${idn.rid[i]}:${idn.cid[j]}`, norm(r2[j]))))
+      setOrig(m); setOrigRids(new Set(idn.rid))
+      setDirty(false)
+    } catch (e) {
+      // 409 = คนอื่นเซฟแซงไปแล้ว ห้ามเขียนทับ — ให้ผู้ใช้เลือกเองว่าจะเอาของใคร
+      if (e.conflict) { setConflict(e); return }
+      throw e
+    }
+  })
 
   useEffect(() => { api.masters().then(setFiles).catch(e => setMsg('โหลดรายการไม่ได้: ' + e.message)) }, [])
 
-  // เตือนก่อนปิด/รีเฟรชหน้า ถ้ายังมีของที่ไม่ได้บันทึก
+  // โหมดชีทเดียว — เปิดให้เลย ไม่ต้องให้ผู้ใช้เลือกจากเมนู
   useEffect(() => {
-    if (!dirty) return
-    const h = e => { e.preventDefault(); e.returnValue = '' }
-    window.addEventListener('beforeunload', h)
-    return () => window.removeEventListener('beforeunload', h)
-  }, [dirty])
+    if (only?.file && only?.sheet) openSheet(only.file, only.sheet)
+  }, [only?.file, only?.sheet])
+
+  // ผู้ใช้แก้อะไรก็ตามในตาราง → เข้าคิวเซฟ (ดักที่นี่จุดเดียว ไม่ต้องไล่ผูกทุกคำสั่งแก้
+  // ซึ่งพลาดง่ายและต้องคำนวณตารางใหม่เองทุกจุด)
+  useEffect(() => {
+    if (!grid || !dirty || ro) return     // โหมดดูอย่างเดียว: ไม่มีทางเขียนกลับไฟล์
+    autosave.saveSoon(true)
+  }, [grid, dirty, ro])
+
+  // มีคนอื่นเซฟชีทที่เรากำลังเปิดอยู่ → เอาของใหม่มาแสดงทันที
+  //   • เราไม่ได้ค้างพิมพ์อะไร → สลับให้เงียบ ๆ (ตัวเลขบนจอจะตรงกับคนอื่นเสมอ)
+  //   • เราพิมพ์ค้างอยู่        → ห้ามทับสิ่งที่ยังไม่ได้เซฟ ขึ้นแถบให้กดเอง
+  useEffect(() => {
+    if (!sel || sel.view) return
+    const res = live.RES.master(sel.name, sel.sheet)
+    return live.subscribe(res, (ent) => {
+      if (ent && ent.rev === revRef.current) return       // ข่าวการเซฟของเราเอง
+      // โหมดดูอย่างเดียว: ไม่มีของค้าง → เอาของใหม่มาแสดงเลย แล้วบอกว่าใครเพิ่งแก้
+      // (คนแก้อยู่ที่หน้า "ตั้งค่าระบบ › ข้อมูลหลัก" — จอที่เปิดดูอยู่ต้องไม่ค้างของเก่า)
+      if (ro) {
+        setLiveNote({ by: ent?.by || 'อีกคนหนึ่ง', at: Date.now() })
+        openSheet(sel.name, sel.sheet, true)
+        return
+      }
+      if (autosave.dirty || autosave.status === 'saving') {
+        setConflict({ message: `${ent?.by || 'อีกคนหนึ่ง'} เพิ่งแก้ชีทนี้`, current: ent, soft: true })
+        return
+      }
+      openSheet(sel.name, sel.sheet, true)
+    })
+  }, [sel, autosave.dirty, autosave.status, ro])
+
+  // Export ชีทที่เปิดอยู่ — เซฟของที่ค้างคิวลงไฟล์ก่อน ไม่งั้นไฟล์ที่ได้ไม่มีค่าที่เพิ่งพิมพ์
+  const [exporting, setExporting] = useState(false)
+  async function doExport() {
+    if (!sel) return
+    setExporting(true); setMsg('')
+    try {
+      await autosave.flush()
+      await api.masterExport(sel.name, sel.sheet)
+    } catch (e) { setMsg('Export ไม่สำเร็จ: ' + e.message) }
+    finally { setExporting(false) }
+  }
 
   async function openSheet(name, sheet, force = false) {
-    if (!force && dirty && !confirm('มีการแก้ที่ยังไม่บันทึก จะทิ้งและเปิดชีทใหม่ไหม?')) return
+    // ไม่ต้องถามว่าจะทิ้งของที่ยังไม่บันทึกไหมแล้ว — ระบบเซฟให้เองตลอด
+    // แต่ต้อง "รอ" ให้ของที่ค้างคิวลงไฟล์ก่อน ไม่ใช่แค่สั่งแล้วไปต่อ — ไม่งั้นการเซฟที่ค้าง
+    // จะไปเกิดตอนที่หน้าเปลี่ยนไปชีทใหม่แล้ว = เอาข้อมูลชีทเก่าไปทับชีทใหม่
+    await autosave.flush()
     setLoading(true); setMsg(''); setGrid(null); setSel({ name, sheet })
-    setSearch(''); setFilters({}); setOpenCol(null); setMenuCol(null); setSort(null); setRenameCi(null)
-    setView('cal')
+    setView('auto')
+    if (!force) {                        // เปลี่ยนชีท → ปิดแผงนำเข้า (โหลดชีทเดิมซ้ำไม่ต้องปิด)
+      setImporting(false)
+      setCalYear(null)                   // เข้าหน้าปฏิทินใหม่ = ปีปัจจุบัน ; โหลดซ้ำคงปีที่ดูอยู่
+    }
     try {
       const d = await api.sheet(name, sheet)
       const rid = d.rows.map((_, i) => i)
@@ -171,16 +309,28 @@ export default function Masters() {
       setIds({ rid, cid })
       setOrig(m); setOrigRids(new Set(rid))
       setHist([])
-      setWidths(d.columns.map((_, ci) => guessWidth(d.columns, d.rows, ci)))
       setDirty(false)
+      revRef.current = d.rev ?? null       // เลขรุ่น ณ ตอนอ่าน — ใช้กันเขียนทับตอนเซฟ
+      setConflict(null)
     } catch (e) { setMsg('อ่านชีทไม่ได้: ' + e.message) }
     finally { setLoading(false) }
+  }
+
+  // หน้าปฏิทิน › เพิ่มปี: เซฟของที่ค้างก่อน (ไม่งั้นการเซฟที่ตามมาจะชนเลขรุ่นใหม่) → เติมปีบน server
+  // → โหลดชีทใหม่แล้วเปิดปีที่เพิ่งเพิ่ม
+  async function extendCalendarYear(y) {
+    await autosave.flush()
+    await api.extendCalendar(y)
+    setCalYear(y)
+    await openSheet(sel.name, sel.sheet, true)
   }
 
   const pushHist = p => setHist(h => [...h, p].slice(-200))
 
   // ---- แก้ข้อมูล ----
+  // ด่านสุดท้าย: โหมดดูอย่างเดียวไม่มีทางเปลี่ยนข้อมูลได้เลย แม้ตัวแก้ตัวไหนหลุดมาเรียก
   function setCell(ri, ci, val) {
+    if (ro) return
     // รวมการพิมพ์ต่อเนื่องในเซลล์เดียวเป็น undo ก้อนเดียว
     setHist(h => {
       const last = h[h.length - 1]
@@ -196,64 +346,53 @@ export default function Masters() {
     setDirty(true)
   }
 
+  // แถวใหม่ต่อท้ายชีทเสมอ — ตาราง (DataTable) เป็นคนยกขึ้นไปโชว์บนสุดและโฟกัสให้เอง
   function addRow() {
-    setSearch(''); setFilters({}); setSort(null)
+    if (ro) return
     pushHist({ t: 'addRow' })
     setGrid(g => ({ ...g, rows: [...g.rows, g.columns.map(() => '')] }))
     setIds(s => ({ ...s, rid: [...s.rid, nextId.current.r++] }))
     setDirty(true)
-    setTimeout(() => {
-      const els = document.querySelectorAll('.masters input[data-cell]')
-      const first = Array.from(els).filter(e => e.dataset.cell.endsWith('-0')).pop()
-      if (first) { first.scrollIntoView({ block: 'nearest' }); first.focus() }
-    }, 0)
   }
 
   function delRow(ri) {
+    if (ro) return
     pushHist({ t: 'delRow', ri, row: grid.rows[ri], rid: ids.rid[ri] })
     setGrid(g => ({ ...g, rows: removeAt(g.rows, ri) }))
     setIds(s => ({ ...s, rid: removeAt(s.rid, ri) }))
     setDirty(true)
   }
 
-  function commitRename(ci, val) {
-    setRenameCi(null)
-    const v = String(val ?? '').trim()
-    if (!v || v === grid.columns[ci]) return
-    pushHist({ t: 'renameCol', ci, prev: grid.columns[ci] })
-    setGrid(g => { const columns = g.columns.slice(); columns[ci] = v; return { ...g, columns } })
+  // แทนทั้งชีท (คอลัมน์ + แถว) — ใช้กับมุมมองที่ต้องจัดรูปชีทใหม่ทั้งก้อน (JobDoneEditor)
+  // tag เดียวกันติดกัน = พิมพ์ต่อเนื่องในช่องเดิม → undo ก้อนเดียว (เหมือน setCell)
+  function replaceGrid(columns, rows, tag) {
+    if (ro) return
+    setHist(h => {
+      const last = h[h.length - 1]
+      if (tag && last && last.t === 'grid' && last.tag === tag) return h
+      return [...h, { t: 'grid', tag, grid: gridRef.current, ids: idsRef.current }].slice(-200)
+    })
+    setGrid(g => ({ ...g, columns, rows }))
+    setIds({ rid: rows.map(() => nextId.current.r++), cid: columns.map(() => nextId.current.c++) })
     setDirty(true)
   }
 
   function addColAt(name, at) {
+    if (ro) return
     const ci = at == null ? grid.columns.length : at
     pushHist({ t: 'addCol', ci })
-    setGrid(g => ({ ...g, columns: insertAt(g.columns, ci, name), rows: g.rows.map(r => insertAt(r, ci, '')) }))
+    setGrid(g => ({ ...g, columns: insertAt(g.columns, ci, name),
+                    rows: g.rows.map(r => insertAt(r, ci, '')) }))
     setIds(s => ({ ...s, cid: insertAt(s.cid, ci, nextId.current.c++) }))
-    setWidths(w => insertAt(w, ci, 130))
-    setFilters(f => shiftFilters(f, ci, +1))
-    setSort(s => (s && s.ci >= ci ? { ...s, ci: s.ci + 1 } : s))
-    setOpenCol(null); setDlg(null)
-    setDirty(true)
-  }
-
-  function delCol(ci) {
-    if (!confirm(`ลบคอลัมน์ "${grid.columns[ci]}" และข้อมูลในคอลัมน์นี้ทั้งหมด?\n(กด "ย้อนกลับ" หรือ Ctrl+Z เพื่อเรียกคืนได้)`)) return
-    pushHist({
-      t: 'delCol', ci, name: grid.columns[ci], cid: ids.cid[ci],
-      vals: grid.rows.map(r => r[ci]), w: widths[ci],
-    })
-    setGrid(g => ({ ...g, columns: removeAt(g.columns, ci), rows: g.rows.map(r => removeAt(r, ci)) }))
-    setIds(s => ({ ...s, cid: removeAt(s.cid, ci) }))
-    setWidths(w => removeAt(w, ci))
-    setFilters(f => shiftFilters(f, ci, -1))
-    setSort(s => (!s ? s : s.ci === ci ? null : s.ci > ci ? { ...s, ci: s.ci - 1 } : s))
-    setOpenCol(null); setMenuCol(null)
+    setDlg(null)
     setDirty(true)
   }
 
   // ---- undo ----
+  // ย้อนกลับ — เซฟทันทีเช่นกัน เพราะการแก้ที่จะถอยนั้นถูกเซฟลงไฟล์ไปแล้ว
+  // (ไม่ใช่แค่ค้างอยู่บนจอเหมือนตอนที่ยังมีปุ่มบันทึก) ถ้าไม่เซฟ ของบนจอกับในไฟล์จะคนละเรื่อง
   function undo() {
+    if (ro) return
     const p = hist[hist.length - 1]
     if (!p) return
     setHist(h => h.slice(0, -1))
@@ -270,136 +409,36 @@ export default function Masters() {
     } else if (p.t === 'delRow') {
       setGrid(g => ({ ...g, rows: insertAt(g.rows, p.ri, p.row) }))
       setIds(s => ({ ...s, rid: insertAt(s.rid, p.ri, p.rid) }))
-    } else if (p.t === 'renameCol') {
-      setGrid(g => { const columns = g.columns.slice(); columns[p.ci] = p.prev; return { ...g, columns } })
     } else if (p.t === 'addCol') {
-      setGrid(g => ({ ...g, columns: removeAt(g.columns, p.ci), rows: g.rows.map(r => removeAt(r, p.ci)) }))
+      setGrid(g => ({ ...g, columns: removeAt(g.columns, p.ci),
+                      rows: g.rows.map(r => removeAt(r, p.ci)) }))
       setIds(s => ({ ...s, cid: removeAt(s.cid, p.ci) }))
-      setWidths(w => removeAt(w, p.ci))
-      setFilters(f => shiftFilters(f, p.ci, -1))
-      setSort(s => (!s ? s : s.ci === p.ci ? null : s.ci > p.ci ? { ...s, ci: s.ci - 1 } : s))
-    } else if (p.t === 'delCol') {
-      setGrid(g => ({
-        ...g,
-        columns: insertAt(g.columns, p.ci, p.name),
-        rows: g.rows.map((r, i) => insertAt(r, p.ci, p.vals[i])),
-      }))
-      setIds(s => ({ ...s, cid: insertAt(s.cid, p.ci, p.cid) }))
-      setWidths(w => insertAt(w, p.ci, p.w))
-      setFilters(f => shiftFilters(f, p.ci, +1))
-      setSort(s => (s && s.ci >= p.ci ? { ...s, ci: s.ci + 1 } : s))
+    } else if (p.t === 'grid') {
+      setGrid(p.grid)
+      setIds(p.ids)
     }
     setDirty(true)
   }
 
-  async function save() {
-    if (!grid || !sel) return
-    setSaving(true); setMsg('')
-    try {
-      const r = await api.saveSheet(sel.name, sel.sheet, grid.columns, grid.rows)
-      setMsg(`บันทึกแล้ว (${r.rows} แถว) — สำรองไฟล์เดิมเป็น ${r.backup}`)
-      // ยึดข้อมูลปัจจุบันเป็นค่าตั้งต้นใหม่ → ไฮไลต์เซลล์ที่แก้หายไป
-      const m = new Map()
-      grid.rows.forEach((r2, i) => grid.columns.forEach((_, j) => m.set(`${ids.rid[i]}:${ids.cid[j]}`, norm(r2[j]))))
-      setOrig(m); setOrigRids(new Set(ids.rid)); setHist([])
-      setDirty(false)
-    } catch (e) { setMsg('บันทึกไม่ได้: ' + e.message) }
-    finally { setSaving(false) }
-  }
-
+  // โหลดของจริงจากไฟล์มาแสดงใหม่ (ของที่แก้ไปแล้วถูกเซฟไปแล้ว — ปุ่มนี้ไม่ได้ทิ้งอะไร
+  // นอกจากการพิมพ์ที่ยังค้างอยู่ในช่อง) ใช้ตอนอยากเห็นของที่คนอื่นเพิ่งแก้
   function revert() {
-    if (!confirm('ทิ้งการแก้ทั้งหมดแล้วโหลดชีทใหม่จากไฟล์?')) return
     openSheet(sel.name, sel.sheet, true)
   }
 
   // ---- คีย์ลัด: Ctrl+Z ย้อนกลับ, Ctrl+S บันทึก ----
   useEffect(() => {
     function onKey(e) {
+      if (ro) return                       // โหมดดูอย่างเดียว: ไม่มีอะไรให้ย้อน/บันทึก
       if (!(e.ctrlKey || e.metaKey)) return
       const k = e.key.toLowerCase()
       if (k === 'z') { e.preventDefault(); undo() }
-      else if (k === 's') { e.preventDefault(); if (dirty && !saving) save() }
+      // Ctrl+S ไม่จำเป็นแล้ว (ระบบเซฟให้เอง) แต่คนคุ้นมือจะกด — ให้แปลว่า "เซฟของที่ค้างเดี๋ยวนี้"
+      else if (k === 's') { e.preventDefault(); autosave.flush() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [hist, grid, ids, dirty, saving, sel])
-
-  // ---- เดินเซลล์ด้วยคีย์บอร์ดแบบ Excel ----
-  function onCellKey(e, vi, ci) {
-    const el = e.currentTarget
-    const move = (dv, dc) => {
-      const t = document.querySelector(`.masters input[data-cell="${vi + dv}-${ci + dc}"]`)
-      if (!t) return
-      e.preventDefault()
-      t.focus(); t.select()
-      t.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-    }
-    const caretEnd = el.selectionStart === el.value.length && el.selectionStart === el.selectionEnd
-    const caretStart = el.selectionStart === 0 && el.selectionEnd === 0
-    if (e.key === 'Enter') move(e.shiftKey ? -1 : 1, 0)
-    else if (e.key === 'ArrowDown') move(1, 0)
-    else if (e.key === 'ArrowUp') move(-1, 0)
-    else if (e.key === 'ArrowRight' && caretEnd) move(0, 1)
-    else if (e.key === 'ArrowLeft' && caretStart) move(0, -1)
-    else if (e.key === 'Escape') el.blur()
-  }
-
-  // ---- ลากขอบปรับความกว้างคอลัมน์ ----
-  function startResize(e, ci) {
-    e.preventDefault(); e.stopPropagation()
-    const x0 = e.clientX, w0 = widths[ci]
-    const move = ev => {
-      const w = Math.max(MIN_COL_W, Math.round(w0 + (ev.clientX - x0)))
-      setWidths(ws => { const n = ws.slice(); n[ci] = w; return n })
-    }
-    const up = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-      document.body.classList.remove('col-resizing')
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-    document.body.classList.add('col-resizing')
-  }
-  function autoFit(ci) {
-    setWidths(w => { const n = w.slice(); n[ci] = guessWidth(grid.columns, grid.rows, ci); return n })
-  }
-
-  function toggleSort(ci) {
-    setSort(s => (!s || s.ci !== ci) ? { ci, dir: 'asc' } : s.dir === 'asc' ? { ci, dir: 'desc' } : null)
-  }
-
-  // หัวคอลัมน์: คลิกเดี่ยว = เรียง, ดับเบิลคลิก = เปลี่ยนชื่อ — หน่วง 200ms กันคลิกเดี่ยวยิงตอนดับเบิลคลิก
-  const clickTimer = useRef(null)
-  function headClick(ci) {
-    if (clickTimer.current) return
-    clickTimer.current = setTimeout(() => { clickTimer.current = null; toggleSort(ci) }, 200)
-  }
-  function headDouble(ci) {
-    clearTimeout(clickTimer.current)
-    clickTimer.current = null
-    setRenameCi(ci)
-  }
-
-  // ค่าที่เลือกได้ของคอลัมน์ที่เปิด popup (cascading แบบ Excel) + โดเมนเต็มของคอลัมน์
-  const colData = useMemo(() => {
-    if (!grid || !openCol) return null
-    return columnFilterData(grid, filters, search, openCol.ci)
-  }, [grid, filters, search, openCol])
-
-  // แถวที่ผ่าน filter (+เรียงตามคอลัมน์ที่เลือก) — เก็บ index จริงไว้อ้างอิงตอนแก้/ลบ
-  const visible = useMemo(() => {
-    if (!grid) return []
-    const v = filterRows(grid, search, filters)
-    if (sort) {
-      const s = sort.dir === 'asc' ? 1 : -1
-      v.sort((a, b) => s * cmpVal(a.row[sort.ci], b.row[sort.ci]))
-    }
-    return v
-  }, [grid, search, filters, sort])
-
-  const fchips = Object.keys(filters).map(Number)
-  const hasFilter = search.trim() || fchips.length || sort
+  }, [hist, grid, ids, dirty, sel, ro])
 
   // ชีทที่เป็น "ปฏิทินรายวัน" (มีคอลัมน์ DATE + status) → เปิดมุมมองปฏิทินได้
   const calInfo = useMemo(() => {
@@ -411,7 +450,7 @@ export default function Masters() {
     const weekCi = up.indexOf('W') >= 0 ? up.indexOf('W') : up.indexOf('WEEK')
     return { dateCi, statusCi, weekCi }
   }, [grid])
-  const calView = !!calInfo && view === 'cal'
+  const calView = !!calInfo && view !== 'table'
 
   // ชีท Lock_MC (มีคอลัมน์ MC_CAT + MC Lock) → เปิดมุมมองการ์ด "กันเครื่อง" ได้
   const lockInfo = useMemo(() => {
@@ -421,9 +460,14 @@ export default function Masters() {
     const catCi = find('MC_CAT', 'MC CAT')
     const lockCi = find('MC LOCK', 'LOCK')
     if (catCi < 0 || lockCi < 0) return null
-    return { weekCi: find('WEEK', 'W'), catCi, gaugeCi: find('GUAGE', 'GAUGE'), mcCi: find('MC'), lockCi, itemCi: find('ITEM', 'ITEM_CODE') }
+    return {
+      weekCi: find('WEEK', 'W'), catCi, gaugeCi: find('GUAGE', 'GAUGE'), mcCi: find('MC'), lockCi,
+      itemCi: find('ITEM', 'ITEM_CODE'), weekToCi: find('WEEK TO', 'ถึงสัปดาห์'),
+      yearCi: find('YEAR', 'ปี'), yearToCi: find('YEAR TO', 'ถึงปี'),
+    }
   }, [grid])
-  const lockView = !!lockInfo && view === 'cal'
+  // เปิดมาเป็นการ์ดก่อน (user 16 ก.ย. 2569) — กดปุ่ม "🧾 ตาราง" สลับได้เหมือนเดิม
+  const lockView = !!lockInfo && view !== 'table'
 
   // ชีท MC_Total (WEEK + MC_CAT + TOTAL MC แต่ไม่มี SUBGROUP = ไม่ใช่ Master MC หลัก)
   // → การ์ด "จำนวนเครื่องรายสัปดาห์" ที่ใช้แทน Total MC เฉพาะสัปดาห์ที่ระบุ
@@ -438,14 +482,17 @@ export default function Masters() {
     if (find('SUBGROUP', 'SUB GROUP') >= 0 || find('MC LOCK', 'LOCK') >= 0) return null
     return {
       weekCi, catCi, totalCi,
-      facCi: find('FACTORY'), gaugeCi: find('GUAGE', 'GAUGE'), remarkCi: find('REMARK'),
+      facCi: find('FACTORY'), gaugeCi: find('GUAGE', 'GAUGE'), mcCi: find('MC'),
+      remarkCi: find('REMARK'),
       weekToCi: find('WEEK TO', 'ถึงสัปดาห์'),
+      yearCi: find('YEAR', 'ปี'), yearToCi: find('YEAR TO', 'ถึงปี'),
     }
   }, [grid])
-  const mcTotalView = !!mcTotalInfo && view === 'cal'
+  // เปิดมาเป็นการ์ดก่อน (user 16 ก.ย. 2569)
+  const mcTotalView = !!mcTotalInfo && view !== 'table'
 
   // ชีทกลุ่ม S9 (จ้างทอ) ในไฟล์ MasterMC — ตรวจจากหัวคอลัมน์:
-  //   MC S9   : MC_CAT + (MC Group/Cap-Day) ไม่มี ITEM_CODE → การ์ด pool เครื่อง
+  //   MC S9   : Supp (รุ่นใหม่) หรือ MC_CAT + (MC Group/Cap-Day) ไม่มี ITEM_CODE → การ์ด pool เครื่อง
   //   Item S9 : ITEM_CODE + MACHINE_GROUP            → ค้นหา item จ้างทอได้
   //   S9 Only : ITEM_CODE + MC_GAUGE (ไม่มี MACHINE_GROUP) → รายการ item จ้างทอเสมอ
   const s9Info = useMemo(() => {
@@ -455,17 +502,40 @@ export default function Masters() {
     const itemCi = find('ITEM_CODE', 'ITEM CODE')
     const mgCi = find('MACHINE_GROUP', 'MACHINE GROUP')
     const gaugeCi = find('MC_GAUGE', 'MC GAUGE', 'GUAGE', 'GAUGE')
+    // S9 Only มีคอลัมน์ MACHINE_GROUP ได้แล้ว (หน้าจ้างทอเติมให้ 24 ก.ย. 2569) → ชี้ขาดด้วยชื่อชีทก่อน
+    if (itemCi >= 0 && String(sel?.sheet || '').trim().toUpperCase() === 'S9 ONLY')
+      return { kind: 's9only', itemCi, mgCi, gaugeCi }
     if (itemCi >= 0 && mgCi >= 0) return { kind: 'items9', itemCi, mgCi, gaugeCi }
     if (itemCi >= 0 && gaugeCi >= 0) return { kind: 's9only', itemCi, mgCi: -1, gaugeCi }
     const catCi = find('MC_CAT', 'MC CAT')
     const mcGroupCi = find('MC GROUP', 'MC_GROUP')
     const capCi = find('CAP/DAY', 'CAP / DAY', 'CAP DAY')
+    const totalCi = find('TOTAL MC')           // 'Total MC' (เก่า) และ 'Total Mc' (ใหม่) เข้ารูปเดียวกันหลัง toUpperCase
+    const wdCi = find('WORKING DAY'), remarkCi = find('REMARK')
+    // 2 คอลัมน์ที่เลือกจาก dropdown (user 16 ก.ย. 2569) — ชนิดผ้าที่เจ้านั้นทอ + เครื่องยังใช้อยู่ไหม
+    const matCi = find('MATERIAL', 'ประเภทผ้า'), statusCi = find('STATUS', 'สถานะ')
+    // ชีทรุ่นใหม่ (16 ก.ย. 2569): Supp | Mc | New CAT | New Gauge | Total Mc | Working day | Remark
+    // — ไม่มี MC_CAT / MC Group / Cap/Day แล้ว (Planning.py `_s9_rows_init` อ่านหัวชุดนี้อยู่ก่อนแล้ว)
+    // ต้องดู SUPP เป็นตัวชี้ขาด: ถ้าเอา 'MC' ไปเป็นชื่อสำรองของ MC Group เฉย ๆ ชีทอื่นที่มี
+    // MC_CAT + MC (Master MC, MC Special, MC substitute) จะถูกจับผิดเป็น MC S9
+    const suppCi = find('SUPP', 'SUPPLIER', 'ผู้รับจ้าง')
+    if (itemCi < 0 && suppCi >= 0) {
+      return {
+        kind: 'mcs9', suppCi,
+        catCi: catCi >= 0 ? catCi : find('NEW CAT', 'NEW_CAT'),
+        mcGroupCi: mcGroupCi >= 0 ? mcGroupCi : find('MC'),
+        gaugeCi: gaugeCi >= 0 ? gaugeCi : find('NEW GAUGE', 'NEW_GAUGE'),
+        totalCi, capCi, wdCi, remarkCi, matCi, statusCi,
+      }
+    }
     if (itemCi < 0 && catCi >= 0 && (mcGroupCi >= 0 || capCi >= 0)) {
-      return { kind: 'mcs9', catCi, mcGroupCi, gaugeCi, totalCi: find('TOTAL MC'), capCi, wdCi: find('WORKING DAY'), remarkCi: find('REMARK') }
+      return { kind: 'mcs9', suppCi: -1, catCi, mcGroupCi, gaugeCi, totalCi, capCi, wdCi, remarkCi, matCi, statusCi }
     }
     return null
-  }, [grid])
-  const s9View = !!s9Info && view === 'cal'
+  }, [grid, sel])
+  // Item S9 / S9 Only ใช้ตารางของ S9Editor อย่างเดียว — ตารางดิบ 5พันกว่าแถวเปิดแล้วค้าง
+  // (MC S9 ยังสลับการ์ด ↔ ตารางได้ เพราะแถวน้อยและบางทีต้องแก้คอลัมน์)
+  const s9View = !!s9Info && (view === 'cal' || s9Info.kind !== 'mcs9')
 
   // ชีท "config เล็ก" ในไฟล์ MasterMC — ตรวจจากหัวคอลัมน์แล้วสร้าง descriptor ให้ ConfigEditor
   //   MC Special (POLY+COTTON) · Item Special (ITEM+วันทำงาน) · Spare part (TOTAL SPARE) · MC substitute (MC_CAT+GROUP ล้วน)
@@ -483,7 +553,7 @@ export default function Masters() {
       kind: 'mcspecial', headline: '🧵 กันเครื่องให้ POLY / COTTON',
       hint: 'เครื่องที่กันไว้จะถูกสงวนสำหรับงาน POLY/COTTON โดยเฉพาะ',
       addLabel: '+ เพิ่มการกันเครื่อง', itemWord: 'รายการ',
-      idFields: clean([F(factoryCi, 'Factory'), F(typeCi, 'Type'), F(catCi, 'MC_CAT'), F(mcCi, 'MC'), F(gaugeCi, 'เกจ')]),
+      idFields: clean([F(factoryCi, 'Factory'), F(typeCi, 'Type'), F(catCi, 'MC_CAT'), F(mcCi, 'MC'), F(gaugeCi, 'Guage')]),
       numFields: clean([poly >= 0 && { ci: poly, label: 'POLY (เครื่อง)', accent: 'poly' }, cotton >= 0 && { ci: cotton, label: 'COTTON (เครื่อง)', accent: 'cotton' }]),
       noteFields: clean([F(find('DESCRIPTION'), 'หมายเหตุ')]),
       summary: clean([F(poly, 'POLY'), F(cotton, 'COTTON')]),
@@ -495,7 +565,7 @@ export default function Masters() {
       hint: 'ค่านี้จะแทนที่วันทำงาน/ชั่วโมงมาตรฐานของ item ที่ระบุ',
       addLabel: '+ เพิ่ม item', itemWord: 'item',
       titleField: F(itemCi, 'Item'),
-      idFields: clean([F(mcCi, 'เครื่อง (MC)'), F(gaugeCi, 'เกจ')]),
+      idFields: clean([F(mcCi, 'เครื่อง (MC)'), F(gaugeCi, 'Guage')]),
       numFields: clean([F(wdCi, 'Working day'), F(whCi, 'Working hour')]),
       noteFields: [], summary: [],
     }
@@ -505,21 +575,25 @@ export default function Masters() {
       kind: 'spare', headline: '🧰 เครื่องสำรอง (Spare)',
       addLabel: '+ เพิ่มรายการ', itemWord: 'รายการ',
       groupCi: factoryCi, spareCi,
-      lineCis: clean([F(catCi, 'MC_CAT'), F(gaugeCi, 'เกจ')]),
+      lineCis: clean([F(catCi, 'MC_CAT'), F(gaugeCi, 'Guage')]),
       summary: clean([F(spareCi, 'สำรองรวม')]),
     }
 
     const groupCol = find('GROUP')
     if (catCi >= 0 && groupCol >= 0 && find('SUBGROUP', 'SUB GROUP') < 0 && find('TOTAL MC') < 0 && wdCi < 0) return {
       kind: 'substitute', headline: '🔁 เครื่องทดแทน (Substitute)',
-      hint: 'กำหนดว่าเครื่อง/เกจใดใช้แทนกลุ่มใดได้',
+      hint: 'กำหนดว่าเครื่อง / Guage ใดใช้แทนกลุ่มใดได้',
       addLabel: '+ เพิ่มเครื่องทดแทน', itemWord: 'รายการ',
-      idFields: clean([F(factoryCi, 'Factory'), F(typeCi, 'Type'), F(catCi, 'MC_CAT'), F(mcCi, 'เครื่อง'), F(gaugeCi, 'เกจ'), F(groupCol, 'กลุ่ม')]),
+      idFields: clean([F(factoryCi, 'Factory'), F(typeCi, 'Type'), F(catCi, 'MC_CAT'), F(mcCi, 'เครื่อง'), F(gaugeCi, 'Guage'), F(groupCol, 'กลุ่ม')]),
       numFields: [], noteFields: [], summary: [],
     }
     return null
   }, [grid])
-  const configView = !!configInfo && view === 'cal'
+  // MC Special เปิดมาเป็นการ์ดก่อน (user 16 ก.ย. 2569) — ชีท config อื่น (Item Special /
+  // Spare part / MC substitute) ยังเปิดมาเป็นตารางเหมือนเดิม เพราะแถวเยอะกว่าและแก้เป็นตารางไวกว่า
+  const CARD_FIRST_CONFIG = new Set(['mcspecial'])
+  const configView = !!configInfo
+    && (view === 'cal' || (view === 'auto' && CARD_FIRST_CONFIG.has(configInfo.kind)))
 
   // ชีท Master MC (คอลัมน์คีย์ MC_CAT + TOTAL MC + SUBGROUP) → ตารางตรึงคีย์ + คั่นกลุ่ม Factory
   const mastermcInfo = useMemo(() => {
@@ -531,12 +605,27 @@ export default function Masters() {
     const keyCis = [catCi, find('MC'), find('GUAGE', 'GAUGE')].filter(c => c >= 0)
     return { factoryCi: find('FACTORY'), keyCis, totalCi, catCi }
   }, [grid])
-  const mastermcView = !!mastermcInfo && view === 'cal'
+  const mastermcView = !!mastermcInfo && view !== 'table'
 
-  // ชีทใหญ่มาก (เช่น Master_Item) — ตารางดิบเปิดไม่ไหว → บังคับมุมมองค้นหาเสมอ
-  const bigView = !!grid && !calInfo && !lockInfo && !mcTotalInfo && !s9Info && !configInfo && !mastermcInfo && grid.rows.length > 1500
+  // ชีท "Job " (การเปลี่ยนเกจที่ทำไปแล้ว): คอลัมน์แรก Type + หัวคอลัมน์เป็นเลขสัปดาห์ 1–53
+  // (+ Year ถ้าเป็นรุ่นใหม่) → ตารางแยกปี มีวันที่กำกับทุกสัปดาห์
+  const jobInfo = useMemo(() => {
+    if (!grid) return null
+    const up = grid.columns.map(c => String(c).trim().toUpperCase())
+    if (up[0] !== 'TYPE') return null
+    const yearCi = up.findIndex(c => c === 'YEAR' || c === 'ปี')
+    const weekCols = []
+    up.forEach((c, ci) => {
+      if (ci === 0 || ci === yearCi || c === '') return
+      const w = Number(c)
+      if (Number.isInteger(w) && w >= 1 && w <= 53) weekCols.push({ ci, w })
+    })
+    if (weekCols.length < 10) return null
+    return { typeCi: 0, yearCi, weekCols }
+  }, [grid])
+  const jobView = !!jobInfo && view !== 'table'
 
-  const specialView = calView || lockView || mcTotalView || s9View || configView || mastermcView || bigView
+  const specialView = calView || lockView || mcTotalView || s9View || configView || mastermcView || jobView
 
   // โหลดรายการ MC_CAT/เกจ/เครื่อง/โรงงาน + ยอดเครื่องเดิม (ชีทหลัก MasterMC) + สัปดาห์ (ปฏิทิน)
   // มาทำ dropdown ของ Lock_MC และ MC_Total
@@ -548,17 +637,25 @@ export default function Masters() {
     const file = files.find(f => f.name === sel.name)
     const aux = new Set(['Lock_MC', 'MC_Total', 'MC Special', 'Item Special'])
     const mainSheet = file?.sheets.find(s => s !== sel.sheet && !aux.has(s)) || null
+    // ชีท MC Special ด้วย — เครื่องที่กันไว้ให้ POLY/COTTON ถูกหักออกจากพูลปกติใน AVA_MC
+    // → ต้องหักเหมือนกัน ไม่งั้นยอด "เดิม" บนการ์ดสูงกว่าที่ระบบใช้จริง
+    const specialSheet = file?.sheets.find(s => String(s).trim() === 'MC Special') || null
     Promise.all([
       // สัปดาห์ที่มีในปฏิทิน (สดจาก Calendar.xlsx บน server) — ไม่ผูกกับไฟล์แผนรอบก่อน
-      api.workday().then(d => d?.cal_days || {}).catch(() => ({})),
+      // + ลำดับ (ปี, สัปดาห์) ตามเวลาจริง สำหรับกางช่วงที่ข้ามปี
+      api.workday().then(d => [d?.cal_days || {}, d?.cal_weeks || []]).catch(() => [{}, []]),
       mainSheet ? api.sheet(sel.name, mainSheet).catch(() => null) : Promise.resolve(null),
-    ]).then(([wk, main]) => { if (!dead) setLockOpts(buildLockOpts(main, wk)) })
+      specialSheet ? api.sheet(sel.name, specialSheet).catch(() => null) : Promise.resolve(null),
+    ]).then(([[wk, cw], main, special]) => {
+      if (!dead) setLockOpts(buildLockOpts(main, wk, cw, special))
+    })
     return () => { dead = true }
   }, [isLock, sel, files])
 
   // ใส่ค่า Item ในการ์ด — ถ้าชีทยังไม่มีคอลัมน์ ITEM ให้สร้างท้ายสุดแล้วใส่ค่าในแถวนั้นทันที
   // (undo ครั้งเดียวคืนทั้งคอลัมน์ได้) → ผู้ใช้แค่พิมพ์ในการ์ด ไม่ต้องกดเพิ่มคอลัมน์เอง
   function setItemCell(ri, val) {
+    if (ro) return
     const ci = lockInfo?.itemCi
     if (ci != null && ci >= 0) { setCell(ri, ci, val); return }
     const newCi = grid.columns.length
@@ -569,48 +666,31 @@ export default function Masters() {
       rows: g.rows.map((r, i) => [...r, i === ri ? val : '']),
     }))
     setIds(s => ({ ...s, cid: [...s.cid, nextId.current.c++] }))
-    setWidths(w => [...w, 130])
     setDirty(true)
   }
 
-  // ใส่ "ถึงสัปดาห์" ในการ์ด MC_Total — ถ้าชีทยังไม่มีคอลัมน์ Week To ให้สร้างท้ายสุดแล้วใส่ค่าทันที
-  // (เหมือน setItemCell) → row/แถวเดิมที่ไม่เคยกรอกช่องนี้ไม่กระทบ เพราะค่าว่าง = สัปดาห์เดียวเหมือนเดิม
-  function setMcWeekToCell(ri, val) {
-    const ci = mcTotalInfo?.weekToCi
+  // ใส่ค่าช่องเสริมของการ์ด MC_Total / Lock_MC (Week To / Year / Year To) — ถ้าชีทยังไม่มี
+  // คอลัมน์นั้น ให้สร้างท้ายสุดแล้วใส่ค่าทันที (เหมือน setItemCell) → แถวเดิมที่ไม่เคยกรอก
+  // ไม่กระทบ เพราะค่าว่าง = พฤติกรรมเดิมทั้งฝั่ง AVA_MC และ Planning
+  function setAuxCell(ci, colName, ri, val) {
+    if (ro) return
     if (ci != null && ci >= 0) { setCell(ri, ci, val); return }
     const newCi = grid.columns.length
     pushHist({ t: 'addCol', ci: newCi })
     setGrid(g => ({
       ...g,
-      columns: [...g.columns, 'Week To'],
+      columns: [...g.columns, colName],
       rows: g.rows.map((r, i) => [...r, i === ri ? val : '']),
     }))
     setIds(s => ({ ...s, cid: [...s.cid, nextId.current.c++] }))
-    setWidths(w => [...w, 110])
     setDirty(true)
   }
-
-  function openColMenu(e, ci) {
-    e.stopPropagation()
-    const r = e.currentTarget.getBoundingClientRect()
-    setMenuCol(null)
-    setOpenCol({ ci, anchor: { top: r.top, bottom: r.bottom, left: r.left, right: r.right } })
-  }
-  function openKebab(e, ci) {
-    e.stopPropagation()
-    const r = e.currentTarget.getBoundingClientRect()
-    setOpenCol(null)
-    setMenuCol({ ci, top: r.bottom + 4, left: Math.min(r.left, window.innerWidth - 220) })
-  }
-  function applyFilter(ci, set) {
-    setFilters(f => {
-      const n = { ...f }
-      if (set == null) delete n[ci]
-      else n[ci] = set
-      return n
-    })
-    setOpenCol(null)
-  }
+  // ส่งให้การ์ดเป็นชุดเดียว — การ์ดเรียก onAux('weekTo'|'year'|'yearTo'|'mc', ri, val)
+  const auxCols = { weekTo: 'Week To', year: 'Year', yearTo: 'Year To', mc: 'MC' }
+  const makeAux = info => (kind, ri, val) =>
+    setAuxCell(info?.[`${kind}Ci`], auxCols[kind], ri, val)
+  const setMcAux = makeAux(mcTotalInfo)
+  const setLockAux = makeAux(lockInfo)
 
   // เซลล์นี้ถูกแก้จากค่าเดิมไหม (เทียบด้วย id คงที่ ไม่ใช่ index → เพิ่ม/ลบแถวแล้วไม่เพี้ยน)
   function isChanged(ri, ci) {
@@ -620,64 +700,136 @@ export default function Masters() {
   }
   const isNewRow = ri => !origRids.has(ids.rid[ri])
 
-  // ---- sidebar: ค้นหา + ยุบ/ขยายไฟล์ ----
+  // ---- เมนูซ้าย: รายการ "งาน" ภาษาคน จัดหมวด (ไม่ใช่ชื่อไฟล์/ชีทดิบอีกแล้ว) ----
+  // ค้นหาได้ทั้งชื่อไทย คำอธิบาย และชื่อชีทจริง (คนที่คุ้นชื่อ Excel เดิมยังพิมพ์ Lock_MC หาเจอ)
   const q = fq.trim().toLowerCase()
-  const shownFiles = useMemo(() => files.map(f => {
-    const fileHit = f.name.toLowerCase().includes(q)
-    const sheets = q && !fileHit ? f.sheets.filter(s => s.toLowerCase().includes(q)) : f.sheets
-    return { ...f, sheets, hide: q && !fileHit && !sheets.length }
-  }).filter(f => !f.hide), [files, q])
+  const catalog = useMemo(() => catalogFor(files), [files])
+  const shownEntries = useMemo(() => catalog.filter(c => !q ||
+    [c.label, c.what, c.effect, c.sheet, c.file].filter(Boolean).join(' ').toLowerCase().includes(q)),
+    [catalog, q])
 
-  const totalW = ROWNUM_W + ACT_W + widths.reduce((a, b) => a + b, 0)
+
+
+  // รายการที่เป็น "หน้าเฉพาะ" (เช่น Master MC) ไม่ได้ผูกกับชีทเดียว → เปิดเป็น view
+  const openEntry = c => (c.view ? setSel({ view: c.view, entry: c }) : openSheet(c.file, sheetOf(c, files)))
+  const isActive = c => sel && (c.view
+    ? sel.view === c.view
+    : sel.name === c.file && String(sel.sheet).trim() === String(sheetOf(c, files)).trim())
+  // ข้อมูลอธิบายของชีทที่เปิดอยู่ — ใช้ทำหัวข้อภาษาคน + บอกว่าแก้แล้วกระทบแผนตรงไหน
+  const cur = sel ? (sel.view ? sel.entry : describe(sel.name, sel.sheet)) : null
+  // คอลัมน์ที่ระบบวางแผนอ่านจริงของชีทนี้ (ไม่มีทะเบียน = แสดงทุกคอลัมน์ตามเดิม)
+  const cmap = useMemo(
+    () => (sel && !sel.view && grid ? splitColumns(sel.name, sel.sheet, grid.columns) : null),
+    [sel, grid])
 
   return (
-    <div className="masters">
-      <aside className="filelist">
-        <h2>ไฟล์ Master</h2>
-        <input className="sheetsearch" placeholder="🔍 ค้นหาไฟล์ / ชีท..."
+    <div className={'masters' + (only ? ' onesheet' : '')}>
+      {!only && <aside className="filelist">
+        <h2>{ro ? 'ดูข้อมูลหลัก' : 'แก้ข้อมูลหลัก'}</h2>
+        <input className="sheetsearch" placeholder="🔍 ค้นหา เช่น กันเครื่อง, จ้างทอ, วันหยุด"
           value={fq} onChange={e => setFq(e.target.value)} />
-        {!shownFiles.length && <div className="hint small">ไม่พบไฟล์ที่ค้นหา</div>}
-        {shownFiles.map(f => {
-          const open = q ? true : !collapsed[f.name]
-          // ไฟล์ที่คลิก "ชื่อไฟล์" แล้วเปิดชีทได้เลย: ชีทที่ pipeline ใช้ หรือไฟล์ที่มีชีทเดียว
-          // → ไม่ต้องโชว์รายการชีทย่อย (ชีทอื่นในไฟล์เหล่านี้ไม่ได้ใช้)
-          const quick = USED_SHEETS[f.name]?.[0] || (f.sheets.length === 1 ? f.sheets[0] : null)
-          const quickActive = quick && sel && sel.name === f.name && sel.sheet === quick
-          const toggle = () => setCollapsed(c => ({ ...c, [f.name]: !c[f.name] }))
-          return (
-            <div key={f.name} className="filegroup">
-              <button className={'filename' + (quickActive ? ' active' : '')}
-                title={quick ? `เปิด ${f.name} / ${quick}` : 'กางดูชีท'}
-                onClick={() => (quick ? openSheet(f.name, quick) : toggle())}>
-                {!quick && <span className="caret">{open ? '▾' : '▸'}</span>}
-                <span className="fname">{f.name}</span>
-                {!f.exists && <span className="warn">ไม่พบไฟล์</span>}
-                {!quick && <span className="scount">{f.sheets.length}</span>}
-              </button>
-              {f.error && <div className="warn small">{f.error}</div>}
-              {open && !quick && f.sheets.map(s => {
-                const used = USED_SHEETS[f.name]?.includes(s)
-                const active = sel && sel.name === f.name && sel.sheet === s
-                return (
-                  <button key={s} className={'sheetbtn' + (active ? ' active' : '')}
-                    onClick={() => openSheet(f.name, s)}>
-                    {s} {used && <span className="usedtag">ใช้รันแผน</span>}
-                  </button>
-                )
-              })}
-            </div>
-          )
-        })}
-      </aside>
+        {sel && (
+          <button className="mcatback" onClick={() => setSel(null)}>‹ ดูรายการทั้งหมด</button>
+        )}
+        {!shownEntries.length && <div className="hint small">ไม่พบรายการที่ค้นหา</div>}
+        {shownEntries.map(c => (
+          <button key={c.view || `${c.file}/${c.sheet || ''}`}
+            className={'sheetbtn mcat' + (isActive(c) ? ' active' : '')}
+            title={[c.what, c.effect].filter(Boolean).join(' | ')}
+            onClick={() => openEntry(c)}>
+            <span className="mcatico">{c.icon}</span>
+            <span className="mcatname">{c.label}</span>
+          </button>
+        ))}
+      </aside>}
 
       <section className="editor">
-        {!sel && <div className="hint">เลือกชีทจากด้านซ้ายเพื่อแก้ไข</div>}
-        {sel && (
+        {/* แถบบอกว่าหน้านี้ดูอย่างเดียว + ทางไปแก้ (admin เท่านั้นที่เห็นปุ่ม) */}
+        {ro && (
+          <div className="romsg">
+            <span className="roicon">👁</span>
+            <span>
+              หน้านี้ <b>ดูอย่างเดียว</b> — ข้อมูลหลักทั้งหมดแก้ได้ที่หน้า <b>⚙️ Setting › 📁 ข้อมูลหลัก</b>
+              {' '}(แก้ที่นั่นแล้วหน้านี้อัปเดตให้เองทันที)
+            </span>
+            {canEdit && onGoEdit && (
+              <button className="primary" onClick={() => onGoEdit(sel)}>ไปหน้าแก้ไข →</button>
+            )}
+            {!canEdit && <span className="rohint">ต้องเป็นสิทธิ์ Knit หรือ Super Admin ถึงจะแก้ได้</span>}
+          </div>
+        )}
+        {ro && liveNote && (
+          <div className="msg note">
+            🔄 {liveNote.by} เพิ่งแก้ชีทนี้ — หน้านี้โหลดของล่าสุดให้แล้วเมื่อ{' '}
+            {new Date(liveNote.at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
+          </div>
+        )}
+        {/* ยังไม่ได้เลือกอะไร → แคตตาล็อก "อยากแก้อะไร" เป็นการ์ด พร้อมบอกผลกับแผน
+            (เดิมเป็นข้อความบรรทัดเดียวให้ไปเลือกชีทเอง ซึ่งต้องรู้ชื่อชีทมาก่อน) */}
+        {!sel && !only && (
+          <div className="mcatalog">
+            <div className="mcathead">
+              <h2>{ro ? 'ข้อมูลหลักที่ดูได้' : 'จะแก้อะไรดี?'}</h2>
+              <div className="hint small">
+                เลือกจากรายการด้านล่าง — แต่ละอันบอกไว้ว่าแก้แล้วกระทบการวางแผนตรงไหน
+                {q && <> · กำลังค้นหา "{fq}"</>}
+              </div>
+            </div>
+            {!shownEntries.length && <div className="hint">ไม่พบรายการที่ค้นหา</div>}
+            <div className="mcatcards">
+              {shownEntries.map(c => (
+                <button key={c.view || `${c.file}/${c.sheet || ''}`} className="mcatcard key"
+                  onClick={() => openEntry(c)}>
+                  <div className="mcatcardtop">
+                    <span className="ico">{c.icon}</span>
+                    <span className="nm">{c.label}</span>
+                  </div>
+                  {c.what && <div className="mcatwhat">{c.what}</div>}
+                  {c.effect && <div className="mcateffect">→ {c.effect}</div>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {/* หน้าเฉพาะ (ไม่ผูกกับชีทเดียว) — Master MC รวม 5 ชีทไว้ที่เดียว */}
+        {sel?.view === 'mc-hub' && (
           <>
             <div className="editbar">
+              <h2><span className="shico">{cur?.icon}</span>{cur?.label || 'Master MC'}</h2>
+              <div className="actions">
+                {ro
+                  ? <span className="robadge">👁 ดูอย่างเดียว</span>
+                  : <span className="robadge">รวมจาก 5 ชีทเดิมไว้ที่นี่</span>}
+              </div>
+            </div>
+            {cur?.effect && (
+              <div className="sheetabout"><div className="saeffect">⚡ {cur.effect}</div></div>
+            )}
+            <McHub ro={ro} />
+          </>
+        )}
+        {sel?.view === 's9-hub' && (
+          <>
+            <div className="editbar">
+              <h2><span className="shico">{cur?.icon}</span>{cur?.label || 'Master/S9'}</h2>
+              <div className="actions">
+                <span className="robadge">{ro ? '👁 ดูอย่างเดียว' : 'รวมจาก 3 ชีทเดิมไว้ที่นี่'}</span>
+              </div>
+            </div>
+            {cur?.effect && (
+              <div className="sheetabout"><div className="saeffect">⚡ {cur.effect}</div></div>
+            )}
+            <S9Hub ro={ro} />
+          </>
+        )}
+        {sel && !sel.view && (
+          <>
+            <div className="editbar">
+              {/* หัวข้อเป็นชื่อภาษาคน ชื่อไฟล์/ชีทจริงย้ายไปเป็นตัวเล็กใต้ชื่อ (ไว้อ้างอิงเวลาคุยกัน) */}
               <h2>
-                {sel.name} / {sel.sheet}
-                {dirty && <span className="dot" title="ยังไม่ได้บันทึก">●</span>}
+                {cur ? <><span className="shico">{cur.icon}</span>{cur.label}</> : <>{sel.name} / {sel.sheet}</>}
+                {autosave.dirty && <span className="dot" title="กำลังจะบันทึกให้เอง">●</span>}
+                <span className="shsrc">{sel.name} / {sel.sheet}</span>
               </h2>
               <div className="actions">
                 {calInfo && (
@@ -698,11 +850,9 @@ export default function Masters() {
                     <button className={!mcTotalView ? 'on' : ''} onClick={() => setView('table')}>🧾 ตาราง</button>
                   </div>
                 )}
-                {s9Info && !calInfo && !lockInfo && !mcTotalInfo && (
-                  <div className="viewtoggle" title="สลับมุมมองของชีท S9 (จ้างทอ)">
-                    <button className={s9View ? 'on' : ''} onClick={() => setView('cal')}>
-                      {s9Info.kind === 'mcs9' ? '📇 การ์ด' : '🔍 ค้นหา'}
-                    </button>
+                {s9Info?.kind === 'mcs9' && !calInfo && !lockInfo && !mcTotalInfo && (
+                  <div className="viewtoggle" title="สลับมุมมองของชีท MC S9 (จ้างทอ)">
+                    <button className={s9View ? 'on' : ''} onClick={() => setView('cal')}>📇 การ์ด</button>
                     <button className={!s9View ? 'on' : ''} onClick={() => setView('table')}>🧾 ตาราง</button>
                   </div>
                 )}
@@ -720,53 +870,43 @@ export default function Masters() {
                     <button className={!mastermcView ? 'on' : ''} onClick={() => setView('table')}>🧾 ตาราง</button>
                   </div>
                 )}
-                {bigView && (
-                  <span className="viewtoggle" title={`ชีทใหญ่ ${grid.rows.length.toLocaleString()} แถว — ใช้มุมมองค้นหา`}>
-                    <button className="on">🔍 ค้นหา</button>
-                  </span>
+                {jobInfo && (
+                  <div className="viewtoggle" title="สลับมุมมองของชีท Job">
+                    <button className={jobView ? 'on' : ''} onClick={() => setView('cal')}>📅 แยกปี</button>
+                    <button className={!jobView ? 'on' : ''} onClick={() => setView('table')}>🧾 ตาราง</button>
+                  </div>
                 )}
-                <button onClick={undo} disabled={!hist.length} title="ย้อนกลับ (Ctrl+Z)">↩ ย้อนกลับ</button>
-                {dirty && <button className="ghost" onClick={revert} title="ทิ้งการแก้ทั้งหมด">คืนค่าเดิม</button>}
-                {!specialView && <button onClick={addRow} disabled={!grid}>+ เพิ่มแถว</button>}
-                {!specialView && <button onClick={() => setDlg({ name: '', at: null })} disabled={!grid}>+ เพิ่มคอลัมน์</button>}
-                <button className="primary" onClick={save} disabled={!grid || saving || !dirty} title="บันทึก (Ctrl+S)">
-                  {saving ? 'กำลังบันทึก...' : 'บันทึก'}
+                {!ro && <button onClick={undo} disabled={!hist.length} title="ย้อนกลับ (Ctrl+Z)">↩ ย้อนกลับ</button>}
+                <button className="ghost" onClick={revert} title="โหลดข้อมูลล่าสุดจากไฟล์ใหม่">⟳ โหลดใหม่</button>
+                {!ro && (
+                  <button onClick={() => setImporting(v => !v)} disabled={!grid}
+                    title="แทนที่ข้อมูลทั้งชีทด้วยไฟล์ .xlsx หรือข้อมูลที่คัดลอกจาก Excel">📥 Import</button>
+                )}
+                <button onClick={doExport} disabled={!grid || exporting}
+                  title="ดาวน์โหลดชีทนี้เป็นไฟล์ .xlsx (Import กลับได้)">
+                  {exporting ? 'กำลัง Export...' : '📤 Export'}
                 </button>
+                {!ro && !specialView && <button onClick={() => setDlg({ name: '', at: null })} disabled={!grid}>+ เพิ่มคอลัมน์</button>}
+                {ro
+                  ? <span className="robadge" title="แก้ได้ที่หน้า Setting">👁 ดูอย่างเดียว</span>
+                  : <SaveStatus status={autosave.status} error={autosave.error} at={savedAt}
+                    onRetry={autosave.flush} />}
               </div>
             </div>
 
-            {grid && !specialView && (
-              <>
-                <div className="filterbar">
-                  <input className="search" placeholder="🔍 ค้นหาทุกคอลัมน์..."
-                    value={search} onChange={e => setSearch(e.target.value)} />
-                  <span className="count">แสดง {visible.length} / {grid.rows.length} แถว</span>
-                  {hasFilter
-                    ? <button className="clearf" onClick={() => { setSearch(''); setFilters({}); setSort(null) }}>ล้างทั้งหมด</button>
-                    : <span className="hint small" style={{ padding: 0 }}>คลิกหัวคอลัมน์ = เรียงลำดับ · ▾ = กรอง · ⋮ = เปลี่ยนชื่อ/ลบ</span>}
-                </div>
-
-                {(fchips.length > 0 || sort) && (
-                  <div className="chips">
-                    {sort && (
-                      <span className="fchip sortchip">
-                        เรียง <b>{grid.columns[sort.ci]}</b> {sort.dir === 'asc' ? '▲ น้อย→มาก' : '▼ มาก→น้อย'}
-                        <button onClick={() => setSort(null)} title="เลิกเรียง">✕</button>
-                      </span>
-                    )}
-                    {fchips.map(ci => {
-                      const vals = Array.from(filters[ci])
-                      const txt = vals.length <= 2 ? vals.map(valLabel).join(', ') : `${vals.length} ค่า`
-                      return (
-                        <span key={ci} className="fchip" title={vals.map(valLabel).join(', ')}>
-                          <b>{grid.columns[ci]}</b>: {txt}
-                          <button onClick={() => applyFilter(ci, null)} title="ล้างตัวกรองนี้">✕</button>
-                        </span>
-                      )
-                    })}
-                  </div>
+            {/* ชีทนี้คืออะไร + แก้แล้วกระทบแผนตรงไหน (มาจากทะเบียน masterCatalog.js) */}
+            {cur && (
+              <div className="sheetabout">
+                {cur.what && <div className="sawhat">{cur.what}</div>}
+                {cur.effect && <div className="saeffect">⚡ {cur.effect}</div>}
+                {cur.via && <div className="savia">💡 {cur.via}</div>}
+                {cur.unused && (
+                  <div className="saunused">ℹ️ ระบบวางแผนไม่ได้อ่านชีทนี้ — แก้แล้วแผนไม่เปลี่ยน</div>
                 )}
-              </>
+                {!ro && !cur.unused && (
+                  <div className="sanote">บันทึกเองอัตโนมัติ · รอบจัดแผนถัดไปจะใช้ค่าใหม่</div>
+                )}
+              </div>
             )}
 
             {sel.name === 'Target_Stock' && (
@@ -774,8 +914,27 @@ export default function Masters() {
                 ℹ️ คอลัมน์ <b>Match core, TARGET SCM, STOCK MIN, STOCK MAX, Stock 5 Week</b> คำนวณอัตโนมัติจาก <b>TARGET/MONTH</b> ตอนกดบันทึก — แก้ TARGET/MONTH แล้วค่าที่เหลือจะอัปเดตเอง
               </div>
             )}
+            {conflict && (
+              <div className="msg warn conflict-bar">
+                ⚠️ {conflict.current?.by || 'อีกคนหนึ่ง'} แก้ชีทนี้ไปแล้ว
+                {conflict.current?.at ? ` เมื่อ ${String(conflict.current.at).slice(11, 16)} น.` : ''}
+                {conflict.soft
+                  ? ' — ของที่คุณพิมพ์ค้างยังไม่ถูกทับ'
+                  : ' — การบันทึกครั้งล่าสุดของคุณยังไม่เข้า'}
+                <button className="primary" onClick={() => openSheet(sel.name, sel.sheet, true)}>
+                  โหลดของล่าสุด
+                </button>
+              </div>
+            )}
             {msg && <div className="msg">{msg}</div>}
             {loading && <div className="hint">กำลังโหลด...</div>}
+
+            {/* Import ทับทั้งชีท — ใช้ได้ทุกมุมมอง (ตาราง/การ์ด/ปฏิทิน) เพราะทุกมุมมองอ่านจาก grid ก้อนเดียวกัน */}
+            {grid && !ro && importing && (
+              <SheetImport name={sel.name} sheet={sel.sheet} grid={grid}
+                onApply={rows => { replaceGrid(grid.columns, rows); setImporting(false) }}
+                onClose={() => setImporting(false)} />
+            )}
 
             {grid && calView && (
               <CalendarEditor
@@ -785,6 +944,10 @@ export default function Masters() {
                 weekCi={calInfo.weekCi}
                 isChanged={isChanged}
                 onToggle={(ri, val) => setCell(ri, calInfo.statusCi, String(val))}
+                ro={ro}
+                year={calYear}
+                onYear={setCalYear}
+                onExtendYear={ro ? null : extendCalendarYear}
               />
             )}
 
@@ -799,6 +962,8 @@ export default function Masters() {
                 delRow={delRow}
                 isChanged={isChanged}
                 onItemInput={setItemCell}
+                onAux={setLockAux}
+                ro={ro}
               />
             )}
 
@@ -812,7 +977,8 @@ export default function Masters() {
                 addRow={addRow}
                 delRow={delRow}
                 isChanged={isChanged}
-                onWeekToInput={setMcWeekToCell}
+                onAux={setMcAux}
+                ro={ro}
               />
             )}
 
@@ -826,6 +992,7 @@ export default function Masters() {
                 delRow={delRow}
                 isChanged={isChanged}
                 isNewRow={isNewRow}
+                ro={ro}
               />
             )}
 
@@ -839,6 +1006,7 @@ export default function Masters() {
                 delRow={delRow}
                 isChanged={isChanged}
                 isNewRow={isNewRow}
+                ro={ro}
               />
             )}
 
@@ -852,11 +1020,17 @@ export default function Masters() {
                 addRow={addRow}
                 isChanged={isChanged}
                 isNewRow={isNewRow}
+                ro={ro}
+                cmap={cmap}
               />
             )}
 
-            {grid && bigView && (
-              <LookupEditor
+            {grid && jobView && (
+              <JobDoneEditor grid={grid} info={jobInfo} replaceGrid={replaceGrid} ro={ro} />
+            )}
+
+            {grid && !specialView && (
+              <DataTable
                 grid={grid}
                 rids={ids.rid}
                 setCell={setCell}
@@ -864,101 +1038,9 @@ export default function Masters() {
                 delRow={delRow}
                 isChanged={isChanged}
                 isNewRow={isNewRow}
+                enums={s9Enums(s9Info)}
+                ro={ro}
               />
-            )}
-
-            {grid && !specialView && (
-              <div className="gridwrap">
-                <table className="grid" style={{ tableLayout: 'fixed', width: totalW }}>
-                  <colgroup>
-                    <col style={{ width: ROWNUM_W }} />
-                    {grid.columns.map((_, ci) => <col key={ci} style={{ width: widths[ci] }} />)}
-                    <col style={{ width: ACT_W }} />
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      <th className="rownum">#</th>
-                      {grid.columns.map((c, ci) => (
-                        <th key={ci} className={ci === 0 ? 'frz' : ''}>
-                          <div className="thcell">
-                            {renameCi === ci ? (
-                              <input className="thinput" autoFocus defaultValue={c}
-                                onBlur={e => commitRename(ci, e.target.value)}
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter') e.currentTarget.blur()
-                                  else if (e.key === 'Escape') { e.currentTarget.value = c; e.currentTarget.blur() }
-                                }} />
-                            ) : (
-                              <button className="thsort" onClick={() => headClick(ci)} onDoubleClick={() => headDouble(ci)}
-                                title={`${c}\nคลิก = เรียงลำดับ · ดับเบิลคลิก = เปลี่ยนชื่อ`}>
-                                <span className="thlabel">{c}</span>
-                                {sort?.ci === ci && <span className="sarrow">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
-                              </button>
-                            )}
-                            <button tabIndex={-1} className={'funnel' + (filters[ci] ? ' on' : '')}
-                              title="กรองคอลัมน์นี้" onClick={e => openColMenu(e, ci)}>▾</button>
-                            <button tabIndex={-1} className="kebab" title="ตัวเลือกคอลัมน์"
-                              onClick={e => openKebab(e, ci)}>⋮</button>
-                            <span className="resizer" title="ลากเพื่อปรับความกว้าง (ดับเบิลคลิก = พอดีเนื้อหา)"
-                              onPointerDown={e => startResize(e, ci)} onDoubleClick={() => autoFit(ci)} />
-                          </div>
-                        </th>
-                      ))}
-                      <th className="actcol"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visible.map(({ row, idx }, vi) => (
-                      <tr key={ids.rid[idx]} className={isNewRow(idx) ? 'newrow' : ''}>
-                        <td className="rownum" title={isNewRow(idx) ? 'แถวใหม่ (ยังไม่บันทึก)' : ''}>{idx + 1}</td>
-                        {row.map((cell, ci) => (
-                          <td key={ci} className={(ci === 0 ? 'frz' : '') + (isChanged(idx, ci) ? ' chg' : '')}>
-                            <input value={cell ?? ''} data-cell={`${vi}-${ci}`}
-                              onChange={e => setCell(idx, ci, e.target.value)}
-                              onKeyDown={e => onCellKey(e, vi, ci)} />
-                          </td>
-                        ))}
-                        <td className="actcol">
-                          <button tabIndex={-1} className="del" title="ลบแถว" onClick={() => delRow(idx)}>✕</button>
-                        </td>
-                      </tr>
-                    ))}
-                    {!visible.length && (
-                      <tr><td className="rownum"></td>
-                        <td colSpan={grid.columns.length + 1} className="hint">ไม่มีแถวตรงตัวกรอง</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {grid && !specialView && <div className="gridhelp">Enter / ↑ ↓ = ย้ายแถว · Tab = ช่องถัดไป · Ctrl+Z = ย้อนกลับ · Ctrl+S = บันทึก · <span className="chgdot" /> = ช่องที่แก้แล้วยังไม่บันทึก</div>}
-
-            {openCol && colData && (
-              <ColumnFilter
-                key={openCol.ci}
-                available={colData.available}
-                domain={colData.domain}
-                selected={filters[openCol.ci]}
-                anchor={openCol.anchor}
-                onApply={set => applyFilter(openCol.ci, set)}
-                onClose={() => setOpenCol(null)}
-              />
-            )}
-
-            {menuCol && (
-              <>
-                <div className="filterbackdrop" onClick={() => setMenuCol(null)} />
-                <div className="colmenu" style={{ top: menuCol.top, left: menuCol.left }}>
-                  <div className="cmhead">{grid.columns[menuCol.ci]}</div>
-                  <button onClick={() => { setRenameCi(menuCol.ci); setMenuCol(null) }}>✏️ เปลี่ยนชื่อคอลัมน์</button>
-                  <button onClick={() => { setDlg({ name: '', at: menuCol.ci + 1 }); setMenuCol(null) }}>➕ แทรกคอลัมน์ทางขวา</button>
-                  <button onClick={() => { autoFit(menuCol.ci); setMenuCol(null) }}>↔ ปรับความกว้างพอดีเนื้อหา</button>
-                  <div className="cmsep" />
-                  <button className="danger" onClick={() => delCol(menuCol.ci)}>🗑 ลบคอลัมน์นี้</button>
-                </div>
-              </>
             )}
 
             {dlg && (
@@ -982,6 +1064,7 @@ export default function Masters() {
                 </div>
               </div>
             )}
+
           </>
         )}
       </section>

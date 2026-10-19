@@ -6,11 +6,17 @@ Run All Pipeline
   2. View_Booking.py    – ดึงข้อมูล Booking จาก Oracle DB
   3. View_Stock.py      – ดึงข้อมูล Stock จาก Oracle DB
   4. View_SC.py         – ดึงข้อมูล SC Pending จาก Oracle DB
-  5. View_Datamining.py – ดึงข้อมูล Datamining จาก Oracle DB
-  6. Stock.py           – ประมวลผลข้อมูล Stock
-  7. AVA_MC.py          – คำนวณ Machine Availability
-  8. Order.py           – เตรียม Order data
-  9. Planning.py        – รัน Planning หลัก
+  5. View_SCFol_Item.py – ดึงยอดที่เปิดสีแล้ว (OPEN_COLOR_LOSS ต่อ SC+ITEM) จาก Oracle DB
+  6. View_SCFol_Yarn.py – ดึงด้ายรายบรรทัดใบ SC (% ด้าย + PO + วัน PO เข้า) ให้กติกายืมด้ายสต๊อก
+  7. View_PO_Yarn.py    – ดึง PO ด้าย (PO Pending) ให้กติกาวางแผนได้ไม่เกินด้ายที่มี
+  8. View_Datamining.py – ดึงข้อมูล Datamining จาก Oracle DB
+  9. View_MC_Item.py    – ดึง CAP รายไอเทม-รายเครื่อง จาก Oracle DB (AVA_MC ใช้แทน CAP_KNIT)
+ 10. Stock.py           – ประมวลผลข้อมูล Stock
+ 11. AVA_MC.py          – คำนวณ Machine Availability
+ 12. Order.py           – เตรียม Order data
+ 13. program_lock.py    – ล็อกตั๋วโปรแกรมที่จองเครื่องแล้ว (ต้องอยู่ก่อน Replan)
+ 14. Replan.py          – แผนผลิต: booking ที่ปลดล็อก + SC วางพร้อมกัน (เรียก Planning.py โหมด replan)
+                          → data_plan/production_plan_*.xlsx ชีท PLAN
 Usage:
     python run_all.py
     python run_all.py --skip View_Stock    # ข้าม View_Stock (ถ้า DB ไม่พร้อม)
@@ -32,35 +38,7 @@ try:
 except (AttributeError, ValueError):
     pass
 
-# Force PyInstaller to bundle all dependencies used by pipeline scripts
-import configparser, re, io, math
-import urllib.request, urllib.parse
-import pandas, numpy, openpyxl
-from Calendar import load_calendar as _lc  # bundles Calendar module + its deps
-try:
-    import oracledb
-except ImportError:
-    pass
-try:
-    import xlrd
-except ImportError:
-    pass
-try:
-    import msal
-except ImportError:
-    pass
-try:
-    import win32com.client
-except ImportError:
-    if not getattr(sys, 'frozen', False) and sys.platform == 'win32':
-        print("📦 ติดตั้ง pywin32 สำหรับสร้าง PivotTable...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pywin32"])
-        try:
-            subprocess.check_call([sys.executable, "-m", "pywin32_postinstall", "-install"])
-        except Exception:
-            pass
-
-BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+BASE_DIR = Path(__file__).parent
 
 STEPS = [
     {
@@ -84,9 +62,39 @@ STEPS = [
         "desc": "ดึงข้อมูล SC Pending จาก Oracle DB",
     },
     {
+        # แหล่งเดียวของ "ยอดที่เปิดสีแล้ว" (OPEN_COLOR_LOSS ต่อ SC+ITEM) ที่ Planning/webapp ใช้
+        # ต้องดึงก่อน Planning — ไม่มีไฟล์นี้ = ไม่มีงานสีในระบบเลย
+        "name": "View_SCFol_Item",
+        "script": BASE_DIR / "View_SCFol_Item.py",
+        "desc": "ดึงยอดที่เปิดสีแล้ว (SC Follow Item) จาก Oracle DB",
+    },
+    {
+        # ด้ายรายบรรทัดใบ SC (% ด้าย + PO + วัน PO เข้า) — Replan ใช้ดูว่าใบที่รอ PO IN
+        # รอด้ายเส้นไหน แล้วยืมด้ายในสต๊อกได้ไหม (YarnStockCover.py ; สวิตช์ที่หน้า Monitor Yarn)
+        # ล้ม = ใบรอ PO IN ตามเดิม แผนยังออกได้ → ไม่ทำให้ทั้งไปป์ไลน์ fail
+        "name": "View_SCFol_Yarn",
+        "script": BASE_DIR / "View_SCFol_Yarn.py",
+        "desc": "ดึงด้ายรายบรรทัดใบ SC (SC Follow Yarn) จาก Oracle DB",
+        "optional": True,
+    },
+    {
+        # PO ด้าย (PO Pending = ยังค้างส่ง + วันเข้าล่าสุด) — Replan ใช้คุมแผนไม่ให้เกินด้ายที่มี
+        # (สต๊อก + PO Pending : YarnStockCover.supply_cap ; สวิตช์ที่หน้า Monitor Yarn) ~40 วิ
+        # ล้ม = ไม่คุมด้ายรอบนี้ แผนยังออกได้ → ไม่ทำให้ทั้งไปป์ไลน์ fail
+        "name": "View_PO_Yarn",
+        "script": BASE_DIR / "View_PO_Yarn.py",
+        "desc": "ดึง PO ด้าย (PO Pending) จาก Oracle DB",
+        "optional": True,
+    },
+    {
         "name": "View_Datamining",
         "script": BASE_DIR / "View_Datamining.py",
         "desc": "ดึงข้อมูล Datamining จาก Oracle DB",
+    },
+    {
+        "name": "View_MC_Item",
+        "script": BASE_DIR / "View_MC_Item.py",
+        "desc": "ดึง CAP รายไอเทม-รายเครื่อง จาก Oracle DB",
     },
     {
         "name": "Stock",
@@ -104,9 +112,21 @@ STEPS = [
         "desc": "เตรียม Order data",
     },
     {
-        "name": "Planning",
-        "script": BASE_DIR / "Planning.py",
-        "desc": "รัน Planning หลัก",
+        # ต้องอยู่ "ก่อน Replan" — ล็อกจึงมีผลกับ Replan ของรอบเดียวกันเลย ไม่ต้องรอรอบถัดไป
+        # (อ่าน booking_final ที่ AVA_MC เขียนไว้แล้ว ; ไม่แตะฝั่งแผน — ดูหัวไฟล์ program_lock.py)
+        "name": "ProgramLock",
+        "script": BASE_DIR / "program_lock.py",
+        "desc": "ล็อกตั๋วโปรแกรม + core item ที่จองเครื่องแล้ว (ชีท Lock_Plan)",
+        # เป็นการเติมล็อกให้ Replan ไม่ใช่ตัวแผนเอง → ล้มแล้วต้องไม่ทำให้ทั้งไปป์ไลน์ fail
+        "optional": True,
+    },
+    {
+        # แผนผลิตมีรอบเดียวแล้ว = Replan (booking ที่ปลดล็อก + SC วางพร้อมกัน)
+        # Replan.py เรียก Planning.py โหมด replan เอง แล้วเขียนไฟล์ production_plan_*.xlsx (ชีท PLAN)
+        # เลิกรัน Planning รอบหลัก (แผน SC ล้วน) ตั้งแต่ 2026-09-11 — ล้ม = ไม่มีแผน → ต้องหยุด ไม่ข้าม
+        "name": "Replan",
+        "script": BASE_DIR / "Replan.py",
+        "desc": "รันแผนการผลิต (booking ที่ปลดล็อก + SC)",
     },
 ]
 
@@ -127,25 +147,13 @@ def run_step(step: dict, step_num: int, total: int) -> bool:
     separator("-")
 
     t0 = time.time()
-    if getattr(sys, 'frozen', False):
-        import runpy, traceback as _tb
-        script_in_bundle = Path(sys._MEIPASS) / script.name
-        returncode = 0
-        try:
-            runpy.run_path(str(script_in_bundle), run_name="__main__")
-        except SystemExit as e:
-            returncode = 0 if (e.code is None or e.code == 0) else int(e.code)
-        except Exception:
-            _tb.print_exc()
-            returncode = 1
-    else:
-        result = subprocess.run(
-            [sys.executable, str(script)],
-            cwd=str(BASE_DIR),
-            stdout=None,
-            stderr=None,
-        )
-        returncode = result.returncode
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=str(BASE_DIR),
+        stdout=None,
+        stderr=None,
+    )
+    returncode = result.returncode
     elapsed = time.time() - t0
 
     separator("-")
@@ -156,14 +164,6 @@ def run_step(step: dict, step_num: int, total: int) -> bool:
     separator()
     print()
     return returncode == 0
-
-
-def _pause_before_exit(prompt: str):
-    """รอ user กด Enter ก่อนปิดหน้าต่าง — ห้าม crash แม้ stdin/stdout ใช้ไม่ได้ (scheduled task ฯลฯ)"""
-    try:
-        input(prompt)
-    except (EOFError, ValueError, RuntimeError, OSError):
-        pass
 
 
 def parse_args():
@@ -246,6 +246,10 @@ def main():
         success = run_step(step, i, total)
         if not success:
             failed_steps.append(step["name"])
+            if step.get("optional"):
+                print(f"⚠️ {step['name']} ล้มเหลว แต่เป็น step เสริม → ทำงานต่อ "
+                      f"(แผนหลักยังรันได้ แค่ไม่มีชีทของ step นี้)")
+                continue
             if not args.ignore_errors:
                 print(f"⛔ หยุดการทำงานเนื่องจาก {step['name']} ล้มเหลว")
                 print("   ใช้ --ignore-errors เพื่อทำงานต่อแม้มี error")
@@ -257,7 +261,8 @@ def main():
     separator("-")
     for step in steps_to_run:
         if step["name"] in failed_steps:
-            status = "❌ FAILED"
+            # step เสริมล้ม = แผนหลักยังใช้ได้ → แยกป้ายให้เห็นชัด ไม่ปนกับความล้มเหลวจริง
+            status = "⚠️  ข้าม (เสริม)" if step.get("optional") else "❌ FAILED"
         elif step["name"] in ran_steps:
             status = "✅ OK"
         else:
@@ -266,10 +271,12 @@ def main():
         print(f"  {status}  {step['name']}")
     separator("=")
 
-    if failed_steps:
-        _pause_before_exit("\nกด Enter เพื่อปิดหน้าต่าง ...")
+    # step เสริมที่ล้มไม่ทำให้ทั้งการรันถือว่าล้มเหลว (แผนหลักออกครบแล้ว)
+    _optional_names = {s["name"] for s in STEPS if s.get("optional")}
+    _hard_failed = [s for s in failed_steps if s not in _optional_names]
+    if _hard_failed:
         sys.exit(1)
-    _pause_before_exit("\n✅ เสร็จทั้งหมดแล้ว — กด Enter เพื่อปิดหน้าต่าง ...")
+    print("\n✅ เสร็จทั้งหมดแล้ว")
 
 
 if __name__ == "__main__":
@@ -280,5 +287,4 @@ if __name__ == "__main__":
     except Exception:
         import traceback
         traceback.print_exc()
-        _pause_before_exit("\n❌ เกิดข้อผิดพลาด — กด Enter เพื่อปิดหน้าต่าง ...")
         sys.exit(1)

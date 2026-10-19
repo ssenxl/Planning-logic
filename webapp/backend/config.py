@@ -81,27 +81,45 @@ def master_files() -> dict:
 
 
 
-# ---------- settings.json (ตั้งเวลา schedule) ----------
+# ---------- settings.json (รอบรันอัตโนมัติ) ----------
+# auto_runs = รายการรอบ แต่ละรอบ {id, enabled, hour, minute, mode, days} ; days 0 = จันทร์ … 6 = อาทิตย์
+ALL_DAYS = [0, 1, 2, 3, 4, 5, 6]
 DEFAULT_SETTINGS = {
-    "schedule": {
-        "full": {"enabled": True, "hour": 6, "minute": 0},
-    }
+    "auto_runs": [
+        {"id": "r1", "enabled": True, "hour": 6, "minute": 0, "mode": "full", "days": ALL_DAYS},
+    ]
 }
 
 
+def _legacy_runs(schedule: dict) -> list:
+    """รูปแบบเดิม (ก่อน 24 ก.ย. 2569) {"schedule": {"full": {enabled, hour, minute}}} = วันละรอบเดียว
+    → แปลงเป็นรายการรอบ ให้เวลาที่ตั้งไว้บน server ยังอยู่ ไม่ต้องตั้งใหม่"""
+    runs = []
+    for mode, cfg in schedule.items():
+        if mode not in ("full", "db", "plan") or not isinstance(cfg, dict):
+            continue
+        runs.append({
+            "id": f"r{len(runs) + 1}", "enabled": bool(cfg.get("enabled", True)),
+            "hour": cfg.get("hour", 6), "minute": cfg.get("minute", 0),
+            "mode": mode, "days": list(ALL_DAYS),
+        })
+    return runs
+
+
 def load_settings() -> dict:
+    merged = json.loads(json.dumps(DEFAULT_SETTINGS))
     if SETTINGS_FILE.exists():
         try:
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            # merge กับ default กันค่าหาย
-            merged = json.loads(json.dumps(DEFAULT_SETTINGS))
-            merged.update(data)
-            if "schedule" in data:
-                merged["schedule"].update(data["schedule"])
-            return merged
+            if isinstance(data, dict):
+                # merge กับ default กันค่าหาย
+                merged.update(data)
+                if "auto_runs" not in data and isinstance(data.get("schedule"), dict):
+                    merged["auto_runs"] = _legacy_runs(data["schedule"])
         except Exception:
             pass
-    return json.loads(json.dumps(DEFAULT_SETTINGS))
+    merged.pop("schedule", None)
+    return merged
 
 
 def save_settings(data: dict) -> None:

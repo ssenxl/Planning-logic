@@ -1,10 +1,9 @@
-import sys
 import configparser as _cp
 import pandas as pd
 import os
 from pathlib import Path
 
-_APP_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+_APP_DIR = Path(__file__).parent
 _cfg = _cp.ConfigParser(interpolation=None)  # ปิด interpolation ให้ใช้ %USERPROFILE% ใน path ได้
 _cfg.read(_APP_DIR / "config.ini", encoding="utf-8")
 from datetime import datetime, timedelta
@@ -71,16 +70,56 @@ def add_stock_min_from_target(df_stock, target_file=None):
             df_stock['STOCK_MAX'] = 0
             return df_stock
         
-        # สร้าง lookup dict โดยใช้ (ITEM_CODE, TEAM_NAME) เป็น key
+        # lookup key = (ITEM_CODE, ลูกค้า, ทีม) — เป้าอยู่ที่ "แถวทะเบียน" ไม่ใช่ที่ตัวผ้า
+        # ผ้ารหัสเดียวกันคนละลูกค้า/คนละทีม มี TARGET/MONTH คนละค่า จับผิดคู่ = เป้าเพี้ยนทั้งแถว
+        cus_col = None
+        type1_col = None
+        target_col = None
+        for col in df_target.columns:
+            cu = str(col).upper().strip()
+            if 'CUSTOMER' in cu:
+                cus_col = col
+            elif cu in ('TYPE 1', 'TYPE1'):
+                type1_col = col
+            elif 'TARGET' in cu and 'MONTH' in cu:
+                target_col = col
+
+        def _derive(row, team, kind):
+            """คำนวณ STOCK MIN/MAX คืนจาก TARGET/MONTH เมื่อช่องในไฟล์ว่าง
+
+            ไฟล์ Target Stock ตัวจริงเก็บคอลัมน์พวกนี้เป็น "สูตร Excel" → pandas อ่านได้ NaN
+            ถ้าไม่คำนวณคืน STOCK_MIN จะเป็น 0 ทุกแถว แล้ว Planning จะข้ามการคิด trigger
+            ผลิต core ทั้งหมด (เงื่อนไข _fsm > 0) โดยไม่มีอะไรฟ้อง
+            สูตรต้องตรงกับ masters._recompute_target_stock (ที่หน้าเว็บใช้ตอนบันทึกไฟล์นี้):
+              MIN = TARGET/MONTH / 4 ; SCM = TARGET/MONTH / 2
+              MAX = (ทีม RTS และ Type 1 = CG) ? TARGET/MONTH : SCM * 1.5
+            """
+            if target_col is None:
+                return 0
+            try:
+                tm = float(row.get(target_col, 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+            if tm != tm or tm <= 0:
+                return 0
+            if kind == 'STOCK_MIN':
+                return tm / 4
+            t1 = str(row.get(type1_col, '')).strip().upper() if type1_col else ''
+            return tm if (team == 'RTS' and t1 == 'CG') else (tm / 2) * 1.5
+
         stock_lookup = {}
         for _, row in df_target.iterrows():
             item = str(row.get(item_col, '')).strip().upper()
-            team = str(row.get(team_col, '')).strip().upper() if team_col else ''
+            team = _ckey(row.get(team_col, '')) if team_col else ''
+            cus = _ckey(row.get(cus_col, '')) if cus_col else ''
             stock_min = float(row.get(stock_min_col, 0) or 0)
             stock_max = float(row.get(stock_max_col, 0) or 0) if stock_max_col else 0
+            if stock_min != stock_min or stock_min <= 0:        # NaN/ว่าง (เก็บเป็นสูตรในไฟล์)
+                stock_min = _derive(row, team, 'STOCK_MIN')
+            if stock_max != stock_max or stock_max <= 0:
+                stock_max = _derive(row, team, 'STOCK_MAX')
             if item:
-                key = (item, team) if team else (item, '')
-                stock_lookup[key] = {
+                stock_lookup[(item, cus, team)] = {
                     'STOCK_MIN': stock_min,
                     'STOCK_MAX': stock_max
                 }
@@ -88,15 +127,12 @@ def add_stock_min_from_target(df_stock, target_file=None):
         # Merge STOCK_MIN และ STOCK_MAX เข้ากับ df_stock โดยจับทั้ง ITEM_CODE และ TEAM_NAME
         def get_stock_value(row, value_type):
             item = str(row.get('ITEM_CODE', '')).strip().upper()
-            team = str(row.get('TEAM_NAME', '')).strip().upper()
-            # ลองหาด้วย (item, team) ก่อน
-            key = (item, team)
-            if key in stock_lookup:
-                return stock_lookup[key].get(value_type, 0)
-            # ถ้าไม่เจอ ลองหาด้วย (item, '') 
-            key = (item, '')
-            if key in stock_lookup:
-                return stock_lookup[key].get(value_type, 0)
+            team = _ckey(row.get('TEAM_NAME', ''))
+            cus = _ckey(row.get('CUSTOMER_NAME', ''))
+            # ครบสามอย่างก่อน แล้วค่อยผ่อนลงตามข้อมูลที่มี (ไฟล์เก่าอาจไม่มีลูกค้า/ทีม)
+            for key in ((item, cus, team), (item, cus, ''), (item, '', team), (item, '', '')):
+                if key in stock_lookup:
+                    return stock_lookup[key].get(value_type, 0)
             return 0
         
         df_stock['STOCK_MIN'] = df_stock.apply(lambda row: get_stock_value(row, 'STOCK_MIN'), axis=1)
@@ -126,7 +162,7 @@ def add_outstanding_from_booking(df_stock):
     เพิ่ม column OUTSTANDING จากไฟล์ Booking
     - OUTSTANDING_W{week+1}: week ถัดไป (week 17)
     - OUTSTANDING_W{week+2}: week ถัดไปอีก 1 week (week 18)
-    - Inventory: ONHAND_KG + OUTSTANDING 2 weeks ถัดไป
+    - Inventory: BALANCE_KG + OUTSTANDING 2 weeks ถัดไป
     
     Returns:
         DataFrame with OUTSTANDING columns
@@ -301,15 +337,15 @@ def add_outstanding_from_booking(df_stock):
             df_stock[f'OUTSTANDING_W{next_week_1:02d}'] = df_stock[f'OUTSTANDING_W{next_week_1:02d}'].fillna(0)
             df_stock[f'Knit_Planning_W{next_week_2:02d}'] = df_stock[f'Knit_Planning_W{next_week_2:02d}'].fillna(0)
             
-            # คำนวณ Inventory = ONHAND_KG + OUTSTANDING ทั้ง 2 weeks ถัดไป
+            # คำนวณ Inventory = BALANCE_KG + OUTSTANDING ทั้ง 2 weeks ถัดไป
             df_stock['Inventory'] = (
-                df_stock['ONHAND_KG'] + 
-                df_stock[f'OUTSTANDING_W{next_week_1:02d}'] + 
+                df_stock['BALANCE_KG'] +
+                df_stock[f'OUTSTANDING_W{next_week_1:02d}'] +
                 df_stock[f'Knit_Planning_W{next_week_2:02d}']
             )
-            
+
             print(f"✓ เพิ่ม column OUTSTANDING_W{next_week_1:02d} และ Knit_Planning_W{next_week_2:02d}")
-            print(f"✓ เพิ่ม column Inventory = ONHAND_KG + OUTSTANDING_W{next_week_1:02d} + Knit_Planning_W{next_week_2:02d}")
+            print(f"✓ เพิ่ม column Inventory = BALANCE_KG + OUTSTANDING_W{next_week_1:02d} + Knit_Planning_W{next_week_2:02d}")
         else:
             print("⚠️  ไม่พบ column WEEK - ไม่สามารถ filter ตาม week ได้")
         
@@ -376,17 +412,59 @@ def read_target_item_codes(target_file=None):
         return None
 
 
-def read_stock_data(target_item_codes=None):
+def _ckey(v) -> str:
+    """ชื่อลูกค้า/ทีม -> คีย์เทียบ (ยุบช่องว่างซ้ำ + พิมพ์ใหญ่) เพราะชื่อไทยในไฟล์เว้นวรรคไม่เท่ากันได้"""
+    return " ".join(str(v or "").split()).upper()
+
+
+def read_target_keys(target_file=None):
+    """ทะเบียน Core -> set ของ (ITEM, ลูกค้า, ทีม)
+
+    core ตัดสินด้วยสามอย่างนี้พร้อมกัน — ผ้ารหัสเดียวกันที่ผูกลูกค้าอื่นหรืออยู่คนละทีม
+    เป็นของออเดอร์เขา ไม่ใช่สต๊อก core ของแถวนั้น (แต่ละแถวมี TARGET/MONTH ของตัวเอง)
+    """
+    if target_file is None:
+        target_file = str(_APP_DIR / "Estimate_Core" / "Target_Stock.xlsx")
+    if not os.path.exists(target_file):
+        return set()
+    try:
+        df = pd.read_excel(target_file)
+        df.columns = [str(c).strip() for c in df.columns]
+    except Exception as e:
+        print(f"อ่านทะเบียน Core ไม่ได้: {e}")
+        return set()
+
+    cols = {str(c).upper(): c for c in df.columns}
+    ic = cols.get('ITEM CODE') or cols.get('ITEM_CODE') or cols.get('ITEMCODE')
+    cc = cols.get('CUSTOMER')
+    tc = cols.get('TEAM NAME') or cols.get('TEAM_NAME')
+    if ic is None:
+        return set()
+
+    keys = set()
+    for _, r in df.iterrows():
+        item = str(r.get(ic, '')).strip().upper()
+        if not item or item in ('NAN', 'NONE'):
+            continue
+        keys.add((item,
+                  _ckey(r.get(cc, '')) if cc else '',
+                  _ckey(r.get(tc, '')) if tc else ''))
+    print(f"ทะเบียน Core (ผ้า+ลูกค้า+ทีม): {len(keys)} แถว")
+    return keys
+
+
+def read_stock_data(target_item_codes=None, target_keys=None):
     """
     อ่านข้อมูล Stock จากไฟล์ STOCK_Data 1.xlsx
     Sheet: Raw
-    Columns: TEAM_NAME, ITEM_CODE, QA_REASON, QA_REMARK, WH Onhand(Kg)
-    
+    Columns: TEAM_NAME, ITEM_CODE, QA_REASON, QA_REMARK, BALANCE_KG
+
     Filter:
     - TEAM_NAME: RTS, NYK1-1
     - QA_REASON: blank
     - QA_REMARK: blank
     - ITEM_CODE: เฉพาะที่อยู่ใน Target Stock (ถ้ามี)
+    - BALANCE_KG: >= 100 (ยอดคงเหลือหลังหักจอง ไม่ใช่ ONHAND_KG ที่ยังไม่หัก)
     """
     
     # ค้นหาไฟล์ STOCK ในโฟลเดอร์ Stock (relative path)
@@ -406,26 +484,41 @@ def read_stock_data(target_item_codes=None):
         return None
     
     try:
-        # อ่านข้อมูลจาก sheet BI_DATA_GREIGE_STOCK_KP
-        df = pd.read_excel(stock_file, sheet_name='BI_DATA_GREIGE_STOCK_KP')
+        # อ่านชีทแรก — ไฟล์ที่ View_Stock.py เขียนมีชีทเดียว (ชื่อชีท = ชื่อ view ไม่อ้างในโค้ด)
+        df = pd.read_excel(stock_file, sheet_name=0)
         
         print(f"อ่านข้อมูลทั้งหมด: {len(df)} แถว")
         print(f"Columns ที่มี: {df.columns.tolist()}")
         
         # เลือกเฉพาะ columns ที่ต้องการ
-        required_columns = ['TEAM_NAME', 'ITEM_CODE', 'QA_REASON', 'QA_REMARK', 'ONHAND_KG']
-        
+        # ยอดสต๊อกยึด BALANCE_KG = ของที่เหลือหลังหักยอดจอง (RESERVE_KG) แล้ว
+        # ไม่ใช่ ONHAND_KG ที่เป็นของในคลังก่อนหักจอง — ของที่ถูกจองไปแล้วเอามาวางแผนซ้ำไม่ได้
+        required_columns = ['TEAM_NAME', 'CUSTOMER_NAME', 'ITEM_CODE', 'QA_REASON', 'QA_REMARK', 'BALANCE_KG']
+
         # ตรวจสอบว่ามี columns ที่ต้องการหรือไม่
         missing_cols = [col for col in required_columns if col not in df.columns]
         if missing_cols:
             print(f"ไม่พบ columns: {missing_cols}")
             return None
-        
+
         # เลือกเฉพาะ columns ที่ต้องการ
         df_filtered = df[required_columns].copy()
-        
+
+        # จองเกินของที่มี → BALANCE_KG ติดลบ ปัดเป็น 0 ไม่งั้นไปหักยอดล็อตอื่นในก้อนเดียวกัน
+        df_filtered['BALANCE_KG'] = pd.to_numeric(
+            df_filtered['BALANCE_KG'], errors='coerce').fillna(0).clip(lower=0)
+
         # Filter TEAM_NAME เอาเฉพาะ RTS และ NYK1-1
-        df_filtered = df_filtered[df_filtered['TEAM_NAME'].isin(['RTS', 'NYK1-1'])]
+        # กรองด้วยทะเบียน Core ทั้งชุด (ผ้า + ลูกค้า + ทีม) — ล็อตที่ไม่ครบสามอย่างเป็นของก้อนอื่น
+        # เดิมกรองด้วยชื่อทีมที่ hard-code ไว้ ซึ่งจะเงียบทันทีที่ทะเบียนเพิ่มทีมใหม่ และยังปล่อย
+        # ล็อตของลูกค้าอื่นที่บังเอิญอยู่ทีมเดียวกันหลุดเข้ามาเป็นสต๊อก core
+        if target_keys:
+            _k = list(zip(df_filtered['ITEM_CODE'].astype(str).str.strip().str.upper(),
+                          df_filtered['CUSTOMER_NAME'].map(_ckey),
+                          df_filtered['TEAM_NAME'].map(_ckey)))
+            df_filtered = df_filtered[[t in target_keys for t in _k]]
+        else:
+            df_filtered = df_filtered[df_filtered['TEAM_NAME'].isin(['RTS', 'NYK1-1'])]
         print(f"หลัง filter TEAM_NAME (RTS, NYK1-1): {len(df_filtered)} แถว")
         
         # Filter QA_REASON และ QA_REMARK เอาเฉพาะค่า blank (NaN หรือ empty string)
@@ -440,16 +533,16 @@ def read_stock_data(target_item_codes=None):
             df_filtered = df_filtered[df_filtered['ITEM_CODE'].isin(target_item_codes)]
             print(f"หลัง filter ตาม Target Stock Item codes: {len(df_filtered)} แถว")
         
-        # Filter เฉพาะ ONHAND_KG >= 100 ก่อน sum
+        # Filter เฉพาะ BALANCE_KG >= 100 ก่อน sum (ล็อตที่เหลือน้อยกว่านี้คือเศษ ขายไม่ได้)
         before_filter = len(df_filtered)
-        df_filtered = df_filtered[df_filtered['ONHAND_KG'] >= 100]
+        df_filtered = df_filtered[df_filtered['BALANCE_KG'] >= 100]
         removed = before_filter - len(df_filtered)
-        print(f"หลัง filter ONHAND_KG >= 100: {len(df_filtered)} แถว (ตัดออก {removed} แถว)")
-        
+        print(f"หลัง filter BALANCE_KG >= 100: {len(df_filtered)} แถว (ตัดออก {removed} แถว)")
+
         # Sum ข้อมูลที่มี TEAM_NAME และ ITEM_CODE เหมือนกัน (หลังจาก filter >= 100 แล้ว)
         print(f"\nก่อน sum: {len(df_filtered)} แถว")
-        df_grouped = df_filtered.groupby(['TEAM_NAME', 'ITEM_CODE'], as_index=False).agg({
-            'ONHAND_KG': 'sum',
+        df_grouped = df_filtered.groupby(['TEAM_NAME', 'CUSTOMER_NAME', 'ITEM_CODE'], as_index=False).agg({
+            'BALANCE_KG': 'sum',
             'QA_REASON': 'first',
             'QA_REMARK': 'first'
         })
@@ -463,7 +556,7 @@ def read_stock_data(target_item_codes=None):
         print(f"จำนวนแถวทั้งหมด: {len(df_grouped)}")
         print(f"TEAM_NAME ที่มี: {df_grouped['TEAM_NAME'].unique()}")
         print(f"จำนวน ITEM_CODE ที่ไม่ซ้ำ: {df_grouped['ITEM_CODE'].nunique()}")
-        print(f"รวม ONHAND_KG ทั้งหมด: {df_grouped['ONHAND_KG'].sum():.2f} Kg")
+        print(f"รวม BALANCE_KG ทั้งหมด: {df_grouped['BALANCE_KG'].sum():.2f} Kg")
         
         return df_grouped
         
@@ -491,7 +584,8 @@ if __name__ == "__main__":
     print("\n" + "=" * 80)
     print("กำลังประมวลผลข้อมูล Stock...")
     print("=" * 80)
-    stock_data = read_stock_data(target_item_codes)
+    target_keys = read_target_keys(target_file) if target_file else None
+    stock_data = read_stock_data(target_item_codes, target_keys)
     
     # Step 4: เพิ่มข้อมูล OUTSTANDING จาก Booking
     if stock_data is not None:

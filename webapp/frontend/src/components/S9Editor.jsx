@@ -1,14 +1,37 @@
-import React, { useMemo, useRef, useState } from 'react'
+import React, { useMemo, useRef } from 'react'
+import DataTable from './DataTable.jsx'
 
 // มุมมองเฉพาะของชีทกลุ่ม S9 (จ้างทอ) ในไฟล์ MasterMC — แก้ลง grid เดิมของ Masters โดยตรง
 // จึงใช้ปุ่มบันทึก / Ctrl+Z / Ctrl+S ชุดเดียวกัน มี 3 แบบตามชนิดชีท:
 //   - mcs9   : MC S9      → การ์ด pool เครื่องจ้างทอ (ความจุต่อกลุ่ม)
-//   - items9 : Item S9    → ค้นหา item ที่ "จ้างทอได้" (fallback) — 5พันกว่าแถว เรนเดอร์เฉพาะผลค้นหา
-//   - s9only : S9 Only    → รายการ item ที่ "ต้องจ้างทอเสมอ"
+//   - items9 : Item S9    → ตาราง item ที่ "จ้างทอได้" (fallback) — 5พันกว่าแถว
+//   - s9only : S9 Only    → ตาราง item ที่ "ต้องจ้างทอเสมอ"
+// สองแบบหลังใช้ตารางกลาง DataTable เหมือนชีทอื่น ต่างแค่ป้ายอธิบายบนแถบเครื่องมือ
 
 const val = v => String(v ?? '').trim()
-const distinct = arr => [...new Set(arr.map(val).filter(Boolean))]
-  .sort((a, b) => String(a).localeCompare(String(b), 'th', { numeric: true }))
+
+// ตัวเลือกของ 2 คอลัมน์ที่เป็น dropdown ในชีท MC S9 (ค่าที่เก็บลงไฟล์ = value ล้วน)
+//   Material : ชนิดผ้าที่เจ้านั้นทอ — ไม่เลือก = BLEND (ผ้าผสม) ตามที่ user กำหนด 16 ก.ย. 2569
+//   Status   : เครื่องชุดนี้ยังใช้อยู่ไหม — ไม่เลือก = Active (ไม่งั้นเครื่องหายจากแผนเงียบ ๆ)
+// Planning.py `_s9_rows_init` อ่านค่าชุดเดียวกันนี้ — แก้ที่นี่ต้องแก้ที่นั่นด้วย
+export const S9_MATERIALS = [
+  { value: 'POLY', label: 'POLY (โพลีล้วน)' },
+  { value: 'COTTON', label: 'COTTON (ฝ้ายล้วน)' },
+  { value: 'BLEND', label: 'BLEND (ผ้าผสม TC/CD)' },
+]
+export const S9_STATUS = [
+  { value: 'Active', label: 'Active (ทำงาน)' },
+  { value: 'Inactive', label: 'Inactive (หยุดใช้)' },
+]
+
+// map ให้ DataTable: คอลัมน์ไหนเป็น dropdown บ้าง (ใช้ตอนดูแบบ "ตาราง")
+export function s9Enums(info) {
+  if (!info || info.kind !== 'mcs9') return undefined
+  const e = {}
+  if (info.matCi >= 0) e[info.matCi] = { options: S9_MATERIALS, placeholder: '— ไม่เลือก = BLEND' }
+  if (info.statusCi >= 0) e[info.statusCi] = { options: S9_STATUS, placeholder: '— ไม่เลือก = Active' }
+  return Object.keys(e).length ? e : undefined
+}
 
 export default function S9Editor(props) {
   if (props.info.kind === 'mcs9') return <McS9Pool {...props} />
@@ -16,13 +39,21 @@ export default function S9Editor(props) {
 }
 
 // ---------- MC S9: การ์ด pool เครื่องจ้างทอ ----------
-function McS9Pool({ grid, info, rids, setCell, addRow, delRow, isChanged }) {
-  const { catCi, mcGroupCi, gaugeCi, totalCi, capCi, wdCi, remarkCi } = info
+function McS9Pool({ grid, info, rids, setCell, addRow, delRow, isChanged, ro }) {
+  const { suppCi = -1, catCi, mcGroupCi, gaugeCi, totalCi, capCi, wdCi, remarkCi,
+    matCi = -1, statusCi = -1 } = info
   const wrapRef = useRef(null)
   const chg = (ri, ci) => ci >= 0 && isChanged(ri, ci)
-  const sumCol = ci => grid.rows.reduce((a, r) => a + (Number(val(r[ci])) || 0), 0)
+  // แถวที่ Status = Inactive ไม่ถูกนับเป็นกำลังผลิต (Planning.py ข้ามแถวพวกนี้เหมือนกัน)
+  const isOff = r => statusCi >= 0 && val(r[statusCi]).toUpperCase() === 'INACTIVE'
+  const sumCol = ci => grid.rows.reduce((a, r) => a + (isOff(r) ? 0 : Number(val(r[ci])) || 0), 0)
   const totMC = totalCi >= 0 ? sumCol(totalCi) : null
   const totCap = capCi >= 0 ? sumCol(capCi) : null
+  const nOff = grid.rows.filter(isOff).length
+  // ชีทรุ่นใหม่ 1 แถว = เครื่องของผู้รับจ้าง 1 เจ้า (เพดานแยกรายเจ้า) → บอกจำนวนเจ้าไว้ด้วย
+  const nSupp = suppCi >= 0
+    ? new Set(grid.rows.map(r => val(r[suppCi])).filter(Boolean)).size
+    : null
   const setNum = (ri, ci, v) => setCell(ri, ci, String(v).replace(/[^0-9.]/g, ''))
 
   function add() {
@@ -34,11 +65,30 @@ function McS9Pool({ grid, info, rids, setCell, addRow, delRow, isChanged }) {
     }, 0)
   }
 
+  // ช่องที่เลือกจากรายการ (dropdown) — ค่าที่ไม่รู้จักยังโชว์ไว้ ไม่ลบทิ้งเงียบ ๆ
+  const picker = (label, ri, ci, options, placeholder) => ci < 0 ? null : (
+    <label className="s9field" key={label}>
+      <span>{label}</span>
+      {(() => {
+        const cur = val(grid.rows[ri][ci])
+        const known = options.some(o => o.value === cur)
+        return (
+          <select className={(chg(ri, ci) ? 'chg ' : '') + 's9sel' + (!known && cur ? ' unknown' : '')}
+            value={cur} disabled={ro} onChange={e => setCell(ri, ci, e.target.value)}>
+            <option value="">{placeholder}</option>
+            {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            {!known && cur && <option value={cur}>{cur} (ค่าที่ระบบไม่รู้จัก)</option>}
+          </select>
+        )
+      })()}
+    </label>
+  )
+
   // เรียกเป็นฟังก์ชัน (ไม่ใช่ <Field/>) เพื่อไม่ให้ input remount ทุกครั้งที่พิมพ์ → โฟกัสไม่หลุด
   const field = (label, ri, ci, { numeric, ph } = {}) => ci < 0 ? null : (
     <label className="s9field" key={label}>
       <span>{label}</span>
-      <input className={chg(ri, ci) ? 'chg' : ''}
+      <input className={chg(ri, ci) ? 'chg' : ''} readOnly={ro}
         inputMode={numeric ? 'numeric' : undefined}
         value={grid.rows[ri][ci] ?? ''} placeholder={ph || ''}
         onChange={e => numeric ? setNum(ri, ci, e.target.value) : setCell(ri, ci, e.target.value)} />
@@ -50,28 +100,36 @@ function McS9Pool({ grid, info, rids, setCell, addRow, delRow, isChanged }) {
       <div className="s9bar">
         <span className="s9total">
           🧵 pool จ้างทอ <b>{grid.rows.length}</b> กลุ่ม
+          {nSupp != null && <> · <b className="s9num">{nSupp}</b> เจ้า</>}
           {totMC != null && <> · รวม <b className="s9num">{totMC}</b> เครื่อง</>}
+          {!!nOff && <> · <b className="s9off">หยุดใช้ {nOff}</b></>}
           {totCap != null && <> · กำลังผลิตรวม <b className="s9num">{totCap}</b>/วัน</>}
         </span>
         <span className="s9hint">เครื่องกลุ่มนี้ใช้รับงานที่ถูกส่งจ้างทอ (S9)</span>
-        <button className="s9addbtn" onClick={add}>+ เพิ่มกลุ่มเครื่อง</button>
+        {!ro && <button className="s9addbtn" onClick={add}>+ เพิ่มกลุ่มเครื่อง</button>}
       </div>
 
       {!grid.rows.length && (
-        <div className="s9empty">ยังไม่มีกลุ่มเครื่องจ้างทอ — กด <b>+ เพิ่มกลุ่มเครื่อง</b> เพื่อเริ่ม</div>
+        <div className="s9empty">
+          {ro ? 'ยังไม่มีกลุ่มเครื่องจ้างทอ' : <>ยังไม่มีกลุ่มเครื่องจ้างทอ — กด <b>+ เพิ่มกลุ่มเครื่อง</b> เพื่อเริ่ม</>}
+        </div>
       )}
 
       <div className="s9cards">
         {grid.rows.map((r, ri) => (
           <div key={rids?.[ri] ?? ri} className="s9card">
-            <button className="s9del" title="ลบกลุ่มนี้" onClick={() => delRow(ri)}>✕</button>
+            {!ro && <button className="s9del" title="ลบกลุ่มนี้" onClick={() => delRow(ri)}>✕</button>}
             <div className="s9cardhead">
+              {field('Supp (ผู้รับจ้าง)', ri, suppCi, { ph: 'เช่น INTERCOT' })}
               {field('กลุ่ม (MC_CAT)', ri, catCi, { ph: 'เช่น SINGLE-32' })}
               {field('MC Group', ri, mcGroupCi, { ph: 'เช่น FA' })}
-              {field('เกจ', ri, gaugeCi, { ph: '20' })}
+              {/* เลขเกจอย่างเดียว — กระบอกอยู่ที่ MC_CAT แล้ว (user 2 ต.ค. 2569 เลิกรูป 28G34") */}
+              {field('Guage', ri, gaugeCi, { ph: suppCi >= 0 ? '28' : '20' })}
             </div>
             <div className="s9cardbody">
               {field('Total MC (เครื่อง)', ri, totalCi, { numeric: true, ph: '0' })}
+              {picker('Material (ชนิดผ้า)', ri, matCi, S9_MATERIALS, '— ไม่เลือก = BLEND')}
+              {picker('Status', ri, statusCi, S9_STATUS, '— ไม่เลือก = Active')}
               {field('Cap/Day', ri, capCi, { numeric: true, ph: '0' })}
               {field('Working day', ri, wdCi, { numeric: true, ph: '0' })}
               {field('Remark', ri, remarkCi, { ph: 'เช่น Poly' })}
@@ -81,96 +139,37 @@ function McS9Pool({ grid, info, rids, setCell, addRow, delRow, isChanged }) {
       </div>
 
       <div className="gridhelp">
-        แต่ละการ์ด = 1 กลุ่มเครื่องจ้างทอ · แก้แล้วกด <b>บันทึก</b> (Ctrl+S) · Ctrl+Z = ย้อนกลับ
+        แต่ละการ์ด = 1 กลุ่มเครื่องจ้างทอ ·{' '}
+        {ro
+          ? <><b>หน้านี้ดูอย่างเดียว</b> — แก้ได้ที่ ⚙️ Setting › ข้อมูลหลัก</>
+          : <>แก้แล้วกด <b>บันทึก</b> (Ctrl+S) · Ctrl+Z = ย้อนกลับ</>}
       </div>
     </div>
   )
 }
 
-// ---------- Item S9 / S9 Only: รายการ item แบบค้นหาก่อน ----------
-function ItemS9List({ grid, info, rids, setCell, addRow, delRow, isChanged, isNewRow }) {
+// ---------- Item S9 / S9 Only: ตาราง item ----------
+// ใช้ตารางกลาง (DataTable) เหมือนชีทอื่น — ที่นี่แค่กำหนดว่าโชว์คอลัมน์ไหน ป้ายอะไร
+function ItemS9List({ grid, info, rids, setCell, addRow, delRow, isChanged, isNewRow, ro }) {
   const { kind, itemCi, mgCi, gaugeCi } = info
   const isOnly = kind === 's9only'
-  const [q, setQ] = useState('')
-  const [limit, setLimit] = useState(80)
-  const rowsRef = useRef(null)
-  const chg = (ri, ci) => ci >= 0 && isChanged(ri, ci)
 
-  const mgOpts = useMemo(() => mgCi >= 0 ? distinct(grid.rows.map(r => r[mgCi])) : [], [grid, mgCi])
-  const gOpts = useMemo(() => gaugeCi >= 0 ? distinct(grid.rows.map(r => r[gaugeCi])) : [], [grid, gaugeCi])
+  const cols = useMemo(() => [
+    { ci: itemCi, label: 'ITEM_CODE', w: 220, cls: 'key', ph: 'ITEM_CODE', flex: true },
+    mgCi >= 0 && { ci: mgCi, label: 'กลุ่มเครื่อง', w: 180, ph: 'เช่น SKP' },
+    gaugeCi >= 0 && { ci: gaugeCi, label: 'Guage', w: 120, ph: 'เช่น 24' },
+  ].filter(Boolean), [itemCi, mgCi, gaugeCi])
 
-  const query = q.trim().toLowerCase()
-  // แถวใหม่ (ยังไม่บันทึก) โชว์บนสุดเสมอ ตามด้วยแถวที่ match คำค้น
-  const { ordered, matchCount, total } = useMemo(() => {
-    const news = [], rest = []
-    grid.rows.forEach((_, ri) => (isNewRow(ri) ? news : rest).push(ri))
-    const cols = [itemCi, mgCi, gaugeCi].filter(c => c >= 0)
-    const match = ri => !query ||
-      cols.map(c => String(grid.rows[ri][c] ?? '').toLowerCase()).join(' ').includes(query)
-    const filtered = rest.filter(match)
-    return { ordered: [...news, ...filtered], matchCount: news.length + filtered.length, total: grid.rows.length }
-  }, [grid, query, itemCi, mgCi, gaugeCi, isNewRow])
-
-  const shown = ordered.slice(0, limit)
-
-  function add() {
-    addRow()
-    setTimeout(() => {
-      const el = rowsRef.current?.querySelector('.s9row.newrow input')
-      if (el) { el.scrollIntoView({ block: 'nearest' }); el.focus() }
-    }, 0)
-  }
+  const hint = isOnly
+    ? <span className="dtwarn">⚠️ item กลุ่มนี้ระบบจะ<b>ส่งจ้างทอเสมอ</b> (plan = วันนี้+3)</span>
+    : <span className="dthint">item ที่ <b>จ้างทอได้</b> — ระบบใช้เป็นทางเลือกเมื่อเครื่องปกติไม่พอ</span>
 
   return (
-    <div className="s9view">
-      <div className="s9bar">
-        {isOnly
-          ? <span className="s9warn">⚠️ item กลุ่มนี้ระบบจะ<b>ส่งจ้างทอเสมอ</b> (plan = วันนี้+3)</span>
-          : <span className="s9hint">item ที่ <b>จ้างทอได้</b> — ระบบใช้เป็นทางเลือกเมื่อเครื่องปกติไม่พอ</span>}
-        <input className="s9search" placeholder="🔍 ค้นหา ITEM_CODE / กลุ่ม / เกจ..."
-          value={q} onChange={e => { setQ(e.target.value); setLimit(80) }} />
-        <span className="s9count">
-          {query && <>พบ <b>{matchCount}</b> / </>}{total.toLocaleString()} รายการ
-        </span>
-        <button className="s9addbtn" onClick={add}>+ เพิ่ม item</button>
-      </div>
-
-      <div className="s9rows" ref={rowsRef}>
-        {shown.map(ri => (
-          <div key={rids?.[ri] ?? ri} className={'s9row' + (isNewRow(ri) ? ' newrow' : '')}>
-            <input className={'s9item ' + (chg(ri, itemCi) ? 'chg' : '')}
-              value={grid.rows[ri][itemCi] ?? ''} placeholder="ITEM_CODE"
-              onChange={e => setCell(ri, itemCi, e.target.value)} />
-            {mgCi >= 0 && (
-              <input list="s9-mg" className={'s9mg ' + (chg(ri, mgCi) ? 'chg' : '')}
-                value={grid.rows[ri][mgCi] ?? ''} placeholder="กลุ่มเครื่อง"
-                onChange={e => setCell(ri, mgCi, e.target.value)} />
-            )}
-            {gaugeCi >= 0 && (
-              <input list="s9-g" className={'s9g ' + (chg(ri, gaugeCi) ? 'chg' : '')}
-                value={grid.rows[ri][gaugeCi] ?? ''} placeholder="เกจ"
-                onChange={e => setCell(ri, gaugeCi, e.target.value)} />
-            )}
-            <button className="s9del" title="ลบรายการนี้" onClick={() => delRow(ri)}>✕</button>
-          </div>
-        ))}
-        {!shown.length && (
-          <div className="s9empty">{query ? 'ไม่พบ item ตรงคำค้น' : 'ยังไม่มีข้อมูล — กด + เพิ่ม item'}</div>
-        )}
-      </div>
-
-      {ordered.length > limit && (
-        <button className="s9more" onClick={() => setLimit(l => l + 200)}>
-          แสดงเพิ่ม (เหลืออีก {(ordered.length - limit).toLocaleString()} รายการ)
-        </button>
-      )}
-
-      <datalist id="s9-mg">{mgOpts.map(o => <option key={o} value={o} />)}</datalist>
-      <datalist id="s9-g">{gOpts.map(o => <option key={o} value={o} />)}</datalist>
-
-      <div className="gridhelp">
-        พิมพ์เพื่อค้นหา · แก้/ลบได้ทันที · เพิ่มแล้วแถวใหม่จะขึ้นบนสุด · แก้เสร็จกด <b>บันทึก</b> (Ctrl+S)
-      </div>
-    </div>
+    <DataTable
+      grid={grid} rids={rids} cols={cols} titleCi={itemCi} hint={hint}
+      addLabel="+ เพิ่ม item" unit="รายการ"
+      setCell={setCell} addRow={addRow} delRow={delRow}
+      isChanged={isChanged} isNewRow={isNewRow} ro={ro}
+    />
   )
 }
